@@ -11,6 +11,16 @@
 - **COSMO Solvation Model**: Computes Sigma-Profile descriptors (SCDI) to account for solvation effects.
 - **Docker Support**: Fully containerized environment for consistent execution across different platforms.
 
+## Branch Notes (`Interface`)
+
+This branch adds an enhanced interactive CLI experience:
+
+- Guided mode selection (automated pipeline vs. xTB explorer)
+- Selectable xTB operation menus with command preview
+- Post-optimization next-step flow (including optional NCI handoff)
+
+Use this branch when you want terminal-based guidance without switching to a full GUI.
+
 ## Installation
 
 ### Install from PyPI
