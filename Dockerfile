@@ -1,23 +1,23 @@
-# Base image with Mamba/Conda
 FROM mambaorg/micromamba:1.5.8
-
-# Set environment variables
-ENV PYTHONDONTWRITEBYTECODE=1
-ENV PYTHONUNBUFFERED=1
-ENV MULTIWFN_HOME=/opt/Multiwfn
-ENV PATH="${MULTIWFN_HOME}:${PATH}"
 
 USER root
 
-# Install system dependencies (wget, unzip for Multiwfn)
-RUN apt-get update && apt-get install -y \
+ARG DEBIAN_FRONTEND=noninteractive
+ARG MULTIWFN_URL=http://sobereva.com/multiwfn/misc/Multiwfn_3.8_dev_bin_Linux_noGUI.zip
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    KNF_IN_DOCKER=1 \
+    MULTIWFN_HOME=/opt/Multiwfn \
+    PATH="/opt/Multiwfn:${PATH}"
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
     wget \
     unzip \
+    tini \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Conda dependencies
-# KNF-Core needs: python, numpy, scipy, openbabel
-# xTB is also needed.
 RUN micromamba install -y -n base -c conda-forge \
     python=3.11 \
     numpy \
@@ -26,31 +26,29 @@ RUN micromamba install -y -n base -c conda-forge \
     xtb \
     && micromamba clean --all --yes
 
-# Activate conda environment settings for interactions
 ARG MAMBA_DOCKERFILE_ACTIVATE=1
 
-# Install Multiwfn (Linux noGUI version)
-# Using 3.8 dev version as utilized in the Windows setup reference
 WORKDIR /opt
-RUN wget http://sobereva.com/multiwfn/misc/Multiwfn_3.8_dev_bin_Linux_noGUI.zip -O Multiwfn.zip \
+RUN wget "${MULTIWFN_URL}" -O Multiwfn.zip \
     && unzip Multiwfn.zip \
     && mv Multiwfn_3.8_dev_bin_Linux_noGUI Multiwfn \
     && rm Multiwfn.zip \
     && chmod +x /opt/Multiwfn/Multiwfn \
-    # Setup settings.ini (copy generic one if needed or let it use default)
-    && echo "nthreads=4" > /opt/Multiwfn/settings.ini
+    && printf "nthreads=4\nisilent=1\n" > /opt/Multiwfn/settings.ini
 
-# Set working directory for app
 WORKDIR /app
+COPY . /app
 
-# Copy project files
-COPY . .
+RUN pip install --no-cache-dir .
 
-# Install KNF-Core as a package
-RUN pip install .
+RUN sed -i 's/\r$//' /app/scripts/docker-entrypoint.sh \
+    && chmod +x /app/scripts/docker-entrypoint.sh \
+    && chown -R mambauser:mambauser /app
 
-# Environment variable for KNF to know it's in Docker (optional, but good practice)
-ENV KNF_IN_DOCKER=1
+USER mambauser
 
-# Default command
-ENTRYPOINT ["knf"]
+HEALTHCHECK --interval=60s --timeout=10s --start-period=30s --retries=3 \
+  CMD bash -lc "command -v knf && command -v xtb && command -v Multiwfn"
+
+ENTRYPOINT ["/usr/bin/tini", "--", "/app/scripts/docker-entrypoint.sh"]
+CMD ["--help"]

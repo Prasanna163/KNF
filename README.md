@@ -38,16 +38,34 @@ pip install .
 
 ### Docker Usage
 
-A Dockerfile is provided for a complete, pre-configured environment.
+A Dockerfile and `docker-compose.yml` are provided for a complete, pre-configured environment
+with Python, xTB, OpenBabel, and Multiwfn.
 
 1. **Build the image:**
    ```bash
    docker build -t knf-core .
    ```
 
-2. **Run the container:**
+2. **Run a KNF calculation:**
    ```bash
-   docker run --rm -v $(pwd):/data knf-core /data/input.sdf
+   docker run --rm -v $(pwd):/work -w /work knf-core input.sdf --charge 0 --force
+   ```
+
+3. **Run with Docker Compose:**
+   ```bash
+   docker compose up --build
+   ```
+   Edit `docker-compose.yml` command to target your input and options.
+
+4. **Open a shell in the container (debugging):**
+   ```bash
+   docker run --rm -it -v $(pwd):/work -w /work knf-core bash
+   ```
+
+5. **Verify toolchain inside container:**
+   ```bash
+   docker run --rm knf-core --help
+   docker run --rm -it knf-core bash -lc "xtb --version && obabel -V && Multiwfn < /dev/null || true"
    ```
 
 ## Usage
