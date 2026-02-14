@@ -63,10 +63,10 @@ knf input_molecule.sdf
 - `--debug`: Enable verbose debug logging.
 
 **Example with Test File:**
-The repository includes a test file `DES.mol` for verification.
+The repository includes a test file `example.mol` (diethyl sulfate) for verification.
 
 ```bash
-knf DES.mol --charge 0 --force
+knf example.mol --charge 0 --force
 ```
 
 **General Example:**
