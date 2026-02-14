@@ -11,6 +11,17 @@
 - **COSMO Solvation Model**: Computes Sigma-Profile descriptors (SCDI) to account for solvation effects.
 - **Docker Support**: Fully containerized environment for consistent execution across different platforms.
 
+## Branch Notes (`main`)
+
+This branch is the **underlying minimal baseline** of KNF-CORE.
+
+If you want enhanced workflows, it is recommended to install/use the branch that best suits your needs:
+
+- `Multiple-Molecules`: extended multi-fragment descriptor behavior
+- `Interface`: interactive CLI explorer workflow
+- `GUI-Version`: simple GUI workflow
+- `KNF-Calculate`: modular app-style GUI build
+
 ## Installation
 
 ### Install from PyPI
