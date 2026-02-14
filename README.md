@@ -13,6 +13,12 @@
 
 ## Installation
 
+### Install from PyPI
+
+```bash
+pip install KNF
+```
+
 ### Prerequisites
 
 - **Python 3.8+**
