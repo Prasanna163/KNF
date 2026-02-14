@@ -16,11 +16,13 @@ setup(
     entry_points={
         'console_scripts': [
             'knf=knf_core.main:main',
+            'knf-gui=knf_core.gui_launcher:main',
         ],
     },
     install_requires=[
         'numpy',
         'scipy',
+        'streamlit',
         # 'rdkit', # Assuming rdkit is pre-installed in the environment (e.g., conda)
     ],
     classifiers=[

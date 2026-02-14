@@ -66,6 +66,27 @@ This launches a step-by-step interface with:
 - Selectable xTB calculations with command preview/confirmation
 - Post-optimization next-step menu (including Multiwfn NCI handoff)
 
+### Streamlit GUI
+
+Run the graphical interface:
+
+```bash
+knf-gui
+```
+
+Or directly with Streamlit:
+
+```bash
+streamlit run streamlit_app.py
+```
+
+GUI capabilities include:
+- Full automated KNF pipeline execution
+- xTB explorer with selectable operations and command preview
+- Optional solvent flag injection (`--alpb`)
+- Post-optimization NCI handoff to Multiwfn
+- Result file browser and previews
+
 **Basic Usage:**
 ```bash
 knf input_molecule.sdf
