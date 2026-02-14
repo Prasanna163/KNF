@@ -1,0 +1,2 @@
+"""KNF Streamlit GUI package."""
+

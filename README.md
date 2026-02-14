@@ -77,6 +77,12 @@ knf-gui
 Or directly with Streamlit:
 
 ```bash
+streamlit run knf_gui/app.py
+```
+
+Legacy entrypoint remains available:
+
+```bash
 streamlit run streamlit_app.py
 ```
 
@@ -86,6 +92,10 @@ GUI capabilities include:
 - Optional solvent flag injection (`--alpb`)
 - Post-optimization NCI handoff to Multiwfn
 - Result file browser and previews
+- Modular GUI architecture in `knf_gui/`:
+  - `pages/`
+  - `components/`
+  - `utils/`
 
 **Basic Usage:**
 ```bash

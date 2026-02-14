@@ -1,0 +1,23 @@
+:root {
+  --primary: #2e86ab;
+  --secondary: #a23b72;
+  --success: #06a77d;
+  --warning: #f18f01;
+  --danger: #c73e1d;
+  --background: #f8f9fa;
+  --surface: #ffffff;
+  --text: #212529;
+  --text-muted: #6c757d;
+}
+
+.stButton > button {
+  border-radius: 8px;
+}
+
+div[data-testid="stMetric"] {
+  background: var(--surface);
+  border: 1px solid #e8eaed;
+  border-radius: 12px;
+  padding: 10px;
+}
+

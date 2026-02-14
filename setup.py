@@ -23,6 +23,11 @@ setup(
         'numpy',
         'scipy',
         'streamlit',
+        'plotly',
+        'pandas',
+        'py3Dmol',
+        'streamlit-extras',
+        'streamlit-option-menu',
         # 'rdkit', # Assuming rdkit is pre-installed in the environment (e.g., conda)
     ],
     classifiers=[
