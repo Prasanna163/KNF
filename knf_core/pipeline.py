@@ -50,13 +50,14 @@ class KNFPipeline:
         logging.info("Analyzing geometry...")
         mol = geometry.load_molecule(target_xyz)
         fragments = geometry.detect_fragments(mol)
+        pair_indices = None
         
         if len(fragments) == 1:
             logging.info("Detected single molecule.")
         elif len(fragments) == 2:
             logging.info("Detected two-fragment complex.")
         else:
-            raise ValueError(f"Detected {len(fragments)} fragments. Only 1 or 2 supported.")
+            logging.info(f"Detected multi-fragment complex ({len(fragments)} fragments).")
             
         # Compute Geometry Descriptors (f1, f2)
         # Check if we assume complex calculation even for single molecule?
@@ -72,6 +73,17 @@ class KNFPipeline:
         if len(fragments) == 2:
             f1 = geometry.compute_fragment_distance(mol, fragments[0], fragments[1])
             f2 = geometry.detect_hb_angle(mol, fragments[0], fragments[1])
+            pair_indices = [0, 1]
+        elif len(fragments) > 2:
+            distances = []
+            for i in range(len(fragments)):
+                for j in range(i + 1, len(fragments)):
+                    distances.append(geometry.compute_fragment_distance(mol, fragments[i], fragments[j]))
+            f1 = float(sum(distances) / len(distances)) if distances else 0.0
+            f2 = 180.0
+            logging.info(
+                f"Using average COM distance across {len(distances)} fragment pairs; HB angle fixed at 180.0."
+            )
         else:
             f1 = 0.0
             f2 = 180.0
@@ -210,6 +222,7 @@ class KNFPipeline:
                 'charge': self.charge,
                 'spin': self.spin,
                 'fragments': len(fragments),
+                'geometry_fragment_pair': pair_indices,
                 'multiwfn_status': 'success' if multiwfn_success else 'skipped'
             }
         )

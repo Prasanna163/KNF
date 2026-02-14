@@ -5,7 +5,7 @@
 ## Features
 
 - **Automated Workflow**: From a single input structure (XYZ, SDF, MOL, etc.) to a final descriptor vector with minimal user intervention.
-- **Robust Geometry Handling**: Automatically detects and converts input formats, perceives molecular fragments, and handles both single molecules and two-fragment complexes.
+- **Robust Geometry Handling**: Automatically detects and converts input formats, perceives molecular fragments, and handles single molecules, two-fragment complexes, and multi-fragment systems.
 - **xTB Integration**: Performs semi-empirical quantum mechanical optimization (Geometry Optimization) and single-point energy calculations to derive electronic properties.
 - **Multiwfn Analysis**: Automates Non-Covalent Interaction (NCI) analysis to capture weak interactions critical for binding affinity and stability.
 - **COSMO Solvation Model**: Computes Sigma-Profile descriptors (SCDI) to account for solvation effects.
