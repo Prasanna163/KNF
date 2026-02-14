@@ -11,6 +11,16 @@
 - **COSMO Solvation Model**: Computes Sigma-Profile descriptors (SCDI) to account for solvation effects.
 - **Docker Support**: Fully containerized environment for consistent execution across different platforms.
 
+## Branch Notes (`KNF-Calculate`)
+
+This branch contains the modular app-oriented GUI build:
+
+- `knf_gui/` package with pages, components, and utility modules
+- Dashboard, quick start, xTB explorer, custom workflow, results viewer, and docs pages
+- Local launch via `knf-gui` / `streamlit run knf_gui/app.py`
+
+Use this branch if you want the most complete app-style KNF interface.
+
 ## Installation
 
 ### Install from PyPI
