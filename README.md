@@ -11,6 +11,17 @@
 - **COSMO Solvation Model**: Computes Sigma-Profile descriptors (SCDI) to account for solvation effects.
 - **Docker Support**: Fully containerized environment for consistent execution across different platforms.
 
+## Branch Notes (`GUI-Version`)
+
+This branch focuses on a simple Python GUI workflow:
+
+- Streamlit-based interface (`knf-gui`)
+- File selection and preparation from GUI
+- Automated pipeline and xTB explorer style actions from a visual interface
+- Progress indicators and result browsing
+
+Use this branch if you prefer a lightweight GUI over terminal interaction.
+
 ## Installation
 
 ### Install from PyPI
