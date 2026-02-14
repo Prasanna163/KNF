@@ -2,6 +2,8 @@ __pycache__
 *.pyc
 *.pyo
 *.pyd
+.pytest_cache
+.mypy_cache
 .Python
 env/
 venv/
@@ -16,10 +18,14 @@ coverage.xml
 *.cover
 *.log
 .git
-.mypy_cache
-.pytest_cache
 .hypotheses
 local_results/
 test_files/
 .gemini/
 .agent/
+dist/
+*.egg-info/
+DES/
+results/
+*.zip
+*.tar.gz

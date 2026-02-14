@@ -1,0 +1,12 @@
+services:
+  knf:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: knf-core:latest
+    container_name: knf-core
+    working_dir: /work
+    volumes:
+      - ./:/work
+    command: ["example.mol", "--charge", "0", "--force"]
+
