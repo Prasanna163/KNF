@@ -11,6 +11,18 @@
 - **COSMO Solvation Model**: Computes Sigma-Profile descriptors (SCDI) to account for solvation effects.
 - **Docker Support**: Fully containerized environment for consistent execution across different platforms.
 
+## Branch Notes (`Multiple-Molecules`)
+
+This branch includes explicit multi-fragment behavior:
+
+- `1` fragment: `f1 = 0.0`, `f2 = 180.0`
+- `2` fragments: `f1` = COM distance between fragments, `f2` = detected H-bond angle
+- `>2` fragments:
+  - `f1` = average COM distance across all unique fragment pairs
+  - `f2` = fixed to `180.0`
+
+This branch also includes an updated Docker workflow (`Dockerfile`, `docker-compose.yml`, and container entrypoint script).
+
 ## Installation
 
 ### Install from PyPI
