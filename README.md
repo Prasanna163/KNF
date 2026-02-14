@@ -62,7 +62,14 @@ knf input_molecule.sdf
 - `--clean`: Clean up previous run directories before starting.
 - `--debug`: Enable verbose debug logging.
 
-**Example:**
+**Example with Test File:**
+The repository includes a test file `DES.mol` for verification.
+
+```bash
+knf DES.mol --charge 0 --force
+```
+
+**General Example:**
 ```bash
 knf drug_molecule.sdf --charge 1 --force
 ```
