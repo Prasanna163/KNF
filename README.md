@@ -56,6 +56,16 @@ A Dockerfile is provided for a complete, pre-configured environment.
 
 The package provides a `knf` command for easy execution.
 
+**Interactive Guided Mode:**
+```bash
+knf
+```
+This launches a step-by-step interface with:
+- Input file loading and fragment detection
+- Mode selection (`Automated Pipeline` or `Interactive xTB Explorer`)
+- Selectable xTB calculations with command preview/confirmation
+- Post-optimization next-step menu (including Multiwfn NCI handoff)
+
 **Basic Usage:**
 ```bash
 knf input_molecule.sdf
