@@ -1,157 +1,133 @@
-# KNF-CORE: Automated Descriptor Engine
+# KNF-CORE
 
-**KNF-CORE** is a specialized computational chemistry pipeline designed to automate the extraction of key molecular descriptors for KNF (Kinetic and Non-covalent Feature) analysis. It integrates powerful tools like **xTB** (Extended Tight-Binding) and **Multiwfn** (Multifunctional Wavefunction Analyzer) to generate a unique 9-dimensional vector representation of molecular interactions.
+KNF-CORE is an automated computational chemistry pipeline for generating KNF descriptors from molecular structure files. It combines xTB + Multiwfn + custom post-processing to produce:
 
-## Features
+- SNCI
+- SCDI variance
+- 9D KNF vector (`f1` ... `f9`)
 
-- **Automated Workflow**: From a single input structure (XYZ, SDF, MOL, etc.) to a final descriptor vector with minimal user intervention.
-- **Robust Geometry Handling**: Automatically detects and converts input formats, perceives molecular fragments, and handles single molecules, two-fragment complexes, and multi-fragment systems.
-- **xTB Integration**: Performs semi-empirical quantum mechanical optimization (Geometry Optimization) and single-point energy calculations to derive electronic properties.
-- **Multiwfn Analysis**: Automates Non-Covalent Interaction (NCI) analysis to capture weak interactions critical for binding affinity and stability.
-- **COSMO Solvation Model**: Computes Sigma-Profile descriptors (SCDI) to account for solvation effects.
-- **Docker Support**: Fully containerized environment for consistent execution across different platforms.
+## Version
 
-## Branch Notes (`Multiple-Molecules`)
+Current package version in this branch: `1.0`
 
-This branch includes explicit multi-fragment behavior:
+## What This Branch Includes
+
+- Automatic input conversion to XYZ when needed (via Open Babel)
+- Single-file and directory processing modes
+- Auto-configured multi-worker batch mode
+- Dockerized runtime (`Dockerfile`, `docker-compose.yml`, container entrypoint)
+- Updated fragment handling rules
+
+Fragment behavior:
 
 - `1` fragment: `f1 = 0.0`, `f2 = 180.0`
-- `2` fragments: `f1` = COM distance between fragments, `f2` = detected H-bond angle
-- `>2` fragments:
-  - `f1` = average COM distance across all unique fragment pairs
-  - `f2` = fixed to `180.0`
+- `2` fragments: `f1` = COM distance, `f2` = detected H-bond angle
+- `>2` fragments: `f1` = average COM distance over all unique pairs, `f2 = 180.0`
 
-This branch also includes an updated Docker workflow (`Dockerfile`, `docker-compose.yml`, and container entrypoint script).
+## Requirements
 
-## Installation
+- Python `>=3.8`
+- `xtb` in `PATH`
+- `obabel` (Open Babel) in `PATH`
+- `Multiwfn` in `PATH`
 
-### Install from PyPI
+## Install
+
+From PyPI:
 
 ```bash
 pip install KNF
 ```
 
-### Prerequisites
-
-- **Python 3.8+**
-- **xTB**: Must be installed and accessible in your system PATH (`xtb` command).
-- **Multiwfn**: Must be installed and accessible (`Multiwfn` command), or configured via `settings.ini`.
-- **OpenBabel**: Required for file format conversions (`obabel` command).
-
-### Install from Source
-
- Clone the repository and install using pip:
+From source:
 
 ```bash
-git clone https://github.com/yourusername/KNF-CORE.git
-cd KNF-CORE
+git clone https://github.com/Prasanna163/KNF.git
+cd KNF
 pip install .
 ```
 
-### Docker Usage
+## CLI Usage
 
-A Dockerfile and `docker-compose.yml` are provided for a complete, pre-configured environment
-with Python, xTB, OpenBabel, and Multiwfn.
+Basic run:
 
-1. **Build the image:**
-   ```bash
-   docker build -t knf-core .
-   ```
-
-2. **Run a KNF calculation:**
-   ```bash
-   docker run --rm -v $(pwd):/work -w /work knf-core input.sdf --charge 0 --force
-   ```
-
-3. **Run with Docker Compose:**
-   ```bash
-   docker compose up --build
-   ```
-   Edit `docker-compose.yml` command to target your input and options.
-
-4. **Open a shell in the container (debugging):**
-   ```bash
-   docker run --rm -it -v $(pwd):/work -w /work knf-core bash
-   ```
-
-5. **Verify toolchain inside container:**
-   ```bash
-   docker run --rm knf-core --help
-   docker run --rm -it knf-core bash -lc "xtb --version && obabel -V && Multiwfn < /dev/null || true"
-   ```
-
-## Usage
-
-### Command Line Interface (CLI)
-
-The package provides a `knf` command for easy execution.
-
-**Basic Usage:**
 ```bash
 knf input_molecule.sdf
 ```
 
-**Options:**
-- `--charge <int>`: Net charge of the system (default: 0).
-- `--spin <int>`: Spin multiplicity (default: 1).
-- `--force`: Force recalculation of existing steps.
-- `--clean`: Clean up previous run directories before starting.
-- `--debug`: Enable verbose debug logging.
-- `--processing <single|multi>`: Queue mode for directory runs (default: `single`).
-- `--processes <single|multi>`: Alias of `--processing`.
-- `--workers <int>`: Number of worker threads when `--processing multi` is used.
-- `--output-dir <path>`: Custom output root (default: `Results` near input).
-- `--ram-per-job <MB>`: RAM estimate used for auto worker selection.
-- `--refresh-autoconfig`: Recompute one-time multi-mode config cache.
+Useful options:
 
-In `multi` mode, KNF-Core now auto-detects worker/thread settings and stores a one-time cache in:
+- `--charge <int>`: total charge (default `0`)
+- `--spin <int>`: multiplicity (default `1`)
+- `--force`: recompute stages
+- `--clean`: remove prior working folder for that input
+- `--debug`: verbose logging
+- `--processing <single|multi>` (alias: `--processes`)
+- `--workers <int>`: explicit workers for multi mode
+- `--output-dir <path>`: custom results root
+- `--ram-per-job <MB>`: RAM hint for auto worker selection
+- `--refresh-autoconfig`: regenerate auto-config cache
 
-- `.knf_autoconfig.json`
-
-This cache is machine-specific (CPU/RAM signature). KNF-Core reuses it automatically on future runs.
-
-**Example with Test File:**
-The repository includes a test file `example.mol` (diethyl sulfate) for verification.
+Example:
 
 ```bash
 knf example.mol --charge 0 --force
 ```
 
-**General Example:**
+Directory batch example:
+
 ```bash
-knf drug_molecule.sdf --charge 1 --force
+knf ./molecules --processing multi --force
 ```
 
-### Python API
-
-You can also use KNF-CORE within your own Python scripts:
+## Python API
 
 ```python
 from knf_core.pipeline import KNFPipeline
 
-# Initialize the pipeline
 pipeline = KNFPipeline(
-    input_file='test.sdf',
+    input_file="test.sdf",
     charge=0,
-    spin=1
+    spin=1,
 )
-
-# Run the analysis
 pipeline.run()
 ```
 
-## Output
+## Output Layout
 
-The pipeline generates a top-level `Results` folder. Each molecule/complex gets its own directory:
+Default output root:
 
-- `Results/<complex_file_stem>/`
+- File input: `<input_parent>/Results/<input_stem>/`
+- Directory input: `<input_dir>/Results/<file_stem>/`
 
-Each complex folder contains:
-- `knf.json`: The final 9D KNF vector and metadata.
-- `output.txt`: Human-readable summary of the results.
-- `xtbopt.xyz`: Optimized geometry.
-- Intermediate files from xTB and Multiwfn.
+Typical output files:
+
+- `knf.json`
+- `output.txt`
+- `xtbopt.xyz`
+- xTB/Multiwfn intermediates (`wbo`, `molden.input`, `nci_grid.txt`, etc.)
+
+## Docker
+
+Quick run:
+
+```bash
+docker build -t knf-core:latest .
+docker run --rm -v "$(pwd):/work" -w /work knf-core:latest example.mol --charge 0 --force
+```
+
+Compose:
+
+```bash
+docker compose up --build
+```
+
+Full Docker documentation is in `README.DOCKER.md`.
+
+## Releasing
+
+PyPI release steps are documented in `RELEASE.md`.
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+MIT. See `LICENSE`.
