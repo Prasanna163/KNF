@@ -107,6 +107,13 @@ Typical output files:
 - `xtbopt.xyz`
 - xTB/Multiwfn intermediates (`wbo`, `molden.input`, `nci_grid.txt`, etc.)
 
+Batch mode also writes:
+
+- `batch_knf.json` at the batch `Results` root, containing:
+  - per-input status/error/timing
+  - embedded content of each successful `knf.json`
+  - a combined `knf_results` list for ML training pipelines
+
 ## Docker
 
 Quick run:

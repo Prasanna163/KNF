@@ -4,8 +4,10 @@ import os
 import shutil
 import logging
 import time
+import json
 from queue import Queue
 from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError
+from datetime import datetime, timezone
 from .pipeline import KNFPipeline
 from . import utils
 from . import autoconfig
@@ -197,6 +199,89 @@ def resolve_results_root(input_path: str, output_dir: str = None) -> str:
 
     return os.path.join(os.path.dirname(os.path.abspath(input_path)), "Results")
 
+
+def write_batch_aggregate_json(
+    directory: str,
+    results_root: str,
+    records: list[dict],
+    mode: str,
+    workers: int,
+    total_time: float,
+):
+    """Writes a combined JSON payload for batch outputs."""
+    aggregate_path = os.path.join(results_root, "batch_knf.json")
+    os.makedirs(results_root, exist_ok=True)
+
+    enriched_records = []
+    knf_results = []
+    success_count = 0
+    failure_count = 0
+
+    for record in records:
+        input_file = os.path.abspath(record["input_file"])
+        stem = os.path.splitext(os.path.basename(input_file))[0]
+        result_dir = os.path.join(results_root, stem)
+        knf_path = os.path.join(result_dir, "knf.json")
+
+        entry = {
+            "input_file": input_file,
+            "input_file_name": os.path.basename(input_file),
+            "result_dir": result_dir,
+            "status": record["status"],
+            "elapsed_seconds": round(float(record.get("elapsed_seconds", 0.0)), 4),
+            "error": record.get("error"),
+            "knf": None,
+        }
+
+        if record["status"] == "success" and os.path.exists(knf_path):
+            try:
+                with open(knf_path, "r", encoding="utf-8") as f:
+                    knf_data = json.load(f)
+                entry["knf"] = knf_data
+                knf_results.append(
+                    {
+                        "input_file": input_file,
+                        "input_file_name": os.path.basename(input_file),
+                        "result_dir": result_dir,
+                        "knf": knf_data,
+                    }
+                )
+                success_count += 1
+            except Exception as e:
+                entry["status"] = "failed"
+                entry["error"] = f"Failed to read knf.json: {e}"
+                failure_count += 1
+        elif record["status"] == "success":
+            entry["status"] = "failed"
+            entry["error"] = "Missing knf.json output."
+            failure_count += 1
+        else:
+            failure_count += 1
+
+        enriched_records.append(entry)
+
+    payload = {
+        "schema_version": 1,
+        "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+        "input_directory": os.path.abspath(directory),
+        "results_root": os.path.abspath(results_root),
+        "mode": mode,
+        "workers": workers,
+        "summary": {
+            "total_files": len(records),
+            "successful_files": success_count,
+            "failed_files": failure_count,
+            "total_time_seconds": round(float(total_time), 4),
+        },
+        "records": enriched_records,
+        "knf_results": knf_results,
+    }
+
+    with open(aggregate_path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
+
+    return aggregate_path
+
 def run_batch_directory(directory: str, args):
     """Runs the pipeline for all valid files in a directory using a queue."""
     valid_exts = {'.xyz', '.sdf', '.mol', '.pdb', '.mol2'}
@@ -215,6 +300,7 @@ def run_batch_directory(directory: str, args):
     mode = args.processing.lower()
     workers = 1
     failures = []
+    batch_records = []
     succeeded = 0
 
     if mode == 'multi' and len(files) > 1:
@@ -318,9 +404,25 @@ def run_batch_directory(directory: str, args):
                 progress.advance(task_id, 1)
                 if success:
                     succeeded += 1
+                    batch_records.append(
+                        {
+                            "input_file": file_path,
+                            "status": "success",
+                            "elapsed_seconds": elapsed,
+                            "error": None,
+                        }
+                    )
                     completed_rows.append((_display_name(file_path), f"{elapsed:.1f}s", "[green]OK[/green]"))
                 else:
                     failures.append((file_path, error))
+                    batch_records.append(
+                        {
+                            "input_file": file_path,
+                            "status": "failed",
+                            "elapsed_seconds": elapsed,
+                            "error": str(error),
+                        }
+                    )
                     completed_rows.append((_display_name(file_path), f"{elapsed:.1f}s", "[red]FAIL[/red]"))
                 live.update(render(active_workers=0))
                 queue.task_done()
@@ -353,8 +455,24 @@ def run_batch_directory(directory: str, args):
                         progress.advance(task_id, 1)
                         if success:
                             succeeded += 1
+                            batch_records.append(
+                                {
+                                    "input_file": file_path,
+                                    "status": "success",
+                                    "elapsed_seconds": elapsed,
+                                    "error": None,
+                                }
+                            )
                             completed_rows.append((_display_name(file_path), f"{elapsed:.1f}s", "[green]OK[/green]"))
                         else:
+                            batch_records.append(
+                                {
+                                    "input_file": file_path,
+                                    "status": "failed",
+                                    "elapsed_seconds": elapsed,
+                                    "error": str(error),
+                                }
+                            )
                             completed_rows.append((_display_name(file_path), f"{elapsed:.1f}s", "[red]FAIL[/red]"))
                             failures.append((file_path, error))
 
@@ -364,6 +482,14 @@ def run_batch_directory(directory: str, args):
     total_time = time.perf_counter() - t0
     throughput = (total / total_time) * 3600 if total_time > 0 else 0.0
     avg_per_molecule = total_time / total if total else 0.0
+    aggregate_json_path = write_batch_aggregate_json(
+        directory=directory,
+        results_root=results_root,
+        records=batch_records,
+        mode=mode,
+        workers=workers,
+        total_time=total_time,
+    )
 
     summary = Table.grid(padding=(0, 2))
     summary.add_column(style="bold")
@@ -376,6 +502,7 @@ def run_batch_directory(directory: str, args):
     summary.add_row("Throughput", f"{throughput:.1f} jobs/hour")
     summary.add_row("Peak CPU", f"{peak_cpu:.1f}%")
     summary.add_row("Peak RAM", f"{peak_ram:.1f} MB")
+    summary.add_row("Batch JSON", aggregate_json_path)
     console.print(Panel(summary, title="Batch Completed", border_style="green"))
 
     if failures:
