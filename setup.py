@@ -7,11 +7,13 @@ with open(os.path.join(this_directory, 'README.md'), encoding='utf-8') as f:
 
 setup(
     name='KNF',
-    version='0.1.0',
+    version='0.1.1',
     description='Automated Descriptor Engine for SNCI, SCDI, and 9D KNF',
     long_description=long_description,
     long_description_content_type='text/markdown',
     author='Prasanna Kulkarni',
+    license='MIT',
+    url='https://github.com/Prasanna163/KNF',
     packages=find_packages(),
     entry_points={
         'console_scripts': [
@@ -27,7 +29,11 @@ setup(
     ],
     classifiers=[
         'Programming Language :: Python :: 3',
-        'License :: OSI Approved :: MIT License',
+        'Programming Language :: Python :: 3.8',
+        'Programming Language :: Python :: 3.9',
+        'Programming Language :: Python :: 3.10',
+        'Programming Language :: Python :: 3.11',
+        'Programming Language :: Python :: 3.12',
         'Operating System :: OS Independent',
     ],
     python_requires='>=3.8',

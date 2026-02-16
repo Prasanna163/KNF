@@ -1,0 +1,34 @@
+# PyPI Release Checklist
+
+## 1) Update version
+
+Edit `setup.py` and bump `version='x.y.z'`.
+
+## 2) Build package artifacts
+
+```bash
+python -m build
+```
+
+Expected artifacts:
+
+- `dist/knf-<version>.tar.gz`
+- `dist/knf-<version>-py3-none-any.whl`
+
+## 3) Validate metadata
+
+```bash
+python -m twine check dist/knf-<version>*
+```
+
+## 4) Upload to PyPI
+
+```bash
+python -m twine upload dist/knf-<version>*
+```
+
+## 5) Verify publish
+
+```bash
+python -m pip index versions KNF
+```
