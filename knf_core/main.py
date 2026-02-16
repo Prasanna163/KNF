@@ -5,6 +5,7 @@ import shutil
 import logging
 import time
 import json
+import csv
 from queue import Queue
 from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError
 from datetime import datetime, timezone
@@ -208,8 +209,9 @@ def write_batch_aggregate_json(
     workers: int,
     total_time: float,
 ):
-    """Writes a combined JSON payload for batch outputs."""
+    """Writes combined JSON and CSV payloads for batch outputs."""
     aggregate_path = os.path.join(results_root, "batch_knf.json")
+    aggregate_csv_path = os.path.join(results_root, "batch_knf.csv")
     os.makedirs(results_root, exist_ok=True)
 
     enriched_records = []
@@ -280,7 +282,23 @@ def write_batch_aggregate_json(
     with open(aggregate_path, "w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2)
 
-    return aggregate_path
+    csv_fields = ["File"] + [f"f{i}" for i in range(1, 10)] + ["SNCI", "SCDI"]
+    with open(aggregate_csv_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=csv_fields)
+        writer.writeheader()
+        for entry in enriched_records:
+            knf_data = entry.get("knf") or {}
+            knf_vector = knf_data.get("KNF_vector") or []
+            row = {
+                "File": entry.get("input_file_name", ""),
+                "SNCI": knf_data.get("SNCI", ""),
+                "SCDI": knf_data.get("SCDI_variance", ""),
+            }
+            for idx in range(9):
+                row[f"f{idx + 1}"] = knf_vector[idx] if idx < len(knf_vector) else ""
+            writer.writerow(row)
+
+    return aggregate_path, aggregate_csv_path
 
 def run_batch_directory(directory: str, args):
     """Runs the pipeline for all valid files in a directory using a queue."""
@@ -482,7 +500,7 @@ def run_batch_directory(directory: str, args):
     total_time = time.perf_counter() - t0
     throughput = (total / total_time) * 3600 if total_time > 0 else 0.0
     avg_per_molecule = total_time / total if total else 0.0
-    aggregate_json_path = write_batch_aggregate_json(
+    aggregate_json_path, aggregate_csv_path = write_batch_aggregate_json(
         directory=directory,
         results_root=results_root,
         records=batch_records,
@@ -503,6 +521,7 @@ def run_batch_directory(directory: str, args):
     summary.add_row("Peak CPU", f"{peak_cpu:.1f}%")
     summary.add_row("Peak RAM", f"{peak_ram:.1f} MB")
     summary.add_row("Batch JSON", aggregate_json_path)
+    summary.add_row("Batch CSV", aggregate_csv_path)
     console.print(Panel(summary, title="Batch Completed", border_style="green"))
 
     if failures:
