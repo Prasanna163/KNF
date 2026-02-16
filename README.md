@@ -8,7 +8,7 @@ KNF-CORE is an automated computational chemistry pipeline for generating KNF des
 
 ## Version
 
-Current package version in this branch: `1.0`
+Current package version in this branch: `1.0.1`
 
 ## What This Branch Includes
 
