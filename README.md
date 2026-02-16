@@ -97,6 +97,18 @@ knf input_molecule.sdf
 - `--force`: Force recalculation of existing steps.
 - `--clean`: Clean up previous run directories before starting.
 - `--debug`: Enable verbose debug logging.
+- `--processing <single|multi>`: Queue mode for directory runs (default: `single`).
+- `--processes <single|multi>`: Alias of `--processing`.
+- `--workers <int>`: Number of worker threads when `--processing multi` is used.
+- `--output-dir <path>`: Custom output root (default: `Results` near input).
+- `--ram-per-job <MB>`: RAM estimate used for auto worker selection.
+- `--refresh-autoconfig`: Recompute one-time multi-mode config cache.
+
+In `multi` mode, KNF-Core now auto-detects worker/thread settings and stores a one-time cache in:
+
+- `.knf_autoconfig.json`
+
+This cache is machine-specific (CPU/RAM signature). KNF-Core reuses it automatically on future runs.
 
 **Example with Test File:**
 The repository includes a test file `example.mol` (diethyl sulfate) for verification.
@@ -130,7 +142,11 @@ pipeline.run()
 
 ## Output
 
-The pipeline generates a `results` folder containing:
+The pipeline generates a top-level `Results` folder. Each molecule/complex gets its own directory:
+
+- `Results/<complex_file_stem>/`
+
+Each complex folder contains:
 - `knf.json`: The final 9D KNF vector and metadata.
 - `output.txt`: Human-readable summary of the results.
 - `xtbopt.xyz`: Optimized geometry.

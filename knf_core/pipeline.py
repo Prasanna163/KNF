@@ -6,7 +6,16 @@ from pathlib import Path
 from . import utils, geometry, xtb, multiwfn, snci, scdi, knf_vector, converter, wrapper
 
 class KNFPipeline:
-    def __init__(self, input_file: str, charge: int = 0, spin: int = 1, force: bool = False, clean: bool = False, debug: bool = False):
+    def __init__(
+        self,
+        input_file: str,
+        charge: int = 0,
+        spin: int = 1,
+        force: bool = False,
+        clean: bool = False,
+        debug: bool = False,
+        output_root: str = None,
+    ):
         self.input_file = os.path.abspath(input_file)
         self.charge = charge
         self.spin = spin
@@ -15,12 +24,16 @@ class KNFPipeline:
         self.debug = debug
         
         self.base_name = Path(self.input_file).stem
-        self.work_dir = os.path.join(os.path.dirname(self.input_file), f"{self.base_name}")
+        default_output_root = os.path.join(os.path.dirname(self.input_file), "Results")
+        self.output_root = os.path.abspath(output_root) if output_root else default_output_root
+        self.work_dir = os.path.join(self.output_root, self.base_name)
         self.input_dir = os.path.join(self.work_dir, 'input')
-        self.results_dir = os.path.join(self.work_dir, 'results')
+        self.results_dir = self.work_dir
         
     def setup_directories(self):
         """Creates directory structure."""
+        utils.ensure_directory(self.output_root)
+
         if self.clean and os.path.exists(self.work_dir):
             logging.warning(f"Cleaning directory: {self.work_dir}")
             shutil.rmtree(self.work_dir)
