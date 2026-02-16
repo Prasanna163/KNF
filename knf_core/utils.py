@@ -75,6 +75,6 @@ def ensure_multiwfn_in_path():
     exe_path = find_multiwfn()
     if exe_path:
         directory = os.path.dirname(exe_path)
-        logging.info(f"Auto-detected Multiwfn at {exe_path}")
-        logging.info(f"Adding {directory} to temporary PATH.")
+        logging.debug(f"Auto-detected Multiwfn at {exe_path}")
+        logging.debug(f"Adding {directory} to temporary PATH.")
         os.environ['PATH'] = directory + os.pathsep + os.environ['PATH']

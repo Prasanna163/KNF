@@ -29,6 +29,10 @@ class KNFPipeline:
         self.work_dir = os.path.join(self.output_root, self.base_name)
         self.input_dir = os.path.join(self.work_dir, 'input')
         self.results_dir = self.work_dir
+
+    def _stage(self, index: int, name: str):
+        if self.debug:
+            logging.info(f"[{index}/4] {name}")
         
     def setup_directories(self):
         """Creates directory structure."""
@@ -53,14 +57,13 @@ class KNFPipeline:
         # The user wants: "automatically detects the file type and if its anything other than .xyz, it safely converts it to .xyz using obabel"
         # So we use converter.ensure_xyz.
         
-        logging.info("Preparing input file...")
+        self._stage(1, "Geometry")
         target_xyz = converter.ensure_xyz(self.input_file, self.input_dir)
             
         # 2. Geometry & Fragment Detection
         # We load the confirmed XYZ file.
         # geometry.load_molecule now handles XYZ with bond perception.
         
-        logging.info("Analyzing geometry...")
         mol = geometry.load_molecule(target_xyz)
         fragments = geometry.detect_fragments(mol)
         pair_indices = None
@@ -133,6 +136,7 @@ class KNFPipeline:
             # But xTB expects --uhf N (number of unpaired electrons). 
             # If Multiplicity=1, unpaired=0. Correct.
             
+            self._stage(2, "xTB Opt")
             wrapper.run_xtb_opt(work_xyz, self.charge, uhf)
             # xTB produces 'xtbopt.xyz' in the same dir
             
@@ -150,6 +154,7 @@ class KNFPipeline:
         
         if not os.path.exists(wbo_file) or not os.path.exists(molden_file) or self.force:
             uhf = self.spin - 1
+            self._stage(3, "xTB SP")
             wrapper.run_xtb_sp(optimized_xyz, self.charge, uhf)
             
         # Identify COSMO file
@@ -191,6 +196,7 @@ class KNFPipeline:
         multiwfn_success = False
         
         if not os.path.exists(final_grid_path) or self.force:
+             self._stage(4, "NCI (Multiwfn)")
              multiwfn.run_multiwfn(molden_file, self.results_dir)
              if os.path.exists(nci_grid_file):
                  os.rename(nci_grid_file, final_grid_path)
