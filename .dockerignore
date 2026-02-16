@@ -26,6 +26,11 @@ test_files/
 dist/
 *.egg-info/
 DES/
+ignr/
+knf_gui/
+test_results/
+Results/
+build/
 results/
 *.zip
 *.tar.gz

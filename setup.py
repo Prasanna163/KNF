@@ -22,6 +22,7 @@ setup(
         'numpy',
         'scipy',
         'rich',
+        'psutil',
         # 'rdkit', # Assuming rdkit is pre-installed in the environment (e.g., conda)
     ],
     classifiers=[
