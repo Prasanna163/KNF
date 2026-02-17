@@ -15,9 +15,14 @@ setup(
     license='MIT',
     url='https://github.com/Prasanna163/KNF',
     packages=find_packages(),
+    include_package_data=True,
+    package_data={
+        'knf_gui_v2': ['templates/*.html', 'static/*.css', 'static/*.js'],
+    },
     entry_points={
         'console_scripts': [
             'knf=knf_core.main:main',
+            'knf-gui=knf_gui_v2.app:main',
         ],
     },
     install_requires=[
@@ -25,6 +30,7 @@ setup(
         'scipy',
         'rich',
         'psutil',
+        'flask>=3.0.0',
         # 'rdkit', # Assuming rdkit is pre-installed in the environment (e.g., conda)
     ],
     classifiers=[

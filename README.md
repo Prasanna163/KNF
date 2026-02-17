@@ -95,6 +95,25 @@ pipeline = KNFPipeline(
 pipeline.run()
 ```
 
+## GUI V2 (Web App)
+
+Launch the advanced web UI:
+
+```bash
+knf-gui
+```
+
+Default address:
+
+- `http://127.0.0.1:8787`
+
+GUI V2 includes:
+
+- Live job telemetry and console logs
+- Single or batch run configuration
+- Full flag coverage (`--storage-efficient`, workers, RAM/job, debug, etc.)
+- Result snapshot table from `knf.json` / `batch_knf.json`
+
 ## Output Layout
 
 Default output root:

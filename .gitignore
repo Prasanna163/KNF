@@ -120,3 +120,6 @@ test_results/
 *.xyz.cosmo
 *.wbo
 *.molden
+
+api token
+ignr/

@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>KNF GUI V2</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Sora:wght@300;400;600;700&family=JetBrains+Mono:wght@400;600&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}" />
+  </head>
+  <body>
+    <div class="ambient ambient-a"></div>
+    <div class="ambient ambient-b"></div>
+    <div class="ambient ambient-c"></div>
+
+    <header class="hero reveal">
+      <div>
+        <p class="kicker">Computational Chemistry Control Deck</p>
+        <h1>KNF GUI V2</h1>
+        <p class="subtitle">
+          Advanced web UI for KNF-Core with live job telemetry, run control, batch
+          summaries, and direct access to new pipeline options.
+        </p>
+      </div>
+      <div class="status-badge" id="apiHealth">API: checking...</div>
+    </header>
+
+    <main class="layout">
+      <section class="panel reveal stagger-1">
+        <h2>Run Configuration</h2>
+        <form id="runForm" class="form-grid">
+          <label>
+            Input Path
+            <div class="path-row">
+              <input id="inputPath" name="input_path" type="text" placeholder="E:\path\to\molecule.or.folder" required />
+              <button type="button" class="btn btn-secondary browse-btn" id="browseInputFile">File...</button>
+              <button type="button" class="btn btn-secondary browse-btn" id="browseInputDir">Folder...</button>
+            </div>
+          </label>
+          <label>
+            Output Directory (optional)
+            <div class="path-row">
+              <input id="outputDir" name="output_dir" type="text" placeholder="E:\path\to\Results" />
+              <button type="button" class="btn btn-secondary browse-btn" id="browseOutputDir">Browse...</button>
+            </div>
+          </label>
+
+          <label>
+            Processing Mode
+            <select id="processing" name="processing">
+              <option value="single">single</option>
+              <option value="multi">multi</option>
+            </select>
+          </label>
+          <label>
+            Workers (optional)
+            <input id="workers" name="workers" type="number" min="1" placeholder="auto" />
+          </label>
+
+          <label>
+            Charge
+            <input id="charge" name="charge" type="number" value="0" />
+          </label>
+          <label>
+            Spin Multiplicity
+            <input id="spin" name="spin" type="number" min="1" value="1" />
+          </label>
+
+          <label>
+            RAM Per Job (MB)
+            <input id="ramPerJob" name="ram_per_job" type="number" step="0.1" min="1" value="50" />
+          </label>
+
+          <div class="flags" id="flags">
+            <label><input type="checkbox" id="force" /> Force Recompute</label>
+            <label><input type="checkbox" id="clean" /> Clean Existing Result Dir</label>
+            <label><input type="checkbox" id="debug" /> Debug Logs</label>
+            <label><input type="checkbox" id="storageEfficient" /> Storage Efficient Cleanup</label>
+            <label><input type="checkbox" id="refreshAutoconfig" /> Refresh Autoconfig</label>
+            <label><input type="checkbox" id="quietConfig" /> Quiet Config Banner</label>
+          </div>
+
+          <div class="actions">
+            <button type="submit" class="btn btn-primary" id="runBtn">Launch Job</button>
+            <button type="button" class="btn btn-secondary" id="cancelBtn">Cancel Active Job</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="panel reveal stagger-2">
+        <h2>Telemetry</h2>
+        <div class="metrics">
+          <article>
+            <p>Status</p>
+            <strong id="metricStatus">idle</strong>
+          </article>
+          <article>
+            <p>Return Code</p>
+            <strong id="metricCode">-</strong>
+          </article>
+          <article>
+            <p>Started</p>
+            <strong id="metricStart">-</strong>
+          </article>
+          <article>
+            <p>Finished</p>
+            <strong id="metricEnd">-</strong>
+          </article>
+        </div>
+        <p class="cmd-label">Command</p>
+        <pre id="commandPreview" class="command-preview">No command yet.</pre>
+      </section>
+
+      <section class="panel wide reveal stagger-3">
+        <h2>Live Console</h2>
+        <pre id="logConsole" class="log-console"></pre>
+      </section>
+
+      <section class="panel wide reveal stagger-4">
+        <h2>Results Snapshot</h2>
+        <div id="summaryGrid" class="summary-grid"></div>
+        <div class="table-wrap">
+          <table id="resultTable">
+            <thead>
+              <tr>
+                <th>File</th>
+                <th>f1</th>
+                <th>f2</th>
+                <th>f3</th>
+                <th>f4</th>
+                <th>f5</th>
+                <th>f6</th>
+                <th>f7</th>
+                <th>f8</th>
+                <th>f9</th>
+                <th>SNCI</th>
+                <th>SCDI</th>
+              </tr>
+            </thead>
+            <tbody id="resultBody"></tbody>
+          </table>
+        </div>
+        <details id="outputExcerptWrap">
+          <summary>Single-Run Output Excerpt</summary>
+          <pre id="outputExcerpt"></pre>
+        </details>
+      </section>
+
+      <section class="panel wide reveal stagger-5">
+        <h2>Job History</h2>
+        <ul id="jobHistory" class="job-history"></ul>
+      </section>
+    </main>
+
+    <script src="{{ url_for('static', filename='app.js') }}"></script>
+  </body>
+</html>
