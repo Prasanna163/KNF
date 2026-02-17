@@ -4,6 +4,11 @@ import logging
 import subprocess
 import unicodedata
 from pathlib import Path
+from typing import Optional
+
+TOOL_CONFIG_DIR = ".knf"
+TOOL_CONFIG_FILE = "tool_paths.json"
+
 
 def setup_logging(debug: bool = False):
     """Configures logging to console."""
@@ -13,6 +18,7 @@ def setup_logging(debug: bool = False):
         format='%(asctime)s - %(levelname)s - %(message)s',
         datefmt='%H:%M:%S'
     )
+
 
 def detect_file_type(filepath: str) -> str:
     """Detects file type based on extension."""
@@ -26,13 +32,16 @@ def detect_file_type(filepath: str) -> str:
     else:
         raise ValueError(f"Unsupported file extension: {ext}")
 
+
 def ensure_directory(path: str):
     """Creates directory if it does not exist."""
     Path(path).mkdir(parents=True, exist_ok=True)
 
+
 def safe_copy(src: str, dst: str):
     """Copies a file from src to dst."""
     shutil.copy2(src, dst)
+
 
 def run_subprocess(cmd: list, cwd: str = None, capture_output: bool = True) -> subprocess.CompletedProcess:
     """Runs a subprocess command."""
@@ -53,32 +62,158 @@ def run_subprocess(cmd: list, cwd: str = None, capture_output: bool = True) -> s
             logging.error(f"STDERR: {e.stderr}")
         raise e
 
-def find_multiwfn() -> str:
-    """
-    Searches for Multiwfn executable.
-    Returns absolute path if found, or None.
-    """
-    candidates = [
-        r'E:\Prasanna\Multiwfn (cosmo)\Multiwfn_3.8_dev_bin_Win64\Multiwfn.exe',
-    ]
-    
-    for path in candidates:
-        if os.path.exists(path):
-            return path
-            
+
+def _tool_config_path() -> Path:
+    return Path.home() / TOOL_CONFIG_DIR / TOOL_CONFIG_FILE
+
+
+def _load_tool_config() -> dict:
+    path = _tool_config_path()
+    if not path.exists():
+        return {}
+    try:
+        import json
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _save_tool_config(payload: dict) -> None:
+    path = _tool_config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    import json
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def resolve_multiwfn_executable(candidate_path: str) -> Optional[str]:
+    """Resolves a candidate executable or directory into a concrete Multiwfn executable path."""
+    if not candidate_path:
+        return None
+
+    candidate = Path(candidate_path).expanduser()
+    if not candidate.is_absolute():
+        candidate = (Path.cwd() / candidate).resolve()
+
+    if candidate.is_file():
+        if candidate.name.lower() in {"multiwfn", "multiwfn.exe"}:
+            return str(candidate)
+        return None
+
+    if candidate.is_dir():
+        for name in ("Multiwfn.exe", "Multiwfn"):
+            exe = candidate / name
+            if exe.exists() and exe.is_file():
+                return str(exe)
     return None
 
-def ensure_multiwfn_in_path():
+
+def get_registered_multiwfn_path() -> Optional[str]:
+    config = _load_tool_config()
+    path = config.get("multiwfn_path")
+    return resolve_multiwfn_executable(path) if path else None
+
+
+def register_multiwfn_path(candidate_path: str, persist: bool = True) -> Optional[str]:
+    """Registers a user-provided Multiwfn path and injects it into PATH for current process."""
+    exe = resolve_multiwfn_executable(candidate_path)
+    if not exe:
+        return None
+
+    exe_dir = str(Path(exe).parent)
+    if exe_dir not in os.environ.get("PATH", ""):
+        os.environ["PATH"] = exe_dir + os.pathsep + os.environ.get("PATH", "")
+
+    if persist:
+        config = _load_tool_config()
+        config["multiwfn_path"] = exe
+        _save_tool_config(config)
+    return exe
+
+
+def _common_multiwfn_candidates() -> list[str]:
+    candidates = []
+    env_path = os.environ.get("KNF_MULTIWFN_PATH")
+    if env_path:
+        candidates.append(env_path)
+
+    registered = get_registered_multiwfn_path()
+    if registered:
+        candidates.append(registered)
+
+    candidates.extend(
+        [
+            r"E:\Prasanna\Multiwfn (cosmo)\Multiwfn_3.8_dev_bin_Win64\Multiwfn.exe",
+            str(Path.home() / "Multiwfn.exe"),
+            str(Path.home() / "Downloads" / "Multiwfn.exe"),
+            str(Path.home() / "Desktop" / "Multiwfn.exe"),
+        ]
+    )
+    return candidates
+
+
+def _scan_for_multiwfn_roots() -> Optional[str]:
+    """Lightweight scan for Multiwfn executable in likely parent directories."""
+    roots = [Path.home(), Path.cwd()]
+    drive = os.environ.get("HOMEDRIVE")
+    if drive:
+        roots.append(Path(drive + "\\"))
+
+    visited = set()
+    for root in roots:
+        try:
+            root_resolved = root.resolve()
+        except Exception:
+            continue
+        if root_resolved in visited or not root_resolved.exists():
+            continue
+        visited.add(root_resolved)
+
+        queue = [root_resolved]
+        while queue:
+            current = queue.pop(0)
+            try:
+                if current.name and "multiwfn" in current.name.lower():
+                    resolved = resolve_multiwfn_executable(str(current))
+                    if resolved:
+                        return resolved
+
+                depth = len(current.relative_to(root_resolved).parts)
+                if depth >= 3:
+                    continue
+                for child in current.iterdir():
+                    if child.is_dir():
+                        queue.append(child)
+                    elif child.is_file() and child.name.lower() in {"multiwfn.exe", "multiwfn"}:
+                        return str(child.resolve())
+            except Exception:
+                continue
+    return None
+
+
+def find_multiwfn(explicit_path: Optional[str] = None) -> Optional[str]:
+    """Searches for Multiwfn executable. Returns absolute path if found, else None."""
+    if explicit_path:
+        resolved = resolve_multiwfn_executable(explicit_path)
+        if resolved:
+            return resolved
+
+    for candidate in _common_multiwfn_candidates():
+        resolved = resolve_multiwfn_executable(candidate)
+        if resolved:
+            return resolved
+
+    return _scan_for_multiwfn_roots()
+
+
+def ensure_multiwfn_in_path(explicit_path: Optional[str] = None):
     """Attempts to find Multiwfn and add it to PATH."""
     if shutil.which('Multiwfn') or shutil.which('Multiwfn.exe'):
         return
 
-    exe_path = find_multiwfn()
+    exe_path = find_multiwfn(explicit_path=explicit_path)
     if exe_path:
-        directory = os.path.dirname(exe_path)
+        register_multiwfn_path(exe_path, persist=False)
         logging.debug(f"Auto-detected Multiwfn at {exe_path}")
-        logging.debug(f"Adding {directory} to temporary PATH.")
-        os.environ['PATH'] = directory + os.pathsep + os.environ['PATH']
 
 
 def _repair_mojibake(text: str) -> str:
@@ -150,4 +285,3 @@ def resolve_artifacted_path(path: str) -> str:
             return os.path.join(parent, candidate)
 
     return abs_path
-

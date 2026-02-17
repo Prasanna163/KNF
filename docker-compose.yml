@@ -1,4 +1,4 @@
-services:
+﻿services:
   knf:
     build:
       context: .
@@ -8,5 +8,8 @@ services:
     working_dir: /work
     volumes:
       - ./:/work
+      - knf-cache:/home/mambauser/.knf
     command: ["example.mol", "--charge", "0", "--force"]
 
+volumes:
+  knf-cache:

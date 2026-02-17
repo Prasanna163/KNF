@@ -1,4 +1,4 @@
-FROM mambaorg/micromamba:1.5.8
+﻿FROM mambaorg/micromamba:1.5.8
 
 USER root
 
@@ -48,7 +48,7 @@ RUN sed -i 's/\r$//' /app/scripts/docker-entrypoint.sh \
 USER mambauser
 
 HEALTHCHECK --interval=60s --timeout=10s --start-period=30s --retries=3 \
-  CMD bash -lc "command -v knf && command -v xtb && command -v Multiwfn"
+  CMD bash -lc "command -v knf && command -v xtb && command -v obabel && command -v Multiwfn"
 
 ENTRYPOINT ["/usr/bin/tini", "--", "/app/scripts/docker-entrypoint.sh"]
 CMD ["--help"]

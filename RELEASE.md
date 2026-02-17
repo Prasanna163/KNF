@@ -1,4 +1,4 @@
-# PyPI Release Checklist
+﻿# PyPI Release Checklist
 
 ## 1) Update version
 
@@ -31,4 +31,18 @@ python -m twine upload dist/knf-<version>*
 
 ```bash
 python -m pip index versions KNF
+```
+
+## 6) Docker smoke test (recommended)
+
+Build:
+
+```bash
+docker build -t knf-core:latest .
+```
+
+CLI smoke run:
+
+```bash
+docker run --rm -v "$(pwd):/work" -w /work knf-core:latest example.mol --charge 0 --force
 ```
