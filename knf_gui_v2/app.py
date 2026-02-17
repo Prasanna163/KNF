@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -8,13 +9,14 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, Response, jsonify, render_template, request
 
 from knf_core import utils
 
 JOBS = {}
 JOBS_LOCK = threading.RLock()
 MAX_LOG_LINES = 5000
+UPLOAD_DIR = os.path.join(os.getcwd(), "uploads")
 
 
 def _iso_now() -> str:
@@ -168,6 +170,7 @@ def _normalize_payload(raw: dict) -> dict:
     payload["ram_per_job"] = float(payload.get("ram_per_job", 50.0))
     workers = payload.get("workers")
     payload["workers"] = int(workers) if workers not in (None, "", 0, "0") else None
+    payload["multiwfn_path"] = (payload.get("multiwfn_path") or "").strip() or None
     for flag in (
         "force",
         "clean",
@@ -190,6 +193,8 @@ def _build_command(payload: dict) -> list:
         cmd.extend(["--workers", str(payload["workers"])])
     if payload["output_dir"]:
         cmd.extend(["--output-dir", payload["output_dir"]])
+    if payload["multiwfn_path"]:
+        cmd.extend(["--multiwfn-path", payload["multiwfn_path"]])
     if payload["force"]:
         cmd.append("--force")
     if payload["clean"]:
@@ -268,6 +273,33 @@ def create_app() -> Flask:
     def health():
         return jsonify({"ok": True, "time": _iso_now()})
 
+    @app.get("/api/dependencies")
+    def dependencies():
+        utils.ensure_multiwfn_in_path()
+        found = bool(utils.find_multiwfn()) or bool(
+            shutil.which("Multiwfn") or shutil.which("Multiwfn.exe")
+        )
+        registered = utils.get_registered_multiwfn_path()
+        return jsonify(
+            {
+                "multiwfn": {
+                    "detected": found,
+                    "registered_path": registered,
+                }
+            }
+        )
+
+    @app.post("/api/multiwfn-path")
+    def set_multiwfn_path():
+        payload = request.get_json(silent=True) or {}
+        raw_path = (payload.get("path") or "").strip()
+        if not raw_path:
+            return jsonify({"error": "Path is required"}), 400
+        resolved = utils.register_multiwfn_path(raw_path, persist=True)
+        if not resolved:
+            return jsonify({"error": "Invalid Multiwfn executable or directory path"}), 400
+        return jsonify({"ok": True, "path": resolved})
+
     @app.get("/api/jobs")
     def list_jobs():
         with JOBS_LOCK:
@@ -336,8 +368,8 @@ def create_app() -> Flask:
     def dialog():
         payload = request.get_json(silent=True) or {}
         mode = (payload.get("mode") or "").strip().lower()
-        if mode not in {"file", "directory"}:
-            return jsonify({"error": "mode must be 'file' or 'directory'"}), 400
+        if mode not in {"file", "directory", "multiwfn_file", "multiwfn_directory"}:
+            return jsonify({"error": "Unsupported dialog mode"}), 400
 
         try:
             path = _open_native_dialog(mode)
@@ -346,7 +378,92 @@ def create_app() -> Flask:
 
         return jsonify({"ok": True, "path": path})
 
+    @app.post("/api/upload")
+    def upload_file():
+        if "file" not in request.files:
+            return jsonify({"error": "No file part in request"}), 400
+        f = request.files["file"]
+        if not f.filename:
+            return jsonify({"error": "No file selected"}), 400
+        allowed_ext = {".xyz", ".sdf", ".mol", ".pdb", ".mol2"}
+        ext = os.path.splitext(f.filename)[1].lower()
+        if ext not in allowed_ext:
+            return jsonify({"error": f"Unsupported file type: {ext}"}), 400
+        os.makedirs(UPLOAD_DIR, exist_ok=True)
+        safe_name = f"{uuid.uuid4().hex[:8]}_{f.filename}"
+        dest = os.path.join(UPLOAD_DIR, safe_name)
+        f.save(dest)
+        return jsonify({"ok": True, "path": os.path.abspath(dest), "filename": f.filename})
+
+    @app.get("/api/molecule-data")
+    def molecule_data():
+        """Return molecule as SDF/molblock text with 3D coordinates for 3Dmol.js."""
+        mol_path = request.args.get("path", "").strip()
+        if not mol_path or not os.path.exists(mol_path):
+            return jsonify({"error": "File not found"}), 404
+        try:
+            from rdkit import Chem
+            from rdkit.Chem import AllChem
+
+            mol = _rdkit_mol_from_file(mol_path)
+            if mol is None:
+                return jsonify({"error": "Could not parse molecule"}), 400
+
+            # Ensure 3D coordinates exist
+            conf = mol.GetConformer(0) if mol.GetNumConformers() > 0 else None
+            needs_3d = conf is None
+            if conf is not None:
+                # Check if coordinates are all zeros (2D-only)
+                pts = [conf.GetAtomPosition(i) for i in range(mol.GetNumAtoms())]
+                if all(abs(p.z) < 1e-6 for p in pts):
+                    needs_3d = True
+
+            if needs_3d:
+                mol_h = Chem.AddHs(mol)
+                result = AllChem.EmbedMolecule(mol_h, AllChem.ETKDGv3())
+                if result == 0:
+                    AllChem.MMFFOptimizeMolecule(mol_h, maxIters=200)
+                    mol = mol_h
+                else:
+                    # Fallback: try with random coords
+                    params = AllChem.ETKDGv3()
+                    params.useRandomCoords = True
+                    result = AllChem.EmbedMolecule(mol_h, params)
+                    if result == 0:
+                        AllChem.MMFFOptimizeMolecule(mol_h, maxIters=200)
+                        mol = mol_h
+
+            molblock = Chem.MolToMolBlock(mol)
+            return Response(molblock, mimetype="text/plain")
+        except Exception as e:
+            return jsonify({"error": f"Molecule data failed: {e}"}), 500
+
     return app
+
+
+def _rdkit_mol_from_file(path: str):
+    """Parse a molecule file with RDKit, returning an RWMol or None."""
+    from rdkit import Chem
+
+    ext = os.path.splitext(path)[1].lower()
+    mol = None
+
+    if ext == ".xyz":
+        mol = Chem.MolFromXYZFile(path)
+        if mol is not None:
+            try:
+                from rdkit.Chem import rdDetermineBonds
+                rdDetermineBonds.DetermineBonds(mol)
+            except Exception:
+                pass
+    elif ext in (".sdf", ".mol"):
+        mol = Chem.MolFromMolFile(path, removeHs=False)
+    elif ext == ".pdb":
+        mol = Chem.MolFromPDBFile(path, removeHs=False)
+    elif ext == ".mol2":
+        mol = Chem.MolFromMol2File(path, removeHs=False)
+
+    return mol
 
 
 def _open_native_dialog(mode: str) -> str:
@@ -365,6 +482,14 @@ def _open_native_dialog(mode: str) -> str:
                 title="Select Input Molecule File",
                 filetypes=[
                     ("Molecule Files", "*.xyz *.sdf *.mol *.pdb *.mol2"),
+                    ("All Files", "*.*"),
+                ],
+            )
+        elif mode == "multiwfn_file":
+            path = filedialog.askopenfilename(
+                title="Select Multiwfn Executable",
+                filetypes=[
+                    ("Executable", "*.exe"),
                     ("All Files", "*.*"),
                 ],
             )

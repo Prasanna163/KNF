@@ -1,38 +1,49 @@
-# KNF-CORE
+﻿# KNF-CORE
 
-KNF-CORE is an automated computational chemistry pipeline for generating KNF descriptors from molecular structure files. It combines xTB + Multiwfn + custom post-processing to produce:
+KNF-CORE is an automated computational chemistry pipeline for generating KNF descriptors from molecular structure files.
 
+It combines xTB + Multiwfn + KNF post-processing to produce:
 - SNCI
 - SCDI variance
 - 9D KNF vector (`f1` ... `f9`)
 
-## Version
+Current package version in this branch: `1.0.3`
 
-Current package version in this branch: `1.0.2`
+## What Is Included
 
-## What This Branch Includes
+- Automatic input conversion to XYZ when needed (Open Babel)
+- Single-file and directory processing
+- Automatic multiprocessing recommendation + worker auto-config
+- One-time first-run setup (dependency checks + multiprocessing suggestion)
+- Multiwfn detection (auto + manual path registration)
+- Web GUI (`knf-gui`) with job telemetry and result preview
+- Dockerized runtime for both CLI and GUI
 
-- Automatic input conversion to XYZ when needed (via Open Babel)
-- Single-file and directory processing modes
-- Auto-configured multi-worker batch mode
-- Internal UTF/filename artifact normalization for robust file discovery
-- Dockerized runtime (`Dockerfile`, `docker-compose.yml`, container entrypoint)
-- Updated fragment handling rules
-
-Fragment behavior:
-
+Fragment handling:
 - `1` fragment: `f1 = 0.0`, `f2 = 180.0`
 - `2` fragments: `f1` = COM distance, `f2` = detected H-bond angle
-- `>2` fragments: `f1` = average COM distance over all unique pairs, `f2 = 180.0`
+- `>2` fragments: `f1` = average COM distance over unique pairs, `f2 = 180.0`
 
-## Requirements
+## Requirements (Native)
 
 - Python `>=3.8`
-- `xtb` in `PATH`
-- `obabel` (Open Babel) in `PATH`
-- `Multiwfn` in `PATH`
+- External tools in `PATH`:
+  - `xtb`
+  - `obabel` (Open Babel)
+  - `Multiwfn`
+
+Optional (GUI molecule viewer endpoint):
+- `rdkit`
 
 ## Install
+
+From source:
+
+```bash
+git clone https://github.com/Prasanna163/KNF.git
+cd KNF
+pip install -e .
+```
 
 From PyPI:
 
@@ -40,13 +51,37 @@ From PyPI:
 pip install KNF
 ```
 
-From source:
+## First-Run Setup
+
+On first execution, KNF runs one-time setup that:
+- checks external dependencies
+- attempts automatic install for some tools when possible
+- computes and prints a multiprocessing recommendation
+
+One-time state is stored under:
+- `~/.knf/first_run_state.json`
+
+Force refresh:
 
 ```bash
-git clone https://github.com/Prasanna163/KNF.git
-cd KNF
-pip install .
+knf <input_path> --refresh-first-run
 ```
+
+## Multiwfn Detection and Manual Path Setup
+
+KNF checks Multiwfn in this order:
+- current `PATH`
+- `KNF_MULTIWFN_PATH` env var
+- saved path from `~/.knf/tool_paths.json`
+- common local locations + shallow scan
+
+Manual setup via CLI (saved for future runs):
+
+```bash
+knf <input_path> --multiwfn-path "E:\path\to\Multiwfn.exe"
+```
+
+You can also provide the folder containing `Multiwfn.exe`.
 
 ## CLI Usage
 
@@ -57,105 +92,96 @@ knf input_molecule.sdf
 ```
 
 Useful options:
-
-- `--charge <int>`: total charge (default `0`)
-- `--spin <int>`: multiplicity (default `1`)
-- `--force`: recompute stages
-- `--clean`: remove prior working folder for that input
-- `--debug`: verbose logging
+- `--charge <int>`
+- `--spin <int>`
+- `--force`
+- `--clean`
+- `--debug`
 - `--processing <single|multi>` (alias: `--processes`)
-- `--workers <int>`: explicit workers for multi mode
-- `--output-dir <path>`: custom results root
-- `--ram-per-job <MB>`: RAM hint for auto worker selection
-- `--refresh-autoconfig`: regenerate auto-config cache
-- `--storage-efficient`: delete heavy intermediates after each successful molecule
+- `--workers <int>`
+- `--output-dir <path>`
+- `--ram-per-job <MB>`
+- `--refresh-autoconfig`
+- `--storage-efficient`
+- `--refresh-first-run`
+- `--multiwfn-path <path>`
 
-Example:
+Examples:
 
 ```bash
 knf example.mol --charge 0 --force
-```
-
-Directory batch example:
-
-```bash
 knf ./molecules --processing multi --force
+knf ./molecules --processing multi --workers 4 --ram-per-job 200
 ```
 
-## Python API
+## GUI Usage
 
-```python
-from knf_core.pipeline import KNFPipeline
-
-pipeline = KNFPipeline(
-    input_file="test.sdf",
-    charge=0,
-    spin=1,
-)
-pipeline.run()
-```
-
-## GUI V2 (Web App)
-
-Launch the advanced web UI:
+Launch:
 
 ```bash
 knf-gui
 ```
 
-Default address:
-
+Default URL:
 - `http://127.0.0.1:8787`
 
-GUI V2 includes:
+GUI includes:
+- live job telemetry + logs
+- single or batch configuration
+- native file/folder pickers
+- drag-and-drop upload
+- result snapshot table (`knf.json` / `batch_knf.json`)
+- Multiwfn setup popup if dependency is missing
 
-- Live job telemetry and console logs
-- Single or batch run configuration
-- Full flag coverage (`--storage-efficient`, workers, RAM/job, debug, etc.)
-- Result snapshot table from `knf.json` / `batch_knf.json`
+## Docker
+
+Build image:
+
+```bash
+docker build -t knf-core:latest .
+```
+
+Run CLI on a single file:
+
+```bash
+docker run --rm -v "$(pwd):/work" -w /work knf-core:latest example.mol --charge 0 --force
+```
+
+Run GUI container:
+
+```bash
+docker run --rm -p 8787:8787 -v "$(pwd):/work" -w /work -e KNF_GUI_HOST=0.0.0.0 knf-core:latest knf-gui
+```
+
+Or use Compose profiles:
+
+```bash
+docker compose --profile cli run --rm knf-cli
+docker compose --profile gui up --build knf-gui
+```
+
+Full container guide: `README.DOCKER.md`
 
 ## Output Layout
 
 Default output root:
-
-- File input: `<input_parent>/Results/<input_stem>/`
-- Directory input: `<input_dir>/Results/<file_stem>/`
+- file input: `<input_parent>/Results/<input_stem>/`
+- directory input: `<input_dir>/Results/<file_stem>/`
 
 Typical output files:
-
 - `knf.json`
 - `output.txt`
 - `xtbopt.xyz`
-- xTB/Multiwfn intermediates (`wbo`, `molden.input`, `nci_grid.txt`, etc.)
+- intermediates (`wbo`, `molden.input`, `nci_grid.txt`, etc.)
 
-Batch mode also writes:
-
-- `batch_knf.json` at the batch `Results` root, containing:
-  - per-input status/error/timing
-  - embedded content of each successful `knf.json`
-  - a combined `knf_results` list for ML training pipelines
-
-## Docker
-
-Quick run:
-
-```bash
-docker build -t knf-core:latest .
-docker run --rm -v "$(pwd):/work" -w /work knf-core:latest example.mol --charge 0 --force
-```
-
-Compose:
-
-```bash
-docker compose up --build
-```
-
-Full Docker documentation is in `README.DOCKER.md`.
+Batch mode writes:
+- `batch_knf.json`
+- `batch_knf.csv`
 
 ## Releasing
 
-PyPI release steps are documented in `RELEASE.md`.
+Release steps: `RELEASE.md`
 
 ## License
 
-MIT. See `LICENSE`.
+MIT (`LICENSE`)

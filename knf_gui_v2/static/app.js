@@ -1,7 +1,17 @@
+/* ================================================================
+   KNF GUI V3 - Application Logic
+   ================================================================ */
+
 const state = {
   currentJobId: null,
   pollTimer: null,
   jobsTimer: null,
+  currentJobInFlight: false,
+  jobsInFlight: false,
+  currentJobStatus: null,
+  viewer3d: null,
+  multiwfnDetected: false,
+  multiwfnPath: "",
 };
 
 const els = {
@@ -24,7 +34,21 @@ const els = {
   browseInputFile: document.getElementById("browseInputFile"),
   browseInputDir: document.getElementById("browseInputDir"),
   browseOutputDir: document.getElementById("browseOutputDir"),
+  dropZone: document.getElementById("dropZone"),
+  dropFilename: document.getElementById("dropFilename"),
+  fileInput: document.getElementById("fileInput"),
+  moleculeViewer: document.getElementById("moleculeViewer"),
+  scatterPlot: document.getElementById("scatterPlot"),
+  multiwfnModal: document.getElementById("multiwfnModal"),
+  multiwfnPath: document.getElementById("multiwfnPath"),
+  browseMultiwfnFile: document.getElementById("browseMultiwfnFile"),
+  browseMultiwfnDir: document.getElementById("browseMultiwfnDir"),
+  saveMultiwfnPath: document.getElementById("saveMultiwfnPath"),
+  closeMultiwfnModal: document.getElementById("closeMultiwfnModal"),
+  multiwfnModalNote: document.getElementById("multiwfnModalNote"),
 };
+
+/* ---- Helpers ---- */
 
 function text(v) {
   if (v === null || v === undefined || v === "") return "-";
@@ -50,6 +74,202 @@ async function jsonFetch(url, options = {}) {
   return payload;
 }
 
+/* ---- File Upload ---- */
+
+async function uploadFile(file) {
+  const formData = new FormData();
+  formData.append("file", file);
+  const res = await fetch("/api/upload", { method: "POST", body: formData });
+  const payload = await res.json();
+  if (!res.ok) throw new Error(payload.error || "Upload failed");
+  return payload;
+}
+
+function setupDropZone() {
+  const zone = els.dropZone;
+  const fileInput = els.fileInput;
+
+  zone.addEventListener("click", () => fileInput.click());
+
+  zone.addEventListener("dragover", (e) => {
+    e.preventDefault();
+    zone.classList.add("dragover");
+  });
+
+  zone.addEventListener("dragleave", () => {
+    zone.classList.remove("dragover");
+  });
+
+  zone.addEventListener("drop", async (e) => {
+    e.preventDefault();
+    zone.classList.remove("dragover");
+    const file = e.dataTransfer.files[0];
+    if (file) await handleFileUpload(file);
+  });
+
+  fileInput.addEventListener("change", async () => {
+    const file = fileInput.files[0];
+    if (file) await handleFileUpload(file);
+  });
+}
+
+async function handleFileUpload(file) {
+  try {
+    els.dropFilename.textContent = `Uploading ${file.name}…`;
+    const result = await uploadFile(file);
+    els.inputPath.value = result.path;
+    els.dropFilename.textContent = `✓ ${result.filename}`;
+    fetchMolecule3D(result.path);
+  } catch (err) {
+    els.dropFilename.textContent = `✗ ${err.message}`;
+  }
+}
+
+/* ---- 3D Molecule Viewer (3Dmol.js) ---- */
+
+async function fetchMolecule3D(path) {
+  if (!path) return;
+
+  const container = els.moleculeViewer;
+  container.innerHTML = "Loading 3D structure…";
+  container.style.color = "#6e6e73";
+
+  try {
+    const res = await fetch(`/api/molecule-data?path=${encodeURIComponent(path)}`);
+    if (!res.ok) {
+      const err = await res.json();
+      container.innerHTML = `<span style="color:#c0392b">${err.error || "Render failed"}</span>`;
+      return;
+    }
+
+    const molData = await res.text();
+
+    // Clear container and remove placeholder text
+    container.innerHTML = "";
+    container.style.color = "";
+
+    // Create 3Dmol viewer
+    if (state.viewer3d) {
+      state.viewer3d.clear();
+      state.viewer3d = null;
+    }
+
+    const viewer = $3Dmol.createViewer(container, {
+      backgroundColor: "0xf2f4f9",
+      antialias: true,
+    });
+
+    viewer.addModel(molData, "sdf");
+
+    // Stick + ball style for a tactile, physical look
+    viewer.setStyle({}, {
+      stick: {
+        radius: 0.14,
+        colorscheme: "Jmol",
+      },
+      sphere: {
+        scale: 0.28,
+        colorscheme: "Jmol",
+      },
+    });
+
+    viewer.zoomTo();
+    viewer.spin("y", 0.6);
+    viewer.render();
+
+    state.viewer3d = viewer;
+
+    // Stop spin on user interaction, resume on double-click
+    container.addEventListener("mousedown", () => viewer.spin(false), { once: false });
+    container.addEventListener("dblclick", () => viewer.spin("y", 0.6));
+
+  } catch (err) {
+    container.innerHTML = `<span style="color:#c0392b">${err.message}</span>`;
+  }
+}
+
+/* ---- Scatter Plot (Batch) ---- */
+
+function renderScatterPlot(rows) {
+  if (!rows || rows.length < 2) {
+    els.scatterPlot.style.display = "none";
+    return;
+  }
+
+  const snciVals = rows.map((r) => Number(r.SNCI)).filter((v) => !isNaN(v));
+  const scdiVals = rows.map((r) => Number(r.SCDI)).filter((v) => !isNaN(v));
+
+  if (snciVals.length < 2 || scdiVals.length < 2) {
+    els.scatterPlot.style.display = "none";
+    return;
+  }
+
+  // Min-max normalize SNCI
+  const snciMin = Math.min(...snciVals);
+  const snciMax = Math.max(...snciVals);
+  const snciRange = snciMax - snciMin || 1;
+
+  const points = rows
+    .filter((r) => !isNaN(Number(r.SNCI)) && !isNaN(Number(r.SCDI)))
+    .map((r) => ({
+      x: (Number(r.SNCI) - snciMin) / snciRange,
+      y: Number(r.SCDI),
+      rawSNCI: Number(r.SNCI),
+      label: r.File || "unknown",
+    }));
+
+  const trace = {
+    x: points.map((p) => p.x),
+    y: points.map((p) => p.y),
+    text: points.map((p) => `${p.label}<br>SNCI (raw): ${p.rawSNCI.toFixed(4)}<br>SCDI: ${p.y.toFixed(4)}`),
+    mode: "markers+text",
+    type: "scatter",
+    textposition: "top center",
+    textfont: { family: "-apple-system, BlinkMacSystemFont, Segoe UI, Inter, sans-serif", size: 9, color: "#6e6e73" },
+    marker: {
+      size: 12,
+      color: points.map((p) => p.y),
+      colorscale: [
+        [0, "#8fc3ff"],
+        [0.5, "#2a8cff"],
+        [1, "#005fc1"],
+      ],
+      line: { width: 1.5, color: "#6e6e73" },
+    },
+    hovertemplate: "%{text}<extra></extra>",
+  };
+
+  const layout = {
+    title: {
+      text: "SCDI vs Min-Max Normalised SNCI",
+      font: { family: "-apple-system, BlinkMacSystemFont, Segoe UI, Inter, sans-serif", size: 15, color: "#1d1d1f" },
+    },
+    xaxis: {
+      title: { text: "Normalised SNCI (min-max)", font: { family: "-apple-system, BlinkMacSystemFont, Segoe UI, Inter, sans-serif", size: 12 } },
+      gridcolor: "#e6eaf1",
+      linecolor: "#cad2df",
+      linewidth: 1,
+      zeroline: false,
+    },
+    yaxis: {
+      title: { text: "SCDI", font: { family: "-apple-system, BlinkMacSystemFont, Segoe UI, Inter, sans-serif", size: 12 } },
+      gridcolor: "#e6eaf1",
+      linecolor: "#cad2df",
+      linewidth: 1,
+      zeroline: false,
+    },
+    plot_bgcolor: "#f7f8fb",
+    paper_bgcolor: "#f7f8fb",
+    margin: { t: 50, r: 30, b: 60, l: 70 },
+    font: { family: "-apple-system, BlinkMacSystemFont, Segoe UI, Inter, sans-serif" },
+  };
+
+  els.scatterPlot.style.display = "block";
+  Plotly.newPlot("scatterPlot", [trace], layout, { responsive: true });
+}
+
+/* ---- Form Payload ---- */
+
 function payloadFromForm() {
   return {
     input_path: document.getElementById("inputPath").value.trim(),
@@ -65,8 +285,61 @@ function payloadFromForm() {
     storage_efficient: document.getElementById("storageEfficient").checked,
     refresh_autoconfig: document.getElementById("refreshAutoconfig").checked,
     quiet_config: document.getElementById("quietConfig").checked,
+    multiwfn_path: state.multiwfnPath || null,
   };
 }
+
+function showMultiwfnModal(message = "") {
+  els.multiwfnModal.classList.remove("hidden");
+  if (state.multiwfnPath && !els.multiwfnPath.value) {
+    els.multiwfnPath.value = state.multiwfnPath;
+  }
+  els.multiwfnModalNote.textContent = message || "";
+}
+
+function hideMultiwfnModal() {
+  els.multiwfnModal.classList.add("hidden");
+}
+
+async function refreshDependencyStatus(showPromptIfMissing = false) {
+  const payload = await jsonFetch("/api/dependencies");
+  const dep = payload?.multiwfn || {};
+  state.multiwfnDetected = !!dep.detected;
+  state.multiwfnPath = dep.registered_path || state.multiwfnPath || "";
+  if (state.multiwfnPath) {
+    els.multiwfnPath.value = state.multiwfnPath;
+  }
+  if (!state.multiwfnDetected && showPromptIfMissing) {
+    showMultiwfnModal("Multiwfn is required before launching jobs.");
+  } else if (state.multiwfnDetected) {
+    hideMultiwfnModal();
+  }
+}
+
+async function saveMultiwfnPath() {
+  const rawPath = (els.multiwfnPath.value || "").trim();
+  if (!rawPath) {
+    showMultiwfnModal("Please enter a valid path first.");
+    return;
+  }
+  try {
+    const out = await jsonFetch("/api/multiwfn-path", {
+      method: "POST",
+      body: JSON.stringify({ path: rawPath }),
+    });
+    state.multiwfnPath = out.path || rawPath;
+    await refreshDependencyStatus(false);
+    if (!state.multiwfnDetected) {
+      showMultiwfnModal("Path saved, but Multiwfn is still not detected.");
+      return;
+    }
+    hideMultiwfnModal();
+  } catch (err) {
+    showMultiwfnModal(err.message);
+  }
+}
+
+/* ---- Rendering ---- */
 
 function renderJobMetrics(job) {
   els.metricStatus.textContent = text(job?.status);
@@ -125,6 +398,20 @@ function renderRows(rows) {
 function renderPreview(preview) {
   renderSummary(preview?.summary || {});
   renderRows(preview?.rows || []);
+
+  // Scatter plot for batch results
+  if (preview?.type === "batch" && preview?.rows?.length >= 2) {
+    renderScatterPlot(preview.rows);
+  } else {
+    els.scatterPlot.style.display = "none";
+  }
+
+  // 3D Molecule viewer for single results
+  if (preview?.type === "single" && preview?.artifacts?.knf_json) {
+    const inputPath = els.inputPath.value.trim();
+    if (inputPath) fetchMolecule3D(inputPath);
+  }
+
   if (preview?.output_excerpt) {
     els.outputExcerptWrap.open = true;
     els.outputExcerpt.textContent = preview.output_excerpt;
@@ -163,29 +450,42 @@ function renderHistory(jobs) {
   els.jobHistory.querySelectorAll("li[data-job-id]").forEach((li) => {
     li.addEventListener("click", () => {
       state.currentJobId = li.getAttribute("data-job-id");
+      state.currentJobStatus = null;
       pullCurrentJob();
     });
   });
 }
 
+/* ---- API Polling ---- */
+
 async function pullCurrentJob() {
   if (!state.currentJobId) return;
+  if (state.currentJobInFlight) return;
+  if (["completed", "failed", "cancelled"].includes(state.currentJobStatus)) return;
+  state.currentJobInFlight = true;
   try {
     const job = await jsonFetch(`/api/jobs/${state.currentJobId}`);
+    state.currentJobStatus = job?.status || null;
     renderJobMetrics(job);
     renderLogs(job);
     renderPreview(job.result_preview || {});
   } catch (err) {
     els.logConsole.textContent += `\n[GUI] ${err.message}`;
+  } finally {
+    state.currentJobInFlight = false;
   }
 }
 
 async function pullJobs() {
+  if (state.jobsInFlight) return;
+  state.jobsInFlight = true;
   try {
     const payload = await jsonFetch("/api/jobs");
     renderHistory(payload.jobs || []);
   } catch (err) {
     console.error(err);
+  } finally {
+    state.jobsInFlight = false;
   }
 }
 
@@ -198,8 +498,20 @@ async function checkHealth() {
   }
 }
 
+/* ---- Actions ---- */
+
 async function startRun(event) {
   event.preventDefault();
+  try {
+    await refreshDependencyStatus(true);
+  } catch (err) {
+    alert(err.message);
+    return;
+  }
+  if (!state.multiwfnDetected) {
+    showMultiwfnModal("Set Multiwfn path to continue.");
+    return;
+  }
   const payload = payloadFromForm();
   try {
     const out = await jsonFetch("/api/run", {
@@ -207,6 +519,7 @@ async function startRun(event) {
       body: JSON.stringify(payload),
     });
     state.currentJobId = out.job_id;
+    state.currentJobStatus = "running";
     await pullCurrentJob();
     await pullJobs();
   } catch (err) {
@@ -238,6 +551,23 @@ async function browsePath(mode, targetEl) {
   }
 }
 
+async function browseMultiwfnPath(mode) {
+  try {
+    const payload = await jsonFetch("/api/dialog", {
+      method: "POST",
+      body: JSON.stringify({ mode }),
+    });
+    if (payload.path) {
+      els.multiwfnPath.value = payload.path;
+      els.multiwfnModalNote.textContent = "";
+    }
+  } catch (err) {
+    showMultiwfnModal(err.message);
+  }
+}
+
+/* ---- Init ---- */
+
 function startPolling() {
   if (state.pollTimer) clearInterval(state.pollTimer);
   if (state.jobsTimer) clearInterval(state.jobsTimer);
@@ -251,7 +581,15 @@ function init() {
   els.browseInputFile.addEventListener("click", () => browsePath("file", els.inputPath));
   els.browseInputDir.addEventListener("click", () => browsePath("directory", els.inputPath));
   els.browseOutputDir.addEventListener("click", () => browsePath("directory", els.outputDir));
+  els.browseMultiwfnFile.addEventListener("click", () => browseMultiwfnPath("multiwfn_file"));
+  els.browseMultiwfnDir.addEventListener("click", () => browseMultiwfnPath("multiwfn_directory"));
+  els.saveMultiwfnPath.addEventListener("click", saveMultiwfnPath);
+  els.closeMultiwfnModal.addEventListener("click", hideMultiwfnModal);
+  setupDropZone();
   checkHealth();
+  refreshDependencyStatus(true).catch((err) => {
+    showMultiwfnModal(err.message);
+  });
   pullJobs();
   startPolling();
 }

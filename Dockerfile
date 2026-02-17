@@ -22,6 +22,7 @@ RUN micromamba install -y -n base -c conda-forge \
     python=3.11 \
     numpy \
     scipy \
+    rdkit \
     openbabel \
     xtb \
     && micromamba clean --all --yes
@@ -48,7 +49,9 @@ RUN sed -i 's/\r$//' /app/scripts/docker-entrypoint.sh \
 USER mambauser
 
 HEALTHCHECK --interval=60s --timeout=10s --start-period=30s --retries=3 \
-  CMD bash -lc "command -v knf && command -v xtb && command -v Multiwfn"
+  CMD bash -lc "command -v knf && command -v knf-gui && command -v xtb && command -v obabel && command -v Multiwfn"
+
+EXPOSE 8787
 
 ENTRYPOINT ["/usr/bin/tini", "--", "/app/scripts/docker-entrypoint.sh"]
 CMD ["--help"]

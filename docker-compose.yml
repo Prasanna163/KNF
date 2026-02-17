@@ -1,12 +1,35 @@
 services:
-  knf:
+  knf-cli:
     build:
       context: .
       dockerfile: Dockerfile
     image: knf-core:latest
-    container_name: knf-core
+    container_name: knf-cli
     working_dir: /work
     volumes:
       - ./:/work
+      - knf-cache:/home/mambauser/.knf
     command: ["example.mol", "--charge", "0", "--force"]
+    profiles: ["cli"]
+
+  knf-gui:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: knf-core:latest
+    container_name: knf-gui
+    working_dir: /work
+    volumes:
+      - ./:/work
+      - knf-cache:/home/mambauser/.knf
+    command: ["knf-gui"]
+    ports:
+      - "8787:8787"
+    environment:
+      KNF_GUI_HOST: "0.0.0.0"
+      KNF_GUI_PORT: "8787"
+    profiles: ["gui"]
+
+volumes:
+  knf-cache:
 

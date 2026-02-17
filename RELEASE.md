@@ -32,3 +32,23 @@ python -m twine upload dist/knf-<version>*
 ```bash
 python -m pip index versions KNF
 ```
+
+## 6) Docker smoke test (recommended)
+
+Build:
+
+```bash
+docker build -t knf-core:latest .
+```
+
+CLI smoke run:
+
+```bash
+docker run --rm -v "$(pwd):/work" -w /work knf-core:latest example.mol --charge 0 --force
+```
+
+GUI smoke run:
+
+```bash
+docker run --rm -p 8787:8787 -v "$(pwd):/work" -w /work -e KNF_GUI_HOST=0.0.0.0 knf-core:latest knf-gui
+```

@@ -9,5 +9,16 @@ if [[ $# -eq 0 ]]; then
   exec knf --help
 fi
 
-exec knf "$@"
+case "${1:-}" in
+  knf|knf-gui)
+    exec "$@"
+    ;;
+  gui)
+    shift || true
+    exec knf-gui "$@"
+    ;;
+  *)
+    exec knf "$@"
+    ;;
+esac
 

@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from .pipeline import KNFPipeline
 from . import utils
 from . import autoconfig
+from . import first_run
 import psutil
 from rich.console import Console, Group
 from rich.live import Live
@@ -22,10 +23,10 @@ from rich.table import Table
 CLI_TITLE = "KNF-Core v1.0"
 DISPLAY_NAME_LIMIT = 40
 
-def check_dependencies():
+def check_dependencies(multiwfn_path: str = None):
     """Checks if required external tools are available in PATH."""
     # Attempt to add Multiwfn to PATH if missing
-    utils.ensure_multiwfn_in_path()
+    utils.ensure_multiwfn_in_path(explicit_path=multiwfn_path)
 
     missing = []
     
@@ -545,7 +546,11 @@ def main():
             format='%(asctime)s - %(levelname)s - %(message)s',
             datefmt='%H:%M:%S'
         )
+        first_ok = first_run.ensure_first_run_setup()
         check_dependencies()
+        if not first_ok:
+            print("First-time setup is incomplete. Please install missing tools and run again.")
+            sys.exit(1)
         print("\n------------------------------------------------------------")
         print("      KNF-Core Interactive Mode")
         print("------------------------------------------------------------\n")
@@ -650,6 +655,16 @@ def main():
             "(keeps knf.json, output.txt, and batch aggregates)"
         ),
     )
+    parser.add_argument(
+        '--refresh-first-run',
+        action='store_true',
+        help="Re-run one-time first-run setup and overwrite its cached state"
+    )
+    parser.add_argument(
+        '--multiwfn-path',
+        default=None,
+        help="Path to Multiwfn executable or folder (saved for future runs)"
+    )
     
     args = parser.parse_args()
     args.input_path = utils.resolve_artifacted_path(args.input_path)
@@ -664,7 +679,14 @@ def main():
     else:
         logging.basicConfig(level=logging.WARNING, format='%(levelname)s - %(message)s')
 
-    check_dependencies()
+    first_ok = first_run.ensure_first_run_setup(
+        force=args.refresh_first_run,
+        multiwfn_path=args.multiwfn_path,
+    )
+    check_dependencies(multiwfn_path=args.multiwfn_path)
+    if not first_ok:
+        logging.error("First-time setup is incomplete. Install missing tools and retry.")
+        sys.exit(1)
     
     # If user provided flags, use them.
     # Default behavior for 'knf <file>' without flags is now determined by argparse defaults.
