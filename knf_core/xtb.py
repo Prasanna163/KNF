@@ -139,75 +139,50 @@ def parse_xtb_log(log_path: str) -> dict:
         
     data['f5'] = pol_val
 
-    # --- f3: Max WBO ---
-    # "Wiberg bond orders" block
-    # Sample:
-    # Wiberg/Mayer (AO) data.
-    # ...
-    #      #   Z sym  total        # sym  WBO       # sym  WBO       # sym  WBO
-    #  ---------------------------------------------------------------------------
-    #      1   6 C    3.951 --     2 N    0.992     8 H    0.978     6 H    0.971
-    
-    # Algorithm: Find block, regex for "integer symbol float" patterns?
-    # The lines have multiple entries.
-    # We just need to extract ALL floating point numbers that are WBOs.
-    # In the table: "2 N    0.992". Structure: Int Sym Float.
-    # We can regex for `\d+\s+[A-Za-z]+\s+([\d\.]+)` 
-    # BUT, we must ensure we are in the WBO block to avoid parsing other things.
-    
-    wbo_values = []
-    if "Wiberg bond orders" in content or "Wiberg/Mayer (AO) data" in content:
-        # Extract the block
-        # Start at header, end at empty line or next header? 
-        # Actually, extracting all "Int Sym Float" patterns from the whole file might be risky? 
-        # Best to limit to the block.
-        
-        lines = content.splitlines()
-        in_wbo = False
-        for line in lines:
-            if "Wiberg bond orders" in line or "Wiberg/Mayer (AO) data" in line:
-                in_wbo = True
-                continue
-            
-            if in_wbo:
-                if "Topologies differ" in line or "MOs/occ written" in line or line.strip() == "":
-                    # End of block likely
-                    # But blank lines might exist? 
-                    # If we hit another section header...
-                    if line.strip() == "" and len(wbo_values) > 0: 
-                        # Only stop if we found something? Or continue?
-                        # Sample has blank line after table.
-                        pass # Continue just in case
-                    if "written to" in line:
-                        in_wbo = False
-                        break
-                
-                if "----------------" in line: continue
-                if "#   Z sym" in line: continue
-                
-                # Parse line: 
-                # 1   6 C    3.951 --     2 N    0.992     8 H    0.978 ...
-                # We want [2 N 0.992], [8 H 0.978], etc.
-                # Regex for `\s+\d+\s+[A-Z][a-z]?\s+([\d\.]+)` works for the columns?
-                # The first part is `1 6 C 3.951 --` which is Atom Index / Z / Sym / Total valency?
-                # The WBOs are to the right.
-                
-                # Let's look for pattern: integers followed by element symbol followed by float.
-                # `\b\d+\s+[A-Za-z]{1,2}\s+([\d\.]+)`
-                
-                matches = re.findall(r'\b\d+\s+[A-Za-z]{1,2}\s+([\d\.]+)', line)
-                for m in matches:
-                    try:
-                        val = float(m)
-                        wbo_values.append(val)
-                    except ValueError:
-                        pass
-        
-    if not wbo_values:
-        raise ValueError("WBO section/values not found in xTB log.")
-        
-    f3 = max(wbo_values)
-    data['f3'] = f3
+    # f3 is now computed from the xTB 'wbo' file using fragment membership in pipeline.
+    # Keep a best-effort legacy value from the log for backward compatibility.
+    data['f3'] = 0.0
     
     return data
+
+
+def parse_interfragment_wbo(wbo_path: str, fragments: list[list[int]]) -> float:
+    """
+    Computes max intermolecular WBO from xTB `wbo` file.
+    Atom indices in the file are 1-based; fragment indices are expected 0-based.
+    """
+    if not os.path.exists(wbo_path):
+        raise FileNotFoundError(f"WBO file not found: {wbo_path}")
+
+    if not fragments or len(fragments) < 2:
+        return 0.0
+
+    atom_to_fragment = {}
+    for frag_idx, frag in enumerate(fragments):
+        for atom_idx in frag:
+            atom_to_fragment[int(atom_idx)] = frag_idx
+
+    max_inter_wbo = 0.0
+    with open(wbo_path, "r", encoding="utf-8", errors="replace") as f:
+        for line in f:
+            parts = line.split()
+            if len(parts) < 3:
+                continue
+            try:
+                i_1b = int(parts[0])
+                j_1b = int(parts[1])
+                wbo_val = float(parts[2])
+            except ValueError:
+                continue
+
+            i = i_1b - 1
+            j = j_1b - 1
+            fi = atom_to_fragment.get(i)
+            fj = atom_to_fragment.get(j)
+            if fi is None or fj is None:
+                continue
+            if fi != fj and wbo_val > max_inter_wbo:
+                max_inter_wbo = wbo_val
+
+    return float(max_inter_wbo)
 

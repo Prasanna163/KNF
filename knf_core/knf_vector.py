@@ -31,7 +31,7 @@ def write_output_txt(filepath: str, result: KNFResult):
         f.write("KNF Vector Components:\n")
         f.write(f"f1 (COM Dist):  {vec[0]:.4f} A\n")
         f.write(f"f2 (HB Angle):  {vec[1]:.2f} deg\n")
-        f.write(f"f3 (Max WBO):   {vec[2]:.4f}\n")
+        f.write(f"f3 (Max Inter WBO):   {vec[2]:.4f}\n")
         f.write(f"f4 (Dipole):    {vec[3]:.4f} D\n")
         f.write(f"f5 (Pol):       {vec[4]:.4f} au\n")
         f.write(f"f6 (NCI Count): {vec[5]:.0f}\n")

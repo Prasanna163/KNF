@@ -56,7 +56,8 @@ def process_file(file_path: str, args, output_root: str = None):
             force=args.force,
             clean=args.clean,
             debug=args.debug,
-            output_root=output_root
+            output_root=output_root,
+            storage_efficient=args.storage_efficient,
         )
         pipeline.run()
         return True, None, time.perf_counter() - start
@@ -303,12 +304,16 @@ def write_batch_aggregate_json(
 def run_batch_directory(directory: str, args):
     """Runs the pipeline for all valid files in a directory using a queue."""
     valid_exts = {'.xyz', '.sdf', '.mol', '.pdb', '.mol2'}
-    
-    files = sorted(
-        os.path.join(directory, f)
-        for f in os.listdir(directory)
-        if os.path.splitext(f)[1].lower() in valid_exts
-    )
+
+    files = []
+    for entry in os.listdir(directory):
+        full_path = os.path.join(directory, entry)
+        if not os.path.isfile(full_path):
+            continue
+        ext = utils.normalized_extension(entry)
+        if ext in valid_exts:
+            files.append(full_path)
+    files.sort()
     
     if not files:
         print(f"No molecular files found in {directory}.")
@@ -552,6 +557,7 @@ def main():
                 sys.exit(0)
                 
             input_path = input_path.strip('"').strip("'")
+            input_path = utils.resolve_artifacted_path(input_path)
             
             if not os.path.exists(input_path):
                 print(f"Error: Path '{input_path}' not found.")
@@ -571,6 +577,7 @@ def main():
             ram_per_job = 50.0
             refresh_autoconfig = False
             quiet_config = False
+            storage_efficient = False
             
         args = Args()
         
@@ -635,8 +642,17 @@ def main():
         action='store_true',
         help="Hide auto-configuration summary banner"
     )
+    parser.add_argument(
+        '--storage-efficient',
+        action='store_true',
+        help=(
+            "Delete heavy intermediate files after each successful molecule run "
+            "(keeps knf.json, output.txt, and batch aggregates)"
+        ),
+    )
     
     args = parser.parse_args()
+    args.input_path = utils.resolve_artifacted_path(args.input_path)
 
     # Configure logging after CLI args are known.
     if args.debug:

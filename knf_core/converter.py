@@ -1,6 +1,6 @@
 import os
 import logging
-from .utils import run_subprocess
+from .utils import run_subprocess, normalized_extension
 
 def ensure_xyz(input_path: str, output_dir: str) -> str:
     """
@@ -10,7 +10,7 @@ def ensure_xyz(input_path: str, output_dir: str) -> str:
     """
     filename = os.path.basename(input_path)
     base, ext = os.path.splitext(filename)
-    ext = ext.lower()
+    ext = normalized_extension(filename) or ext.lower()
     
     target_xyz = os.path.join(output_dir, f"{base}.xyz")
     

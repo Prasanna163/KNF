@@ -15,6 +15,7 @@ Current package version in this branch: `1.0.1`
 - Automatic input conversion to XYZ when needed (via Open Babel)
 - Single-file and directory processing modes
 - Auto-configured multi-worker batch mode
+- Internal UTF/filename artifact normalization for robust file discovery
 - Dockerized runtime (`Dockerfile`, `docker-compose.yml`, container entrypoint)
 - Updated fragment handling rules
 
@@ -67,6 +68,7 @@ Useful options:
 - `--output-dir <path>`: custom results root
 - `--ram-per-job <MB>`: RAM hint for auto worker selection
 - `--refresh-autoconfig`: regenerate auto-config cache
+- `--storage-efficient`: delete heavy intermediates after each successful molecule
 
 Example:
 

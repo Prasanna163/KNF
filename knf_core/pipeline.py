@@ -15,13 +15,15 @@ class KNFPipeline:
         clean: bool = False,
         debug: bool = False,
         output_root: str = None,
+        storage_efficient: bool = False,
     ):
-        self.input_file = os.path.abspath(input_file)
+        self.input_file = utils.resolve_artifacted_path(input_file)
         self.charge = charge
         self.spin = spin
         self.force = force
         self.clean = clean
         self.debug = debug
+        self.storage_efficient = storage_efficient
         
         self.base_name = Path(self.input_file).stem
         default_output_root = os.path.join(os.path.dirname(self.input_file), "Results")
@@ -29,6 +31,64 @@ class KNFPipeline:
         self.work_dir = os.path.join(self.output_root, self.base_name)
         self.input_dir = os.path.join(self.work_dir, 'input')
         self.results_dir = self.work_dir
+
+    def _cleanup_storage_heavy_files(self):
+        """Deletes large intermediate files to reduce per-job storage."""
+        heavy_names = [
+            "nci_grid.txt",
+            "nci_grid_data.txt",
+            "xtb_esp.dat",
+            "xtb_esp_profile.dat",
+            "xtb_esp.cosmo",
+            "xtb.cosmo",
+            "xtbrestart",
+            "molden.input",
+            "wbo",
+            "charges",
+            "dislin.png",
+            "multiwfn.inp",
+            "xtb.log",
+            "xtb_opt.log",
+            "xtbopt.xyz",
+            "input.xyz",
+        ]
+        removed = 0
+        skipped = 0
+
+        for name in heavy_names:
+            path = os.path.join(self.results_dir, name)
+            if not os.path.exists(path):
+                continue
+            try:
+                if os.path.isdir(path):
+                    shutil.rmtree(path)
+                else:
+                    os.remove(path)
+                removed += 1
+            except Exception as e:
+                skipped += 1
+                logging.warning(f"Storage cleanup skipped for {path}: {e}")
+
+        for cosmo_path in Path(self.results_dir).glob("*.cosmo"):
+            try:
+                if cosmo_path.is_file():
+                    cosmo_path.unlink()
+                    removed += 1
+            except Exception as e:
+                skipped += 1
+                logging.warning(f"Storage cleanup skipped for {cosmo_path}: {e}")
+
+        if os.path.isdir(self.input_dir):
+            try:
+                shutil.rmtree(self.input_dir)
+                removed += 1
+            except Exception as e:
+                skipped += 1
+                logging.warning(f"Storage cleanup skipped for {self.input_dir}: {e}")
+
+        logging.info(
+            f"Storage-efficient cleanup complete for {self.base_name}: removed={removed}, skipped={skipped}"
+        )
 
     def _stage(self, index: int, name: str):
         if self.debug:
@@ -165,9 +225,10 @@ class KNFPipeline:
         xtb_log = os.path.join(self.results_dir, 'xtb.log')
         try:
             xtb_data = xtb.parse_xtb_log(xtb_log)
-            f3 = xtb_data.get('f3', 0.0)
             f4 = xtb_data.get('f4', 0.0)
             f5 = xtb_data.get('f5', 0.0)
+            # f3 must reflect intermolecular contact strength only.
+            f3 = xtb.parse_interfragment_wbo(wbo_file, fragments)
         except Exception as e:
             logging.error(f"Failed to extract xTB descriptors: {e}")
             raise e
@@ -252,6 +313,9 @@ class KNFPipeline:
         
         knf_vector.write_output_txt(final_output_txt, result)
         knf_vector.write_knf_json(final_json, result)
+
+        if self.storage_efficient:
+            self._cleanup_storage_heavy_files()
         
         logging.info("KNF-Core pipeline completed (potentially with warnings).")
         logging.info(f"Results saved to {self.results_dir}")
