@@ -1,4 +1,4 @@
-﻿FROM mambaorg/micromamba:1.5.8
+FROM mambaorg/micromamba:1.5.8
 
 USER root
 
@@ -9,7 +9,13 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     KNF_IN_DOCKER=1 \
     MULTIWFN_HOME=/opt/Multiwfn \
-    PATH="/opt/Multiwfn:${PATH}"
+    KNF_MULTIWFN_PATH=/opt/Multiwfn/Multiwfn \
+    MAMBA_ROOT_PREFIX=/opt/conda \
+    XTBHOME=/opt/conda \
+    OMP_NUM_THREADS=4 \
+    OPENBLAS_NUM_THREADS=4 \
+    MKL_NUM_THREADS=4 \
+    PATH="/opt/conda/bin:/opt/conda/condabin:/opt/Multiwfn:${PATH}"
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     wget \
@@ -39,7 +45,7 @@ RUN wget "${MULTIWFN_URL}" -O Multiwfn.zip \
 WORKDIR /app
 COPY . /app
 
-RUN pip install --no-cache-dir .
+RUN pip install --no-cache-dir ".[torch-nci]"
 
 RUN sed -i 's/\r$//' /app/scripts/docker-entrypoint.sh \
     && chmod +x /app/scripts/docker-entrypoint.sh \

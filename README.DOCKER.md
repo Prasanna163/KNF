@@ -1,4 +1,4 @@
-﻿# KNF-CORE Docker Guide
+# KNF-CORE Docker Guide
 
 This guide covers containerized KNF CLI usage.
 
@@ -7,9 +7,15 @@ This guide covers containerized KNF CLI usage.
 The Docker image installs:
 - Python 3.11
 - KNF package (`knf`)
-- xTB
+- xTB (from conda-forge)
 - Open Babel (`obabel`)
 - Multiwfn (Linux no-GUI binary)
+
+Runtime environment exported in image/entrypoint:
+- `PATH=/opt/conda/bin:/opt/conda/condabin:/opt/Multiwfn:$PATH`
+- `KNF_MULTIWFN_PATH=/opt/Multiwfn/Multiwfn`
+- `XTBHOME=/opt/conda`
+- `OMP_NUM_THREADS`, `OPENBLAS_NUM_THREADS`, `MKL_NUM_THREADS` (default `4`)
 
 ## Files
 
@@ -23,6 +29,10 @@ The Docker image installs:
 ```bash
 docker build -t knf-core:latest .
 ```
+
+Build includes:
+- `xtb` install via `micromamba install -c conda-forge xtb`
+- optional torch extra via `pip install .[torch-nci]`
 
 ## Run: CLI
 
@@ -60,6 +70,11 @@ example.mol --charge 0 --force
 
 Edit `command` to run your own inputs/options.
 
+Compose also provides default environment wiring for Multiwfn/xTB:
+- `KNF_MULTIWFN_PATH=/opt/Multiwfn/Multiwfn`
+- `XTBHOME=/opt/conda`
+- thread env vars for BLAS/OMP
+
 ## Output Behavior
 
 With `-v "$(pwd):/work"`:
@@ -81,6 +96,8 @@ knf --help
 xtb --version
 obabel -V
 command -v Multiwfn
+echo "$KNF_MULTIWFN_PATH"
+echo "$XTBHOME"
 ```
 
 ## Windows PowerShell Notes
