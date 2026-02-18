@@ -16,6 +16,7 @@ Current package version in this branch: `1.0.3`
 - Automatic multiprocessing recommendation + worker auto-config
 - One-time first-run setup (dependency checks + multiprocessing suggestion)
 - Multiwfn detection (auto + manual path registration)
+- Optional experimental GPU NCI backend (`--nci-backend torch`)
 - Dockerized runtime for CLI
 
 Fragment handling:
@@ -30,6 +31,9 @@ Fragment handling:
   - `xtb`
   - `obabel` (Open Babel)
   - `Multiwfn`
+
+Optional for experimental NCI backend:
+- `torch` with CUDA support (or CPU fallback)
 
 ## Install
 
@@ -101,6 +105,14 @@ Useful options:
 - `--storage-efficient`
 - `--refresh-first-run`
 - `--multiwfn-path <path>`
+- `--nci-backend <multiwfn|torch>`
+- `--nci-grid-spacing <float>`
+- `--nci-grid-padding <float>`
+- `--nci-device <auto|cuda|cpu>`
+- `--nci-dtype <float32|float64>`
+- `--nci-batch-size <int>`
+- `--nci-rho-floor <float>`
+- `--nci-apply-primitive-norm` (optional; default off, usually keep off for xTB Molden)
 
 Examples:
 
@@ -108,7 +120,16 @@ Examples:
 knf example.mol --charge 0 --force
 knf ./molecules --processing multi --force
 knf ./molecules --processing multi --workers 4 --ram-per-job 200
+knf example.mol --nci-backend torch --nci-device cuda --nci-grid-spacing 0.2
 ```
+
+## Experimental Torch NCI Backend
+
+Set `--nci-backend torch` to run the internal Molden parser + grid + density/derivatives/Hessian/eigen/RDG path instead of Multiwfn.
+
+Current scope:
+- Cartesians shells are supported for basis expansion.
+- If a Molden file uses spherical `d/f/g` shells, the backend will stop with a clear error.
 
 ## Python API
 

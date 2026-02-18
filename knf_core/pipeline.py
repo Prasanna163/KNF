@@ -16,6 +16,14 @@ class KNFPipeline:
         debug: bool = False,
         output_root: str = None,
         storage_efficient: bool = False,
+        nci_backend: str = "multiwfn",
+        nci_grid_spacing: float = 0.2,
+        nci_grid_padding: float = 3.0,
+        nci_device: str = "auto",
+        nci_dtype: str = "float32",
+        nci_batch_size: int = 250000,
+        nci_rho_floor: float = 1e-12,
+        nci_apply_primitive_norm: bool = False,
     ):
         self.input_file = utils.resolve_artifacted_path(input_file)
         self.charge = charge
@@ -24,6 +32,14 @@ class KNFPipeline:
         self.clean = clean
         self.debug = debug
         self.storage_efficient = storage_efficient
+        self.nci_backend = (nci_backend or "multiwfn").strip().lower()
+        self.nci_grid_spacing = nci_grid_spacing
+        self.nci_grid_padding = nci_grid_padding
+        self.nci_device = nci_device
+        self.nci_dtype = nci_dtype
+        self.nci_batch_size = nci_batch_size
+        self.nci_rho_floor = nci_rho_floor
+        self.nci_apply_primitive_norm = bool(nci_apply_primitive_norm)
         
         self.base_name = Path(self.input_file).stem
         default_output_root = os.path.join(os.path.dirname(self.input_file), "Results")
@@ -233,46 +249,61 @@ class KNFPipeline:
             logging.error(f"Failed to extract xTB descriptors: {e}")
             raise e
             
-        # 5. Multiwfn
-        # Inputs: molden.input
-        # Output: output.txt (the grid text file)
-        # Note: The plan calls the final report 'output.txt' too.
-        # We should distinguish them. Let's call grid file 'grid_data.txt'.
-        # I need to modify `multiwfn.py` or rename the file after generation.
-        # Multiwfn's output file depends on settings.
-        # If we can't control it easily, we might collide.
-        # BUT, the plan says: "Column 1/2/3... The file will be saved as output.txt"
-        # AND "17. OUTPUT FILES ... output.txt Human-readable..."
-        # This is a collision in the spec.
-        # I will name the grid file `nci_grid.txt` to avoid collision with the final report.
-        # I'll check if Multiwfn produced `output.txt` and rename it.
-        
-        # 5. Multiwfn
-        # Inputs: molden.input
-        # Output: output.txt (the grid text file)
-        
-        nci_grid_file = os.path.join(self.results_dir, 'output.txt') # Initial name
+        # 5. NCI grid generation (Multiwfn or experimental torch backend)
+        nci_grid_file = os.path.join(self.results_dir, 'output.txt')
         final_grid_path = os.path.join(self.results_dir, 'nci_grid.txt')
-        
-        multiwfn_success = False
-        
+
+        nci_success = False
+        nci_engine_metadata = None
+
         if not os.path.exists(final_grid_path) or self.force:
-             self._stage(4, "NCI (Multiwfn)")
-             multiwfn.run_multiwfn(molden_file, self.results_dir)
-             if os.path.exists(nci_grid_file):
-                 os.rename(nci_grid_file, final_grid_path)
-                 multiwfn_success = True
-             else:
-                 raise RuntimeError("Multiwfn executed but did not produce expected output.")
+            if self.nci_backend == "multiwfn":
+                self._stage(4, "NCI (Multiwfn)")
+                multiwfn.run_multiwfn(molden_file, self.results_dir)
+                if os.path.exists(nci_grid_file):
+                    os.replace(nci_grid_file, final_grid_path)
+                    nci_success = True
+                else:
+                    raise RuntimeError("Multiwfn executed but did not produce expected output.")
+            elif self.nci_backend == "torch":
+                self._stage(4, "NCI (Torch Experimental)")
+                from .nci_torch import run_nci_torch
+                nci_engine_metadata = run_nci_torch(
+                    molden_path=molden_file,
+                    output_path=final_grid_path,
+                    spacing_angstrom=self.nci_grid_spacing,
+                    padding_angstrom=self.nci_grid_padding,
+                    device=self.nci_device,
+                    dtype=self.nci_dtype,
+                    batch_size=self.nci_batch_size,
+                    rho_floor=self.nci_rho_floor,
+                    output_units="bohr",
+                    apply_primitive_normalization=self.nci_apply_primitive_norm,
+                )
+                nci_success = os.path.exists(final_grid_path)
+                if not nci_success:
+                    raise RuntimeError("Torch NCI backend finished without producing nci_grid.txt.")
+                logging.info(
+                    "Torch NCI backend done: device=%s basis=%s grid=%s elapsed=%.2fs",
+                    nci_engine_metadata.get("device"),
+                    nci_engine_metadata.get("n_basis"),
+                    nci_engine_metadata.get("grid_shape"),
+                    nci_engine_metadata.get("elapsed_seconds", 0.0),
+                )
+            else:
+                raise ValueError(
+                    f"Unsupported nci_backend '{self.nci_backend}'. "
+                    "Use 'multiwfn' or 'torch'."
+                )
         else:
-             multiwfn_success = True
+            nci_success = True
 
 
         # 6. SNCI
         f6 = f7 = f8 = f9 = 0.0
         snci_val = 0.0
         
-        if multiwfn_success and os.path.exists(final_grid_path):
+        if nci_success and os.path.exists(final_grid_path):
             try:
                 snci_val = snci.compute_snci(final_grid_path)
                 nci_stats = snci.compute_nci_statistics(final_grid_path)
@@ -303,7 +334,9 @@ class KNFPipeline:
                 'spin': self.spin,
                 'fragments': len(fragments),
                 'geometry_fragment_pair': pair_indices,
-                'multiwfn_status': 'success' if multiwfn_success else 'skipped'
+                'nci_backend': self.nci_backend,
+                'nci_status': 'success' if nci_success else 'skipped',
+                'nci_engine_metadata': nci_engine_metadata,
             }
         )
         

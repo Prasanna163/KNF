@@ -50,13 +50,18 @@ def _run_cmd(cmd: List[str]) -> bool:
         return False
 
 
-def _check_tools(explicit_multiwfn_path: Optional[str] = None) -> Dict[str, bool]:
+def _check_tools(
+    explicit_multiwfn_path: Optional[str] = None,
+    require_multiwfn: bool = True,
+) -> Dict[str, bool]:
     utils.ensure_multiwfn_in_path(explicit_path=explicit_multiwfn_path)
-    return {
+    status = {
         "xtb": _tool_exists(["xtb"]),
         "obabel": _tool_exists(["obabel"]),
-        "multiwfn": _tool_exists(["Multiwfn", "Multiwfn.exe"]),
     }
+    if require_multiwfn:
+        status["multiwfn"] = _tool_exists(["Multiwfn", "Multiwfn.exe"])
+    return status
 
 
 def _try_install_with_conda(status: Dict[str, bool]) -> None:
@@ -145,7 +150,11 @@ def _print_autoconfig_hint(cfg: autoconfig.MultiConfig) -> None:
     print("")
 
 
-def ensure_first_run_setup(force: bool = False, multiwfn_path: Optional[str] = None) -> bool:
+def ensure_first_run_setup(
+    force: bool = False,
+    multiwfn_path: Optional[str] = None,
+    require_multiwfn: bool = True,
+) -> bool:
     resolved_multiwfn = None
     if multiwfn_path:
         resolved_multiwfn = utils.register_multiwfn_path(multiwfn_path, persist=True)
@@ -159,14 +168,23 @@ def ensure_first_run_setup(force: bool = False, multiwfn_path: Optional[str] = N
     print("")
     print("Running KNF-Core first-time setup...")
 
-    status = _check_tools(explicit_multiwfn_path=resolved_multiwfn)
+    status = _check_tools(
+        explicit_multiwfn_path=resolved_multiwfn,
+        require_multiwfn=require_multiwfn,
+    )
     if not all(status.values()):
         _try_install_with_conda(status)
-        status = _check_tools(explicit_multiwfn_path=resolved_multiwfn)
+        status = _check_tools(
+            explicit_multiwfn_path=resolved_multiwfn,
+            require_multiwfn=require_multiwfn,
+        )
 
     if not all(status.values()):
         _try_install_openbabel_with_winget(status)
-        status = _check_tools(explicit_multiwfn_path=resolved_multiwfn)
+        status = _check_tools(
+            explicit_multiwfn_path=resolved_multiwfn,
+            require_multiwfn=require_multiwfn,
+        )
 
     cfg = _run_one_time_autoconfig(force=force)
     _print_autoconfig_hint(cfg)

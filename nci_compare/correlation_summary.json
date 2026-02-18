@@ -1,0 +1,32 @@
+{
+  "n_points": 1762490,
+  "grid_shape": [
+    158,
+    97,
+    115
+  ],
+  "device_used": "cpu",
+  "assumption": "Multiwfn coordinates treated as angstrom",
+  "apply_primitive_normalization": false,
+  "files": {
+    "multiwfn_output": "E:\\Prasanna\\KNF-CORE\\nci_compare\\output.txt",
+    "custom_output": "E:\\Prasanna\\KNF-CORE\\nci_compare\\custom_torch_output_units_fixed.txt"
+  },
+  "all_points": {
+    "n": 1762490,
+    "pearson_sl2rho": 0.07174997035552365,
+    "pearson_rdg": 0.40382602324879113,
+    "spearman_sl2rho": 0.9509954219589888,
+    "spearman_rdg": 0.32318222524622137,
+    "mae_sl2rho": 0.015489639503361593,
+    "mae_rdg": 51.497651344774724,
+    "rmse_sl2rho": 0.600642041083646,
+    "rmse_rdg": 869.1188378103967
+  },
+  "plots": {
+    "overlay_plot": "E:\\Prasanna\\KNF-CORE\\nci_compare\\scatter_overlay_rdg_vs_sl2rho.png",
+    "parity_plot": "E:\\Prasanna\\KNF-CORE\\nci_compare\\parity_multiwfn_vs_custom.png",
+    "overlay_low_rdg_plot": "E:\\Prasanna\\KNF-CORE\\nci_compare\\scatter_overlay_low_rdg_le_2.png",
+    "parity_quantile_clipped_plot": "E:\\Prasanna\\KNF-CORE\\nci_compare\\parity_quantile_clipped_99_9.png"
+  }
+}

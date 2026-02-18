@@ -1,0 +1,142 @@
+{
+  "generated_at_utc": "2026-02-18T09:01:43.147066+00:00",
+  "input": "e:\\Prasanna\\KNF-CORE\\\\molden.input",
+  "grid": {
+    "shape": [
+      158,
+      97,
+      115
+    ],
+    "n_points": 1762490
+  },
+  "environment": {
+    "torch_cuda_available": false,
+    "custom_device_used": "cpu",
+    "custom_dtype": "float64",
+    "custom_batch_size": 120000,
+    "apply_primitive_normalization": false
+  },
+  "timing": {
+    "multiwfn": {
+      "runs": [
+        20.82625939999707,
+        21.685458399937488,
+        20.97532540000975
+      ],
+      "avg_seconds": 21.16234773331477,
+      "min_seconds": 20.82625939999707,
+      "max_seconds": 21.685458399937488,
+      "std_seconds": 0.37486775022736896
+    },
+    "custom_total": {
+      "runs": [
+        8.220684600062668,
+        8.63544959994033,
+        8.652531299972907
+      ],
+      "avg_seconds": 8.502888499991968,
+      "min_seconds": 8.220684600062668,
+      "max_seconds": 8.652531299972907,
+      "std_seconds": 0.19967010620935136
+    },
+    "custom_compute_only": {
+      "runs": [
+        4.373323800042272,
+        4.463351899990812,
+        4.530309700057842
+      ],
+      "avg_seconds": 4.455661800030309,
+      "min_seconds": 4.373323800042272,
+      "max_seconds": 4.530309700057842,
+      "std_seconds": 0.06431949641685407
+    },
+    "custom_write_only": {
+      "runs": [
+        3.847359500010498,
+        4.172095299931243,
+        4.12221989990212
+      ],
+      "avg_seconds": 4.047224899947953,
+      "min_seconds": 3.847359500010498,
+      "max_seconds": 4.172095299931243,
+      "std_seconds": 0.14278543915291372
+    },
+    "derived": {
+      "speedup_custom_vs_multiwfn": 2.4888422014865608,
+      "throughput_points_per_second": {
+        "multiwfn": 83284.23775143836,
+        "custom_total": 207281.32563441998,
+        "custom_compute_only": 395561.8893669199
+      },
+      "custom_time_breakdown_fraction": {
+        "compute_fraction": 0.5240174324330511,
+        "write_fraction": 0.4759823558725692
+      }
+    }
+  },
+  "correlation": {
+    "all_points": {
+      "n": 1762490,
+      "pearson_sl2rho": 0.07174997035552365,
+      "pearson_rdg": 0.40382602324879113,
+      "spearman_sl2rho": 0.9509954219589888,
+      "spearman_rdg": 0.32318222524622137,
+      "mae_sl2rho": 0.015489639503361593,
+      "mae_rdg": 51.497651344774724,
+      "rmse_sl2rho": 0.600642041083646,
+      "rmse_rdg": 869.1188378103967
+    },
+    "trimmed_99_9pct": {
+      "n": 1758964,
+      "pearson_sl2rho": 0.6461904183607781,
+      "pearson_rdg": 0.7302511933659458,
+      "spearman_sl2rho": 0.956688303686988,
+      "spearman_rdg": 0.32952170560775446,
+      "mae_sl2rho": 0.004984597078421668,
+      "mae_rdg": 28.396248471000554,
+      "rmse_sl2rho": 0.0823649238670196,
+      "rmse_rdg": 363.14972667484665,
+      "quantile": 0.999
+    },
+    "low_rdg_region": {
+      "n": 346893,
+      "pearson_sl2rho": 0.9900953111610613,
+      "pearson_rdg": 0.9989565944965898,
+      "spearman_sl2rho": 0.9898756728785998,
+      "spearman_rdg": 0.9992799159385664,
+      "mae_sl2rho": 0.00022648704688152236,
+      "mae_rdg": 0.008945248083195708,
+      "rmse_sl2rho": 0.0033390690550405516,
+      "rmse_rdg": 0.01759291013580337,
+      "threshold": 2.0
+    },
+    "attractive_region": {
+      "n": 975694,
+      "pearson_sl2rho": 0.045926083754138834,
+      "pearson_rdg": 0.9722754973471582,
+      "spearman_sl2rho": 0.9281884801555058,
+      "spearman_rdg": 0.2010817300066304,
+      "mae_sl2rho": 0.027591195291156504,
+      "mae_rdg": 18.422895253557435,
+      "rmse_sl2rho": 0.8071847215503628,
+      "rmse_rdg": 42.55745566928596
+    }
+  },
+  "time_quality_indices": {
+    "low_rdg_pearson_rdg_per_second": 0.11748438127790731,
+    "low_rdg_pearson_sl2rho_per_second": 0.1164422315030941,
+    "trimmed_pearson_rdg_per_second": 0.08588272013288609,
+    "all_points_spearman_sl2rho_per_second": 0.11184380719091955
+  },
+  "conclusion": {
+    "speed": "Custom method is faster than Multiwfn on this system.",
+    "quality": "Correlation is excellent in low-RDG region and weaker over full grid due to outlier-dominated ranges.",
+    "recommended_reference_files": [
+      "nci_compare/correlation_summary.json",
+      "nci_compare/correlation_subsets.json",
+      "nci_compare/time_analysis.json",
+      "nci_compare/scatter_overlay_low_rdg_le_2.png",
+      "nci_compare/parity_quantile_clipped_99_9.png"
+    ]
+  }
+}

@@ -1,0 +1,83 @@
+{
+  "generated_at_utc": "2026-02-18T08:54:21.243467+00:00",
+  "summary": {
+    "n_points": 1762490,
+    "grid_shape": [
+      158,
+      97,
+      115
+    ],
+    "device_used": "cpu",
+    "assumption": "Multiwfn coordinates treated as angstrom",
+    "apply_primitive_normalization": false,
+    "files": {
+      "multiwfn_output": "E:\\Prasanna\\KNF-CORE\\nci_compare\\output.txt",
+      "custom_output": "E:\\Prasanna\\KNF-CORE\\nci_compare\\custom_torch_output_units_fixed.txt"
+    },
+    "all_points": {
+      "n": 1762490,
+      "pearson_sl2rho": 0.07174997035552365,
+      "pearson_rdg": 0.40382602324879113,
+      "spearman_sl2rho": 0.9509954219589888,
+      "spearman_rdg": 0.32318222524622137,
+      "mae_sl2rho": 0.015489639503361593,
+      "mae_rdg": 51.497651344774724,
+      "rmse_sl2rho": 0.600642041083646,
+      "rmse_rdg": 869.1188378103967
+    },
+    "plots": {
+      "overlay_plot": "E:\\Prasanna\\KNF-CORE\\nci_compare\\scatter_overlay_rdg_vs_sl2rho.png",
+      "parity_plot": "E:\\Prasanna\\KNF-CORE\\nci_compare\\parity_multiwfn_vs_custom.png",
+      "overlay_low_rdg_plot": "E:\\Prasanna\\KNF-CORE\\nci_compare\\scatter_overlay_low_rdg_le_2.png",
+      "parity_quantile_clipped_plot": "E:\\Prasanna\\KNF-CORE\\nci_compare\\parity_quantile_clipped_99_9.png"
+    }
+  },
+  "subsets": {
+    "all_points": {
+      "n": 1762490,
+      "pearson_sl2rho": 0.07174997035552365,
+      "pearson_rdg": 0.40382602324879113,
+      "spearman_sl2rho": 0.9509954219589888,
+      "spearman_rdg": 0.32318222524622137,
+      "mae_sl2rho": 0.015489639503361593,
+      "mae_rdg": 51.497651344774724,
+      "rmse_sl2rho": 0.600642041083646,
+      "rmse_rdg": 869.1188378103967
+    },
+    "attractive_points_sl2rho_lt_0": {
+      "n": 975694,
+      "pearson_sl2rho": 0.045926083754138834,
+      "pearson_rdg": 0.9722754973471582,
+      "spearman_sl2rho": 0.9281884801555058,
+      "spearman_rdg": 0.2010817300066304,
+      "mae_sl2rho": 0.027591195291156504,
+      "mae_rdg": 18.422895253557435,
+      "rmse_sl2rho": 0.8071847215503628,
+      "rmse_rdg": 42.55745566928596
+    },
+    "trimmed": {
+      "n": 1758964,
+      "pearson_sl2rho": 0.6461904183607781,
+      "pearson_rdg": 0.7302511933659458,
+      "spearman_sl2rho": 0.956688303686988,
+      "spearman_rdg": 0.32952170560775446,
+      "mae_sl2rho": 0.004984597078421668,
+      "mae_rdg": 28.396248471000554,
+      "rmse_sl2rho": 0.0823649238670196,
+      "rmse_rdg": 363.14972667484665,
+      "quantile": 0.999
+    },
+    "low_rdg": {
+      "n": 346893,
+      "pearson_sl2rho": 0.9900953111610613,
+      "pearson_rdg": 0.9989565944965898,
+      "spearman_sl2rho": 0.9898756728785998,
+      "spearman_rdg": 0.9992799159385664,
+      "mae_sl2rho": 0.00022648704688152236,
+      "mae_rdg": 0.008945248083195708,
+      "rmse_sl2rho": 0.0033390690550405516,
+      "rmse_rdg": 0.01759291013580337,
+      "threshold": 2.0
+    }
+  }
+}

@@ -1,0 +1,62 @@
+{
+  "input": "e:\\Prasanna\\KNF-CORE\\\\molden.input",
+  "grid": {
+    "shape": [
+      158,
+      97,
+      115
+    ],
+    "n_points": 1762490
+  },
+  "environment": {
+    "torch_cuda_available": false,
+    "custom_device_used": "cpu",
+    "custom_dtype": "float64",
+    "custom_batch_size": 120000,
+    "apply_primitive_normalization": false
+  },
+  "multiwfn": {
+    "runs": [
+      20.82625939999707,
+      21.685458399937488,
+      20.97532540000975
+    ],
+    "avg_seconds": 21.16234773331477,
+    "min_seconds": 20.82625939999707,
+    "max_seconds": 21.685458399937488,
+    "std_seconds": 0.37486775022736896
+  },
+  "custom_total": {
+    "runs": [
+      8.220684600062668,
+      8.63544959994033,
+      8.652531299972907
+    ],
+    "avg_seconds": 8.502888499991968,
+    "min_seconds": 8.220684600062668,
+    "max_seconds": 8.652531299972907,
+    "std_seconds": 0.19967010620935136
+  },
+  "custom_compute_only": {
+    "runs": [
+      4.373323800042272,
+      4.463351899990812,
+      4.530309700057842
+    ],
+    "avg_seconds": 4.455661800030309,
+    "min_seconds": 4.373323800042272,
+    "max_seconds": 4.530309700057842,
+    "std_seconds": 0.06431949641685407
+  },
+  "custom_write_only": {
+    "runs": [
+      3.847359500010498,
+      4.172095299931243,
+      4.12221989990212
+    ],
+    "avg_seconds": 4.047224899947953,
+    "min_seconds": 3.847359500010498,
+    "max_seconds": 4.172095299931243,
+    "std_seconds": 0.14278543915291372
+  }
+}

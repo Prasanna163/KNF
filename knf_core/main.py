@@ -23,7 +23,7 @@ from rich.table import Table
 CLI_TITLE = "KNF-Core v1.0"
 DISPLAY_NAME_LIMIT = 40
 
-def check_dependencies(multiwfn_path: str = None):
+def check_dependencies(multiwfn_path: str = None, nci_backend: str = "multiwfn"):
     """Checks if required external tools are available in PATH."""
     # Attempt to add Multiwfn to PATH if missing
     utils.ensure_multiwfn_in_path(explicit_path=multiwfn_path)
@@ -36,7 +36,8 @@ def check_dependencies(multiwfn_path: str = None):
     if not shutil.which('xtb'):
         missing.append('xtb (Extended Tight Binding)')
         
-    if not shutil.which('Multiwfn') and not shutil.which('Multiwfn.exe'):
+    backend = (nci_backend or "multiwfn").strip().lower()
+    if backend == "multiwfn" and not shutil.which('Multiwfn') and not shutil.which('Multiwfn.exe'):
         missing.append('Multiwfn')
         
     if missing:
@@ -59,6 +60,14 @@ def process_file(file_path: str, args, output_root: str = None):
             debug=args.debug,
             output_root=output_root,
             storage_efficient=args.storage_efficient,
+            nci_backend=args.nci_backend,
+            nci_grid_spacing=args.nci_grid_spacing,
+            nci_grid_padding=args.nci_grid_padding,
+            nci_device=args.nci_device,
+            nci_dtype=args.nci_dtype,
+            nci_batch_size=args.nci_batch_size,
+            nci_rho_floor=args.nci_rho_floor,
+            nci_apply_primitive_norm=args.nci_apply_primitive_norm,
         )
         pipeline.run()
         return True, None, time.perf_counter() - start
@@ -583,6 +592,14 @@ def main():
             refresh_autoconfig = False
             quiet_config = False
             storage_efficient = False
+            nci_backend = "multiwfn"
+            nci_grid_spacing = 0.2
+            nci_grid_padding = 3.0
+            nci_device = "auto"
+            nci_dtype = "float32"
+            nci_batch_size = 250000
+            nci_rho_floor = 1e-12
+            nci_apply_primitive_norm = False
             
         args = Args()
         
@@ -656,6 +673,55 @@ def main():
         ),
     )
     parser.add_argument(
+        '--nci-backend',
+        choices=['multiwfn', 'torch'],
+        default='multiwfn',
+        help="NCI backend: 'multiwfn' (default) or experimental 'torch'"
+    )
+    parser.add_argument(
+        '--nci-grid-spacing',
+        type=float,
+        default=0.2,
+        help="NCI grid spacing in angstrom (used by torch backend)"
+    )
+    parser.add_argument(
+        '--nci-grid-padding',
+        type=float,
+        default=3.0,
+        help="NCI box padding in angstrom around atoms (used by torch backend)"
+    )
+    parser.add_argument(
+        '--nci-device',
+        default='auto',
+        help="Torch device for NCI backend: auto/cuda/cpu"
+    )
+    parser.add_argument(
+        '--nci-dtype',
+        choices=['float32', 'float64'],
+        default='float32',
+        help="Floating-point precision for torch NCI backend"
+    )
+    parser.add_argument(
+        '--nci-batch-size',
+        type=int,
+        default=250000,
+        help="Grid points per batch during torch density evaluation"
+    )
+    parser.add_argument(
+        '--nci-rho-floor',
+        type=float,
+        default=1e-12,
+        help="Density floor used to stabilize RDG (torch backend)"
+    )
+    parser.add_argument(
+        '--nci-apply-primitive-norm',
+        action='store_true',
+        help=(
+            "Apply gaussian primitive normalization when parsing Molden. "
+            "Default is off (recommended for xTB Molden files)."
+        )
+    )
+    parser.add_argument(
         '--refresh-first-run',
         action='store_true',
         help="Re-run one-time first-run setup and overwrite its cached state"
@@ -682,8 +748,9 @@ def main():
     first_ok = first_run.ensure_first_run_setup(
         force=args.refresh_first_run,
         multiwfn_path=args.multiwfn_path,
+        require_multiwfn=(args.nci_backend == "multiwfn"),
     )
-    check_dependencies(multiwfn_path=args.multiwfn_path)
+    check_dependencies(multiwfn_path=args.multiwfn_path, nci_backend=args.nci_backend)
     if not first_ok:
         logging.error("First-time setup is incomplete. Install missing tools and retry.")
         sys.exit(1)
