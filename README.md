@@ -1,25 +1,27 @@
-﻿# KNF-CORE
+# KNF-CORE (KNF-GPU Branch)
 
-KNF-CORE is an automated computational chemistry pipeline for generating KNF descriptors from molecular structure files.
-
-It combines xTB + Multiwfn + KNF post-processing to produce:
+KNF-CORE is an automated computational chemistry pipeline that generates:
 - SNCI
 - SCDI variance
-- 9D KNF vector (`f1` ... `f9`)
+- 9D KNF vector (`f1` to `f9`)
+
+from molecular structure files using xTB + NCI backend + KNF post-processing.
 
 Current package version in this branch: `1.0.3`
 
-## What Is Included
+## Branch Highlights
 
-- Automatic input conversion to XYZ when needed (Open Babel)
-- Single-file and directory processing
-- Automatic multiprocessing recommendation + worker auto-config
-- One-time first-run setup (dependency checks + multiprocessing suggestion)
-- Multiwfn detection (auto + manual path registration)
-- Optional experimental GPU NCI backend (`--nci-backend torch`)
-- Dockerized runtime for CLI
+This `KNF-GPU` branch includes:
+- Torch-based NCI backend (`--nci-backend torch`) with CPU/CUDA execution.
+- Multiwfn backend still supported (`--nci-backend multiwfn`).
+- GPU overlap scheduler in batch mode (CPU pre-NCI + single GPU post-NCI lane) when using `torch + cuda`.
+- Storage-efficient default output behavior (intermediates removed by default, keep with `--full-files`).
+- Robust filename/path artifact handling for mojibake/Unicode path variants.
+- xTB optimization capped to 50 cycles (`--cycles 50`) and pipeline continues if `xtbopt.xyz` exists.
+- Batch aggregate outputs: `batch_knf.json` and `batch_knf.csv`.
 
-Fragment handling:
+## Fragment Handling
+
 - `1` fragment: `f1 = 0.0`, `f2 = 180.0`
 - `2` fragments: `f1` = COM distance, `f2` = detected H-bond angle
 - `>2` fragments: `f1` = average COM distance over unique pairs, `f2 = 180.0`
@@ -30,10 +32,10 @@ Fragment handling:
 - External tools in `PATH`:
   - `xtb`
   - `obabel` (Open Babel)
-  - `Multiwfn`
+- `Multiwfn` is required only when using `--nci-backend multiwfn`
 
-Optional for experimental NCI backend:
-- `torch` with CUDA support (or CPU fallback)
+Optional:
+- `torch` (for Torch NCI backend; CUDA optional)
 
 ## Install
 
@@ -43,6 +45,12 @@ From source:
 git clone https://github.com/Prasanna163/KNF.git
 cd KNF
 pip install -e .
+```
+
+Install with Torch extra:
+
+```bash
+pip install -e ".[torch-nci]"
 ```
 
 From PyPI:
@@ -55,10 +63,10 @@ pip install KNF
 
 On first execution, KNF runs one-time setup that:
 - checks external dependencies
-- attempts automatic install for some tools when possible
-- computes and prints a multiprocessing recommendation
+- attempts automatic install for some tools (when available)
+- computes multiprocessing recommendation
 
-One-time state is stored under:
+State file:
 - `~/.knf/first_run_state.json`
 
 Force refresh:
@@ -67,110 +75,81 @@ Force refresh:
 knf <input_path> --refresh-first-run
 ```
 
-## Multiwfn Detection and Manual Path Setup
+## Multiwfn Detection and Path Registration
 
-KNF checks Multiwfn in this order:
+Search order:
 - current `PATH`
 - `KNF_MULTIWFN_PATH` env var
-- saved path from `~/.knf/tool_paths.json`
+- saved path `~/.knf/tool_paths.json`
 - common local locations + shallow scan
 
-Manual setup via CLI (saved for future runs):
+Manual registration:
 
 ```bash
 knf <input_path> --multiwfn-path "E:\path\to\Multiwfn.exe"
 ```
 
-You can also provide the folder containing `Multiwfn.exe`.
+You can also pass a folder containing `Multiwfn.exe`.
 
 ## CLI Usage
 
-Basic run:
+Basic:
 
 ```bash
 knf input_molecule.sdf
 ```
 
-Useful options:
+### Core options
+
 - `--charge <int>`
 - `--spin <int>`
 - `--force`
 - `--clean`
 - `--debug`
-- `--processing <auto|single|multi>` (alias: `--processes`)
-- `--multi` (shortcut for multi-processing mode)
-- `--single` (shortcut for single-processing mode)
-- `--torch` (shortcut for torch backend, auto device)
-- `--gpu` (shortcut for torch backend on CUDA)
-- `--cpu` (shortcut for torch backend on CPU)
+- `--processing <auto|single|multi>`
+- `--multi` / `--single` (shortcuts)
 - `--workers <int>`
 - `--output-dir <path>`
 - `--ram-per-job <MB>`
 - `--refresh-autoconfig`
-- `--storage-efficient`
+- `--quiet-config`
+- `--full-files`
 - `--refresh-first-run`
 - `--multiwfn-path <path>`
 
-Advanced NCI tuning flags are still supported but hidden from default `--help`.
-`--gpu` now defaults to `float64` for better CUDA eigensolver stability.
+### Backend options
 
-Examples:
+- `--gpu` shortcut: sets `torch + cuda + float64`
+- `--multiwfn` shortcut: sets `multiwfn + auto`
+- `--nci-backend <torch|multiwfn>`
+
+### Advanced NCI options (hidden in default `--help`, but supported)
+
+- `--nci-grid-spacing <float>`
+- `--nci-grid-padding <float>`
+- `--nci-device <cpu|cuda|auto>`
+- `--nci-dtype <float32|float64>`
+- `--nci-batch-size <int>`
+- `--nci-eig-batch-size <int>`
+- `--nci-rho-floor <float>`
+- `--nci-apply-primitive-norm`
+
+### Examples
 
 ```bash
-knf example.mol --charge 0 --force
-knf ./molecules --processing multi --force
+knf example.mol --force
 knf ./molecules --processing multi --workers 4 --ram-per-job 200
-knf example.mol --nci-backend torch --nci-device cuda --nci-grid-spacing 0.2
+knf example.mol --nci-backend torch --nci-device cuda --nci-dtype float64
+knf example.mol --gpu
+knf example.mol --multiwfn
 ```
 
-## Experimental Torch NCI Backend
+## Torch NCI Backend Notes
 
-Set `--nci-backend torch` to run the internal Molden parser + grid + density/derivatives/Hessian/eigen/RDG path instead of Multiwfn.
-For GPU execution, use `--nci-device cuda` (or `--nci-device auto` to use CUDA when available).
-
-For comparison runs, `scripts/compare_nci.py` now defaults to minimal output:
-- one focused plot (`RDG` low region)
-- summary + subsets JSON
-- no large custom grid dump unless `--save-custom-grid` is set
-
-Current scope:
-- Cartesians shells are supported for basis expansion.
-- If a Molden file uses spherical `d/f/g` shells, the backend will stop with a clear error.
-
-## Python API
-
-```python
-from knf_core.pipeline import KNFPipeline
-
-pipeline = KNFPipeline(
-    input_file="test.sdf",
-    charge=0,
-    spin=1,
-)
-pipeline.run()
-```
-
-## Docker
-
-Build image:
-
-```bash
-docker build -t knf-core:latest .
-```
-
-Run CLI on a single file:
-
-```bash
-docker run --rm -v "$(pwd):/work" -w /work knf-core:latest example.mol --charge 0 --force
-```
-
-Use Compose:
-
-```bash
-docker compose up --build
-```
-
-Full container guide: `README.DOCKER.md`
+- Uses internal Molden parser + grid + RDG pipeline.
+- Supports Cartesian shells for basis expansion.
+- Spherical `d/f/g` shell Molden inputs are currently not supported.
+- SNCI/statistics can be computed from either text grid (`.txt`) or compressed grid (`.npz`).
 
 ## Output Layout
 
@@ -178,19 +157,45 @@ Default output root:
 - file input: `<input_parent>/Results/<input_stem>/`
 - directory input: `<input_dir>/Results/<file_stem>/`
 
-Typical output files:
+Final outputs:
 - `knf.json`
 - `output.txt`
-- `xtbopt.xyz`
-- intermediates (`wbo`, `molden.input`, `nci_grid.txt`, etc.)
 
-Batch mode writes:
+Batch root outputs:
 - `batch_knf.json`
 - `batch_knf.csv`
 
+When `--full-files` is used, intermediate artifacts are retained (for example NCI grid artifacts and xTB/Multiwfn intermediates). Without it, storage-efficient cleanup runs automatically.
+
+## Compare Script
+
+Use `scripts/compare_nci.py` to compare Multiwfn and Torch NCI outputs/correlation and timing behavior.
+
+## Docker
+
+Build:
+
+```bash
+docker build -t knf-core:latest .
+```
+
+Run:
+
+```bash
+docker run --rm -v "$(pwd):/work" -w /work knf-core:latest example.mol --charge 0 --force
+```
+
+Compose:
+
+```bash
+docker compose up --build
+```
+
+See `README.DOCKER.md` for full details.
+
 ## Releasing
 
-Release steps: `RELEASE.md`
+Release steps are documented in `RELEASE.md`.
 
 ## License
 
