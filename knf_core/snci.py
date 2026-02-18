@@ -28,21 +28,43 @@ def parse_grid_file(filepath: str):
                 continue
     return np.array(data)
 
+def _axis_step(axis: np.ndarray) -> float:
+    if axis.size < 2:
+        return 1.0
+    return float(abs(axis[1] - axis[0]))
+
+
 def compute_delta_v(data: np.ndarray) -> float:
-    """Estimates volume element deltaV from grid data."""
+    """Estimates volume element deltaV from text-grid rows."""
     if len(data) < 2:
-        return 1.0 # Fallback
-        
-    # Assuming regular grid, find unique sorted coordinates
-    xs = sorted(list(set(data[:, 0])))
-    ys = sorted(list(set(data[:, 1])))
-    zs = sorted(list(set(data[:, 2])))
-    
-    dx = xs[1] - xs[0] if len(xs) > 1 else 1.0
-    dy = ys[1] - ys[0] if len(ys) > 1 else 1.0
-    dz = zs[1] - zs[0] if len(zs) > 1 else 1.0
-    
-    return dx * dy * dz
+        return 1.0
+
+    xs = np.unique(data[:, 0])
+    ys = np.unique(data[:, 1])
+    zs = np.unique(data[:, 2])
+    return _axis_step(xs) * _axis_step(ys) * _axis_step(zs)
+
+
+def _load_grid_payload(grid_path: str) -> tuple[np.ndarray, float]:
+    ext = os.path.splitext(grid_path)[1].lower()
+
+    if ext == ".npz":
+        with np.load(grid_path) as payload:
+            required = {"x", "y", "z", "sign_lambda2_rho", "rdg"}
+            missing = required.difference(payload.files)
+            if missing:
+                raise ValueError(f"Incomplete NCI NPZ payload, missing keys: {sorted(missing)}")
+            x = np.asarray(payload["x"], dtype=np.float64)
+            y = np.asarray(payload["y"], dtype=np.float64)
+            z = np.asarray(payload["z"], dtype=np.float64)
+            sl2rho = np.asarray(payload["sign_lambda2_rho"], dtype=np.float64).reshape(-1)
+            delta_v = _axis_step(x) * _axis_step(y) * _axis_step(z)
+        return sl2rho, float(delta_v)
+
+    data = parse_grid_file(grid_path)
+    if len(data) == 0:
+        return np.array([], dtype=np.float64), 1.0
+    return np.asarray(data[:, 3], dtype=np.float64), float(compute_delta_v(data))
 
 def compute_snci(grid_path: str) -> float:
     """
@@ -55,29 +77,16 @@ def compute_snci(grid_path: str) -> float:
     if not os.path.exists(grid_path):
         logging.warning(f"Grid file not found: {grid_path}")
         return 0.0
-        
-    data = parse_grid_file(grid_path)
-    if len(data) == 0:
+
+    sl2rho, delta_v = _load_grid_payload(grid_path)
+    if sl2rho.size == 0:
         return 0.0
-        
-    # Filter: sign(lambda2)rho < 0
-    # Column 3 (0-indexed) is sign(lambda2)rho
-    # Wait, col 3 is index 3.
-    
-    attractive_points = data[data[:, 3] < 0]
-    
-    if len(attractive_points) == 0:
+
+    attractive = sl2rho[sl2rho < 0.0]
+    if attractive.size == 0:
         return 0.0
-        
-    delta_v = compute_delta_v(data)
-    
-    # SNCI = sum( -1 * (sign(lambda2)rho) * deltaV )
-    # Since term is negative, -term is positive.
-    # It sums the magnitude of attractive density.
-    
-    sl2rho = attractive_points[:, 3]
-    snci = np.sum( -sl2rho * delta_v )
-    
+
+    snci = np.sum(-attractive * delta_v)
     return float(snci)
 
 def compute_nci_statistics(grid_path: str) -> dict:
@@ -88,30 +97,19 @@ def compute_nci_statistics(grid_path: str) -> dict:
     
     if not os.path.exists(grid_path):
         return stats
-        
-    data = parse_grid_file(grid_path)
-    if len(data) == 0:
+
+    sl2rho, _ = _load_grid_payload(grid_path)
+    if sl2rho.size == 0:
         return stats
-        
-    # Attractive points only
-    attractive = data[data[:, 3] < 0]
-    if len(attractive) == 0:
+
+    attractive = sl2rho[sl2rho < 0.0]
+    if attractive.size == 0:
         return stats
-        
-    xi = attractive[:, 3] # sign(lambda2)rho values
-    
-    # f6 = count
-    stats['f6'] = len(xi)
-    
-    # f7 = mean(xi)
-    stats['f7'] = float(np.mean(xi))
-    
-    # f8 = std(xi)
-    stats['f8'] = float(np.std(xi))
-    
-    # f9 = skewness(xi)
-    # manual skewness or scipy
+
+    stats['f6'] = int(attractive.size)
+    stats['f7'] = float(np.mean(attractive))
+    stats['f8'] = float(np.std(attractive))
     from scipy.stats import skew
-    stats['f9'] = float(skew(xi))
-    
+    stats['f9'] = float(skew(attractive))
+
     return stats

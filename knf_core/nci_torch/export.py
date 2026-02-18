@@ -8,6 +8,39 @@ from .types import GridSpec
 BOHR_TO_ANGSTROM = 1.0 / ANGSTROM_TO_BOHR
 
 
+def write_nci_grid_npz(
+    output_path: str,
+    grid: GridSpec,
+    sign_lambda2_rho: torch.Tensor,
+    rdg: torch.Tensor,
+    output_units: str = "bohr",
+) -> None:
+    unit = output_units.strip().lower()
+    if unit not in {"bohr", "angstrom", "angs"}:
+        raise ValueError("output_units must be 'bohr' or 'angstrom'.")
+
+    x = grid.x_bohr
+    y = grid.y_bohr
+    z = grid.z_bohr
+    if unit in {"angstrom", "angs"}:
+        x = x * BOHR_TO_ANGSTROM
+        y = y * BOHR_TO_ANGSTROM
+        z = z * BOHR_TO_ANGSTROM
+
+    sl2 = sign_lambda2_rho.detach().cpu().numpy()
+    rdg_np = rdg.detach().cpu().numpy()
+
+    np.savez_compressed(
+        output_path,
+        x=np.asarray(x, dtype=np.float64),
+        y=np.asarray(y, dtype=np.float64),
+        z=np.asarray(z, dtype=np.float64),
+        sign_lambda2_rho=np.asarray(sl2, dtype=np.float64),
+        rdg=np.asarray(rdg_np, dtype=np.float64),
+        output_units=np.asarray([unit]),
+    )
+
+
 def write_nci_grid_text(
     output_path: str,
     grid: GridSpec,

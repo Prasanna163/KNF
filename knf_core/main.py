@@ -23,7 +23,7 @@ from rich.table import Table
 CLI_TITLE = "KNF-Core v1.0"
 DISPLAY_NAME_LIMIT = 40
 
-def check_dependencies(multiwfn_path: str = None, nci_backend: str = "multiwfn"):
+def check_dependencies(multiwfn_path: str = None, nci_backend: str = "torch"):
     """Checks if required external tools are available in PATH."""
     # Attempt to add Multiwfn to PATH if missing
     utils.ensure_multiwfn_in_path(explicit_path=multiwfn_path)
@@ -59,13 +59,14 @@ def process_file(file_path: str, args, output_root: str = None):
             clean=args.clean,
             debug=args.debug,
             output_root=output_root,
-            storage_efficient=args.storage_efficient,
+            keep_full_files=args.full_files,
             nci_backend=args.nci_backend,
             nci_grid_spacing=args.nci_grid_spacing,
             nci_grid_padding=args.nci_grid_padding,
             nci_device=args.nci_device,
             nci_dtype=args.nci_dtype,
             nci_batch_size=args.nci_batch_size,
+            nci_eig_batch_size=args.nci_eig_batch_size,
             nci_rho_floor=args.nci_rho_floor,
             nci_apply_primitive_norm=args.nci_apply_primitive_norm,
         )
@@ -331,6 +332,8 @@ def run_batch_directory(directory: str, args):
 
     results_root = resolve_results_root(directory, args.output_dir)
     mode = args.processing.lower()
+    if mode == "auto":
+        mode = "multi" if len(files) > 1 else "single"
     workers = 1
     failures = []
     batch_records = []
@@ -555,17 +558,11 @@ def main():
             format='%(asctime)s - %(levelname)s - %(message)s',
             datefmt='%H:%M:%S'
         )
-        first_ok = first_run.ensure_first_run_setup()
-        check_dependencies()
-        if not first_ok:
-            print("First-time setup is incomplete. Please install missing tools and run again.")
-            sys.exit(1)
         print("\n------------------------------------------------------------")
         print("      KNF-Core Interactive Mode")
         print("------------------------------------------------------------\n")
         
         while True:
-            # Only ask for input path. No other prompts.
             input_path = input("Enter path to input file or folder (or 'q' to quit): ").strip()
             if input_path.lower() == 'q':
                 sys.exit(0)
@@ -577,6 +574,13 @@ def main():
                 print(f"Error: Path '{input_path}' not found.")
                 continue
             break
+
+        nci_mode = input(
+            "Run mode [default/gpu/multiwfn] (default: default): "
+        ).strip().lower()
+        if nci_mode not in {"", "default", "gpu", "multiwfn"}:
+            print(f"Unknown mode '{nci_mode}'. Using default.")
+            nci_mode = "default"
         
         # Define defaults for interactive mode
         class Args:
@@ -586,26 +590,42 @@ def main():
             clean = True # "Just do this" often implies fresh run.
             debug = True # Helpful for user to see what's happening.
             output_dir = None
-            processing = 'single'
+            processing = 'auto'
             workers = None
             ram_per_job = 50.0
             refresh_autoconfig = False
             quiet_config = False
-            storage_efficient = False
-            nci_backend = "multiwfn"
+            full_files = False
+            nci_backend = "torch"
             nci_grid_spacing = 0.2
             nci_grid_padding = 3.0
-            nci_device = "auto"
+            nci_device = "cpu"
             nci_dtype = "float32"
             nci_batch_size = 250000
+            nci_eig_batch_size = 200000
             nci_rho_floor = 1e-12
             nci_apply_primitive_norm = False
             
         args = Args()
+
+        if nci_mode == "gpu":
+            args.nci_backend = "torch"
+            args.nci_device = "cuda"
+        elif nci_mode == "multiwfn":
+            args.nci_backend = "multiwfn"
+            args.nci_device = "auto"
+
+        first_ok = first_run.ensure_first_run_setup(
+            require_multiwfn=(args.nci_backend == "multiwfn"),
+        )
+        check_dependencies(nci_backend=args.nci_backend)
+        if not first_ok:
+            print("First-time setup is incomplete. Please install missing tools and run again.")
+            sys.exit(1)
         
         if os.path.isdir(input_path):
-            mode = input("Processing mode [single/multi] (default: single): ").strip().lower()
-            if mode in {'single', 'multi'}:
+            mode = input("Processing mode [auto/single/multi] (default: auto): ").strip().lower()
+            if mode in {'auto', 'single', 'multi'}:
                 args.processing = mode
             run_batch_directory(input_path, args)
         else:
@@ -633,9 +653,19 @@ def main():
         '--processing',
         '--processes',
         dest='processing',
-        choices=['single', 'multi'],
-        default='single',
-        help="Batch processing mode for directories (alias: --processes)"
+        choices=['auto', 'single', 'multi'],
+        default='auto',
+        help="Processing mode: auto (default), single, multi"
+    )
+    parser.add_argument(
+        '--multi',
+        action='store_true',
+        help="Shortcut for --processing multi"
+    )
+    parser.add_argument(
+        '--single',
+        action='store_true',
+        help="Shortcut for --processing single"
     )
     parser.add_argument(
         '--workers',
@@ -665,61 +695,74 @@ def main():
         help="Hide auto-configuration summary banner"
     )
     parser.add_argument(
-        '--storage-efficient',
+        '--full-files',
         action='store_true',
         help=(
-            "Delete heavy intermediate files after each successful molecule run "
-            "(keeps knf.json, output.txt, and batch aggregates)"
+            "Keep all intermediate and large files. "
+            "Default behavior is storage-efficient cleanup."
         ),
+    )
+    parser.add_argument(
+        '--gpu',
+        action='store_true',
+        help="Shortcut: use torch NCI backend on CUDA"
+    )
+    parser.add_argument(
+        '--multiwfn',
+        action='store_true',
+        help="Use Multiwfn backend for NCI instead of default Torch backend"
     )
     parser.add_argument(
         '--nci-backend',
         choices=['multiwfn', 'torch'],
-        default='multiwfn',
-        help="NCI backend: 'multiwfn' (default) or experimental 'torch'"
+        default='torch',
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         '--nci-grid-spacing',
         type=float,
         default=0.2,
-        help="NCI grid spacing in angstrom (used by torch backend)"
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         '--nci-grid-padding',
         type=float,
         default=3.0,
-        help="NCI box padding in angstrom around atoms (used by torch backend)"
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         '--nci-device',
-        default='auto',
-        help="Torch device for NCI backend: auto/cuda/cpu"
+        default='cpu',
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         '--nci-dtype',
         choices=['float32', 'float64'],
         default='float32',
-        help="Floating-point precision for torch NCI backend"
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         '--nci-batch-size',
         type=int,
         default=250000,
-        help="Grid points per batch during torch density evaluation"
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        '--nci-eig-batch-size',
+        type=int,
+        default=200000,
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         '--nci-rho-floor',
         type=float,
         default=1e-12,
-        help="Density floor used to stabilize RDG (torch backend)"
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         '--nci-apply-primitive-norm',
         action='store_true',
-        help=(
-            "Apply gaussian primitive normalization when parsing Molden. "
-            "Default is off (recommended for xTB Molden files)."
-        )
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         '--refresh-first-run',
@@ -734,6 +777,24 @@ def main():
     
     args = parser.parse_args()
     args.input_path = utils.resolve_artifacted_path(args.input_path)
+
+    if args.multi and args.single:
+        parser.error("Use only one of --multi or --single.")
+    if args.gpu and args.multiwfn:
+        parser.error("Use only one of --gpu or --multiwfn.")
+
+    if args.multi:
+        args.processing = "multi"
+    elif args.single:
+        args.processing = "single"
+
+    if args.multiwfn:
+        args.nci_backend = "multiwfn"
+        args.nci_device = "auto"
+    elif args.gpu:
+        args.nci_backend = "torch"
+        args.nci_device = "cuda"
+        args.nci_dtype = "float64"
 
     # Configure logging after CLI args are known.
     if args.debug:

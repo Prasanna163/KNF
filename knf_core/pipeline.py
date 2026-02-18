@@ -15,13 +15,15 @@ class KNFPipeline:
         clean: bool = False,
         debug: bool = False,
         output_root: str = None,
-        storage_efficient: bool = False,
-        nci_backend: str = "multiwfn",
+        keep_full_files: bool = False,
+        storage_efficient=None,
+        nci_backend: str = "torch",
         nci_grid_spacing: float = 0.2,
         nci_grid_padding: float = 3.0,
         nci_device: str = "auto",
         nci_dtype: str = "float32",
         nci_batch_size: int = 250000,
+        nci_eig_batch_size: int = 200000,
         nci_rho_floor: float = 1e-12,
         nci_apply_primitive_norm: bool = False,
     ):
@@ -31,13 +33,17 @@ class KNFPipeline:
         self.force = force
         self.clean = clean
         self.debug = debug
-        self.storage_efficient = storage_efficient
-        self.nci_backend = (nci_backend or "multiwfn").strip().lower()
+        if storage_efficient is not None:
+            self.keep_full_files = not bool(storage_efficient)
+        else:
+            self.keep_full_files = bool(keep_full_files)
+        self.nci_backend = (nci_backend or "torch").strip().lower()
         self.nci_grid_spacing = nci_grid_spacing
         self.nci_grid_padding = nci_grid_padding
         self.nci_device = nci_device
         self.nci_dtype = nci_dtype
         self.nci_batch_size = nci_batch_size
+        self.nci_eig_batch_size = nci_eig_batch_size
         self.nci_rho_floor = nci_rho_floor
         self.nci_apply_primitive_norm = bool(nci_apply_primitive_norm)
         
@@ -52,6 +58,7 @@ class KNFPipeline:
         """Deletes large intermediate files to reduce per-job storage."""
         heavy_names = [
             "nci_grid.txt",
+            "nci_grid.npz",
             "nci_grid_data.txt",
             "xtb_esp.dat",
             "xtb_esp_profile.dat",
@@ -251,38 +258,43 @@ class KNFPipeline:
             
         # 5. NCI grid generation (Multiwfn or experimental torch backend)
         nci_grid_file = os.path.join(self.results_dir, 'output.txt')
-        final_grid_path = os.path.join(self.results_dir, 'nci_grid.txt')
+        final_grid_text_path = os.path.join(self.results_dir, 'nci_grid.txt')
+        final_grid_binary_path = os.path.join(self.results_dir, 'nci_grid.npz')
+        nci_data_path = final_grid_binary_path if self.nci_backend == "torch" else final_grid_text_path
 
         nci_success = False
         nci_engine_metadata = None
 
-        if not os.path.exists(final_grid_path) or self.force:
+        if not os.path.exists(nci_data_path) or self.force:
             if self.nci_backend == "multiwfn":
                 self._stage(4, "NCI (Multiwfn)")
                 multiwfn.run_multiwfn(molden_file, self.results_dir)
                 if os.path.exists(nci_grid_file):
-                    os.replace(nci_grid_file, final_grid_path)
+                    os.replace(nci_grid_file, final_grid_text_path)
                     nci_success = True
                 else:
                     raise RuntimeError("Multiwfn executed but did not produce expected output.")
             elif self.nci_backend == "torch":
                 self._stage(4, "NCI (Torch Experimental)")
                 from .nci_torch import run_nci_torch
+                text_export_path = final_grid_text_path if self.keep_full_files else None
                 nci_engine_metadata = run_nci_torch(
                     molden_path=molden_file,
-                    output_path=final_grid_path,
+                    output_path=final_grid_binary_path,
+                    output_text_path=text_export_path,
                     spacing_angstrom=self.nci_grid_spacing,
                     padding_angstrom=self.nci_grid_padding,
                     device=self.nci_device,
                     dtype=self.nci_dtype,
                     batch_size=self.nci_batch_size,
+                    eig_batch_size=self.nci_eig_batch_size,
                     rho_floor=self.nci_rho_floor,
                     output_units="bohr",
                     apply_primitive_normalization=self.nci_apply_primitive_norm,
                 )
-                nci_success = os.path.exists(final_grid_path)
+                nci_success = os.path.exists(final_grid_binary_path)
                 if not nci_success:
-                    raise RuntimeError("Torch NCI backend finished without producing nci_grid.txt.")
+                    raise RuntimeError("Torch NCI backend finished without producing nci_grid.npz.")
                 logging.info(
                     "Torch NCI backend done: device=%s basis=%s grid=%s elapsed=%.2fs",
                     nci_engine_metadata.get("device"),
@@ -303,10 +315,10 @@ class KNFPipeline:
         f6 = f7 = f8 = f9 = 0.0
         snci_val = 0.0
         
-        if nci_success and os.path.exists(final_grid_path):
+        if nci_success and os.path.exists(nci_data_path):
             try:
-                snci_val = snci.compute_snci(final_grid_path)
-                nci_stats = snci.compute_nci_statistics(final_grid_path)
+                snci_val = snci.compute_snci(nci_data_path)
+                nci_stats = snci.compute_nci_statistics(nci_data_path)
                 f6 = nci_stats['f6']
                 f7 = nci_stats['f7']
                 f8 = nci_stats['f8']
@@ -336,6 +348,7 @@ class KNFPipeline:
                 'geometry_fragment_pair': pair_indices,
                 'nci_backend': self.nci_backend,
                 'nci_status': 'success' if nci_success else 'skipped',
+                'nci_data_path': nci_data_path,
                 'nci_engine_metadata': nci_engine_metadata,
             }
         )
@@ -347,7 +360,7 @@ class KNFPipeline:
         knf_vector.write_output_txt(final_output_txt, result)
         knf_vector.write_knf_json(final_json, result)
 
-        if self.storage_efficient:
+        if not self.keep_full_files:
             self._cleanup_storage_heavy_files()
         
         logging.info("KNF-Core pipeline completed (potentially with warnings).")
