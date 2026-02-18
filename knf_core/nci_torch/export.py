@@ -30,13 +30,13 @@ def write_nci_grid_npz(
     sl2 = sign_lambda2_rho.detach().cpu().numpy()
     rdg_np = rdg.detach().cpu().numpy()
 
-    np.savez_compressed(
+    np.savez(
         output_path,
-        x=np.asarray(x, dtype=np.float64),
-        y=np.asarray(y, dtype=np.float64),
-        z=np.asarray(z, dtype=np.float64),
-        sign_lambda2_rho=np.asarray(sl2, dtype=np.float64),
-        rdg=np.asarray(rdg_np, dtype=np.float64),
+        x=np.asarray(x),
+        y=np.asarray(y),
+        z=np.asarray(z),
+        sign_lambda2_rho=np.asarray(sl2),
+        rdg=np.asarray(rdg_np),
         output_units=np.asarray([unit]),
     )
 

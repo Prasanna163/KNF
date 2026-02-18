@@ -1,0 +1,248 @@
+{
+  "generated_at_utc": "2026-02-18T10:01:36.553655+00:00",
+  "input": "e:\\Prasanna\\KNF-CORE\\molden.input",
+  "reference_multiwfn_output": "e:\\Prasanna\\KNF-CORE\\nci_compare\\comprehensive_benchmark\\multiwfn_run_1\\output.txt",
+  "grid": {
+    "shape": [
+      158,
+      97,
+      115
+    ],
+    "n_points": 1762490,
+    "coord_unit_assumed_for_multiwfn_output": "angstrom"
+  },
+  "environment": {
+    "python": "3.14.2 (tags/v3.14.2:df79316, Dec  5 2025, 17:18:21) [MSC v.1944 64 bit (AMD64)]",
+    "torch_version": "2.10.0+cu128",
+    "torch_cuda_compiled": "12.8",
+    "cuda_available": true,
+    "cuda_device_count": 1,
+    "cuda_device_name": "NVIDIA GeForce RTX 3050 6GB Laptop GPU"
+  },
+  "methods": {
+    "multiwfn": {
+      "timing": {
+        "runs": [
+          22.48401290003676,
+          21.428009400027804,
+          23.282827699906193
+        ],
+        "avg_seconds": 22.398283333323587,
+        "min_seconds": 21.428009400027804,
+        "max_seconds": 23.282827699906193,
+        "std_seconds": 0.7596489980456151
+      }
+    },
+    "torch_cpu": {
+      "label": "torch_cpu",
+      "resolved_device": "cpu",
+      "dtype": "float64",
+      "batch_size": 120000,
+      "eig_batch_size": 50000,
+      "timing": {
+        "total_no_write": {
+          "runs": [
+            5.126680499990471,
+            5.102694600005634,
+            4.95154579996597
+          ],
+          "avg_seconds": 5.060306966654025,
+          "min_seconds": 4.95154579996597,
+          "max_seconds": 5.126680499990471,
+          "std_seconds": 0.07752665943201206
+        },
+        "parse": {
+          "runs": [
+            0.006541399983689189,
+            0.008287200005725026,
+            0.010536800022237003
+          ],
+          "avg_seconds": 0.008455133337217072,
+          "min_seconds": 0.006541399983689189,
+          "max_seconds": 0.010536800022237003,
+          "std_seconds": 0.001635431965338512
+        },
+        "compute": {
+          "runs": [
+            5.063830900005996,
+            5.034438500064425,
+            4.882374199922197
+          ],
+          "avg_seconds": 4.993547866664206,
+          "min_seconds": 4.882374199922197,
+          "max_seconds": 5.063830900005996,
+          "std_seconds": 0.07952218317856909
+        },
+        "extract_to_cpu": {
+          "runs": [
+            0.0563065999886021,
+            0.0599665999179706,
+            0.05863300000783056
+          ],
+          "avg_seconds": 0.05830206663813442,
+          "min_seconds": 0.0563065999886021,
+          "max_seconds": 0.0599665999179706,
+          "std_seconds": 0.0015124015212299897
+        },
+        "single_write_benchmark_seconds": 3.8538178999442607,
+        "estimated_total_with_write_seconds": 8.914124866598286
+      },
+      "accuracy": {
+        "all_points": {
+          "n": 1762490,
+          "pearson_sl2rho": 0.07174997035552365,
+          "pearson_rdg": 0.40382602324879113,
+          "spearman_sl2rho": 0.9509954219589888,
+          "spearman_rdg": 0.32318222524622137,
+          "mae_sl2rho": 0.015489639503361593,
+          "mae_rdg": 51.497651344774724,
+          "rmse_sl2rho": 0.600642041083646,
+          "rmse_rdg": 869.1188378103967
+        },
+        "attractive_points_sl2rho_lt_0": {
+          "n": 975694,
+          "pearson_sl2rho": 0.045926083754138834,
+          "pearson_rdg": 0.9722754973471582,
+          "spearman_sl2rho": 0.9281884801555058,
+          "spearman_rdg": 0.2010817300066304,
+          "mae_sl2rho": 0.027591195291156504,
+          "mae_rdg": 18.422895253557435,
+          "rmse_sl2rho": 0.8071847215503628,
+          "rmse_rdg": 42.55745566928596
+        },
+        "trimmed": {
+          "n": 1758964,
+          "pearson_sl2rho": 0.6461904183607781,
+          "pearson_rdg": 0.7302511933659458,
+          "spearman_sl2rho": 0.956688303686988,
+          "spearman_rdg": 0.32952170560775446,
+          "mae_sl2rho": 0.004984597078421668,
+          "mae_rdg": 28.396248471000554,
+          "rmse_sl2rho": 0.0823649238670196,
+          "rmse_rdg": 363.14972667484665,
+          "quantile": 0.999
+        },
+        "low_rdg": {
+          "n": 346893,
+          "pearson_sl2rho": 0.9900953111610613,
+          "pearson_rdg": 0.9989565944965898,
+          "spearman_sl2rho": 0.9898756728785998,
+          "spearman_rdg": 0.9992799159385664,
+          "mae_sl2rho": 0.00022648704688152236,
+          "mae_rdg": 0.008945248083195708,
+          "rmse_sl2rho": 0.0033390690550405516,
+          "rmse_rdg": 0.01759291013580337,
+          "threshold": 2.0
+        }
+      }
+    },
+    "torch_gpu": {
+      "label": "torch_gpu",
+      "resolved_device": "cuda",
+      "dtype": "float64",
+      "batch_size": 120000,
+      "eig_batch_size": 50000,
+      "timing": {
+        "total_no_write": {
+          "runs": [
+            5.897569200024009,
+            2.4064339000033215,
+            2.389524900005199
+          ],
+          "avg_seconds": 3.5645093333441764,
+          "min_seconds": 2.389524900005199,
+          "max_seconds": 5.897569200024009,
+          "std_seconds": 1.6497368951248605
+        },
+        "parse": {
+          "runs": [
+            0.006256700027734041,
+            0.009480400010943413,
+            0.010203100042417645
+          ],
+          "avg_seconds": 0.008646733360365033,
+          "min_seconds": 0.006256700027734041,
+          "max_seconds": 0.010203100042417645,
+          "std_seconds": 0.0017155695521096617
+        },
+        "compute": {
+          "runs": [
+            5.7129448999185115,
+            2.327424900024198,
+            2.3154366000089794
+          ],
+          "avg_seconds": 3.451935466650563,
+          "min_seconds": 2.3154366000089794,
+          "max_seconds": 5.7129448999185115,
+          "std_seconds": 1.5987825936900242
+        },
+        "extract_to_cpu": {
+          "runs": [
+            0.17836590006481856,
+            0.06952629995066673,
+            0.0638830999378115
+          ],
+          "avg_seconds": 0.10392509998443226,
+          "min_seconds": 0.0638830999378115,
+          "max_seconds": 0.17836590006481856,
+          "std_seconds": 0.05268798701824609
+        },
+        "single_write_benchmark_seconds": 3.8866038999985904,
+        "estimated_total_with_write_seconds": 7.451113233342767
+      },
+      "accuracy": {
+        "all_points": {
+          "n": 1762490,
+          "pearson_sl2rho": 0.07174997035552365,
+          "pearson_rdg": 0.403826023248791,
+          "spearman_sl2rho": 0.9509954219589888,
+          "spearman_rdg": 0.32318222524622137,
+          "mae_sl2rho": 0.01548963950336159,
+          "mae_rdg": 51.497651344774724,
+          "rmse_sl2rho": 0.600642041083646,
+          "rmse_rdg": 869.1188378103967
+        },
+        "attractive_points_sl2rho_lt_0": {
+          "n": 975694,
+          "pearson_sl2rho": 0.04592608375413883,
+          "pearson_rdg": 0.9722754973471582,
+          "spearman_sl2rho": 0.9281884801555058,
+          "spearman_rdg": 0.2010817300066304,
+          "mae_sl2rho": 0.027591195291156504,
+          "mae_rdg": 18.422895253557428,
+          "rmse_sl2rho": 0.8071847215503628,
+          "rmse_rdg": 42.55745566928595
+        },
+        "trimmed": {
+          "n": 1758964,
+          "pearson_sl2rho": 0.6461904183607781,
+          "pearson_rdg": 0.7302511933659458,
+          "spearman_sl2rho": 0.956688303686988,
+          "spearman_rdg": 0.32952170560775446,
+          "mae_sl2rho": 0.004984597078421668,
+          "mae_rdg": 28.39624847100055,
+          "rmse_sl2rho": 0.0823649238670196,
+          "rmse_rdg": 363.14972667484665,
+          "quantile": 0.999
+        },
+        "low_rdg": {
+          "n": 346893,
+          "pearson_sl2rho": 0.9900953111610613,
+          "pearson_rdg": 0.9989565944965901,
+          "spearman_sl2rho": 0.9898756728785998,
+          "spearman_rdg": 0.9992799159385664,
+          "mae_sl2rho": 0.00022648704688152236,
+          "mae_rdg": 0.008945248083195606,
+          "rmse_sl2rho": 0.003339069055040551,
+          "rmse_rdg": 0.01759291013580329,
+          "threshold": 2.0
+        }
+      }
+    }
+  },
+  "derived": {
+    "speedup_cpu_vs_multiwfn": 2.5126732762350215,
+    "speedup_gpu_vs_multiwfn": 3.006031801140019,
+    "speedup_gpu_vs_cpu": 1.1963480606775283
+  }
+}

@@ -16,6 +16,7 @@ class NCIConfig:
     dtype: str = "float32"
     batch_size: int = 250000
     rho_floor: float = 1e-12
+    eig_batch_size: int = 200000
 
 
 def _resolve_device(device: str) -> torch.device:
@@ -108,8 +109,36 @@ def compute_density(
         psi = basis_values @ coeff
         rho[start:end] = torch.sum((psi * psi) * occ[None, :], dim=1)
 
+    rho = torch.clamp(torch.nan_to_num(rho, nan=0.0, posinf=1e20, neginf=0.0), min=0.0)
     nx, ny, nz = grid.shape
     return rho.reshape(nx, ny, nz), device
+
+
+def _compute_lambda2_batched(
+    hessian: torch.Tensor,
+    eig_batch_size: int,
+) -> torch.Tensor:
+    hflat = hessian.reshape(-1, 3, 3)
+    n = hflat.shape[0]
+    out = torch.empty((n,), device=hessian.device, dtype=hessian.dtype)
+    batch = max(1, int(eig_batch_size))
+
+    for start in range(0, n, batch):
+        end = min(n, start + batch)
+        chunk = hflat[start:end]
+        chunk = torch.nan_to_num(chunk, nan=0.0, posinf=1e20, neginf=-1e20)
+        chunk = 0.5 * (chunk + chunk.transpose(-1, -2))
+        try:
+            eigvals = torch.linalg.eigvalsh(chunk)
+        except RuntimeError as err:
+            # CUDA batched eig can fail on pathological slices; fallback keeps run alive.
+            if chunk.device.type == "cuda":
+                eigvals = torch.linalg.eigvalsh(chunk.cpu()).to(chunk.device)
+            else:
+                raise err
+        out[start:end] = torch.nan_to_num(eigvals[:, 1], nan=0.0, posinf=0.0, neginf=0.0)
+
+    return out.reshape(hessian.shape[:-2])
 
 
 def _first_derivative(u: torch.Tensor, h: float, dim: int) -> torch.Tensor:
@@ -197,7 +226,9 @@ def compute_nci_fields(
     rho: torch.Tensor,
     spacing_bohr: float,
     rho_floor: float = 1e-12,
+    eig_batch_size: int = 200000,
 ) -> NCIFields:
+    rho = torch.clamp(torch.nan_to_num(rho, nan=0.0, posinf=1e20, neginf=0.0), min=0.0)
     gx = _first_derivative(rho, spacing_bohr, dim=0)
     gy = _first_derivative(rho, spacing_bohr, dim=1)
     gz = _first_derivative(rho, spacing_bohr, dim=2)
@@ -221,8 +252,7 @@ def compute_nci_fields(
     hessian[..., 1, 2] = hyz
     hessian[..., 2, 1] = hyz
 
-    eigvals = torch.linalg.eigvalsh(hessian.reshape(-1, 3, 3))
-    lambda2 = eigvals[:, 1].reshape(rho.shape)
+    lambda2 = _compute_lambda2_batched(hessian, eig_batch_size=eig_batch_size)
 
     safe_rho = torch.clamp(torch.abs(rho), min=rho_floor)
     rdg = rho.new_tensor(RDG_PREFAC) * grad_mag / safe_rho.pow(4.0 / 3.0)
@@ -239,5 +269,10 @@ def run_nci_engine(
 ) -> Tuple[NCIFields, torch.device]:
     cfg = config or NCIConfig()
     rho, device = compute_density(wavefunction=wavefunction, grid=grid, config=cfg)
-    fields = compute_nci_fields(rho=rho, spacing_bohr=grid.spacing_bohr, rho_floor=cfg.rho_floor)
+    fields = compute_nci_fields(
+        rho=rho,
+        spacing_bohr=grid.spacing_bohr,
+        rho_floor=cfg.rho_floor,
+        eig_batch_size=cfg.eig_batch_size,
+    )
     return fields, device

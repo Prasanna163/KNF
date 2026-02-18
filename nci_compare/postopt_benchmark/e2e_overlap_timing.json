@@ -1,0 +1,11 @@
+{
+  "generated_at_utc": "2026-02-18T11:02:03Z",
+  "dataset": "nci_compare/e2e_overlap_bench/1771412423 (3 copies of example.mol)",
+  "commands": {
+    "sequential": "python -m knf_core.main <inputs_seq> --processing single --gpu --force --clean",
+    "multi_overlap": "python -m knf_core.main <inputs_multi> --processing multi --workers 4 --gpu --force --clean"
+  },
+  "sequential_seconds": 22.096,
+  "multi_overlap_seconds": 22.421,
+  "speedup_multi_overlap_vs_single": 0.985504660809063
+}

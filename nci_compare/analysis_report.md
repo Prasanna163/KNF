@@ -28,4 +28,3 @@
 - `nci_compare/correlation_subsets.json`
 - `nci_compare/time_analysis.json`
 - `nci_compare/scatter_overlay_low_rdg_le_2.png`
-- `nci_compare/parity_quantile_clipped_99_9.png`

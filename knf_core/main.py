@@ -47,29 +47,33 @@ def check_dependencies(multiwfn_path: str = None, nci_backend: str = "torch"):
         print("Please resolve these dependencies for full functionality.")
         print("-" * 50)
 
+def _build_pipeline(file_path: str, args, output_root: str = None) -> KNFPipeline:
+    return KNFPipeline(
+        input_file=file_path,
+        charge=args.charge,
+        spin=args.spin,
+        force=args.force,
+        clean=args.clean,
+        debug=args.debug,
+        output_root=output_root,
+        keep_full_files=args.full_files,
+        nci_backend=args.nci_backend,
+        nci_grid_spacing=args.nci_grid_spacing,
+        nci_grid_padding=args.nci_grid_padding,
+        nci_device=args.nci_device,
+        nci_dtype=args.nci_dtype,
+        nci_batch_size=args.nci_batch_size,
+        nci_eig_batch_size=args.nci_eig_batch_size,
+        nci_rho_floor=args.nci_rho_floor,
+        nci_apply_primitive_norm=args.nci_apply_primitive_norm,
+    )
+
+
 def process_file(file_path: str, args, output_root: str = None):
     """Runs the pipeline for a single file and returns status."""
     start = time.perf_counter()
     try:
-        pipeline = KNFPipeline(
-            input_file=file_path,
-            charge=args.charge,
-            spin=args.spin,
-            force=args.force,
-            clean=args.clean,
-            debug=args.debug,
-            output_root=output_root,
-            keep_full_files=args.full_files,
-            nci_backend=args.nci_backend,
-            nci_grid_spacing=args.nci_grid_spacing,
-            nci_grid_padding=args.nci_grid_padding,
-            nci_device=args.nci_device,
-            nci_dtype=args.nci_dtype,
-            nci_batch_size=args.nci_batch_size,
-            nci_eig_batch_size=args.nci_eig_batch_size,
-            nci_rho_floor=args.nci_rho_floor,
-            nci_apply_primitive_norm=args.nci_apply_primitive_norm,
-        )
+        pipeline = _build_pipeline(file_path, args, output_root=output_root)
         pipeline.run()
         return True, None, time.perf_counter() - start
     except Exception as e:
@@ -77,6 +81,35 @@ def process_file(file_path: str, args, output_root: str = None):
             logging.exception(f"Error processing {file_path}:")
         else:
             logging.error(f"Error processing {file_path}: {e}")
+        return False, str(e), time.perf_counter() - start
+
+
+def process_file_pre_nci(file_path: str, args, output_root: str = None):
+    """Runs pre-NCI stages only (geometry + xTB) and returns pipeline context."""
+    start = time.perf_counter()
+    try:
+        pipeline = _build_pipeline(file_path, args, output_root=output_root)
+        context = pipeline.run_pre_nci_stage()
+        return True, None, time.perf_counter() - start, pipeline, context
+    except Exception as e:
+        if args.debug:
+            logging.exception(f"Pre-NCI error processing {file_path}:")
+        else:
+            logging.error(f"Pre-NCI error processing {file_path}: {e}")
+        return False, str(e), time.perf_counter() - start, None, None
+
+
+def process_file_post_nci(pipeline: KNFPipeline, context: dict, file_path: str):
+    """Runs post-NCI stage (NCI + SNCI/SCDI + final output write)."""
+    start = time.perf_counter()
+    try:
+        pipeline.run_post_nci_stage(context)
+        return True, None, time.perf_counter() - start
+    except Exception as e:
+        if pipeline.debug:
+            logging.exception(f"Post-NCI error processing {file_path}:")
+        else:
+            logging.error(f"Post-NCI error processing {file_path}: {e}")
         return False, str(e), time.perf_counter() - start
 
 
@@ -334,6 +367,12 @@ def run_batch_directory(directory: str, args):
     mode = args.processing.lower()
     if mode == "auto":
         mode = "multi" if len(files) > 1 else "single"
+    use_gpu_overlap = (
+        mode == "multi"
+        and len(files) > 1
+        and (args.nci_backend or "").strip().lower() == "torch"
+        and (args.nci_device or "").strip().lower() == "cuda"
+    )
     workers = 1
     failures = []
     batch_records = []
@@ -402,8 +441,11 @@ def run_batch_directory(directory: str, args):
         header.add_row("KNF-Core", "v1.0")
         header.add_row("Detected", f"{physical}C / {logical}T")
         if mode == "multi":
-            mode_text = "auto" if args.workers is None else "manual"
-            header.add_row("Mode", f"multi ({mode_text} -> {workers} workers)")
+            if use_gpu_overlap:
+                header.add_row("Mode", f"multi (cpu->gpu overlap: {workers} CPU + 1 GPU)")
+            else:
+                mode_text = "auto" if args.workers is None else "manual"
+                header.add_row("Mode", f"multi ({mode_text} -> {workers} workers)")
         else:
             header.add_row("Mode", "single")
         header.add_row("Files", str(total))
@@ -462,6 +504,94 @@ def run_batch_directory(directory: str, args):
                     completed_rows.append((_display_name(file_path), f"{elapsed:.1f}s", "[red]FAIL[/red]"))
                 live.update(render(active_workers=0))
                 queue.task_done()
+    elif use_gpu_overlap:
+        with Live(render(active_workers=workers + 1), console=console, refresh_per_second=5, transient=False) as live:
+            with ThreadPoolExecutor(max_workers=workers) as cpu_executor, ThreadPoolExecutor(max_workers=1) as gpu_executor:
+                pre_futures = {
+                    cpu_executor.submit(process_file_pre_nci, file_path, args, results_root): file_path
+                    for file_path in files
+                }
+                post_futures = {}
+
+                while pre_futures or post_futures:
+                    done_pre = []
+                    if pre_futures:
+                        try:
+                            for future in as_completed(pre_futures, timeout=0.2):
+                                done_pre.append(future)
+                                if len(done_pre) >= workers:
+                                    break
+                        except TimeoutError:
+                            pass
+
+                    for future in done_pre:
+                        file_path = pre_futures.pop(future)
+                        try:
+                            success, error, pre_elapsed, pipeline, context = future.result()
+                        except Exception as e:
+                            success, error, pre_elapsed, pipeline, context = False, str(e), 0.0, None, None
+
+                        if success:
+                            post_future = gpu_executor.submit(process_file_post_nci, pipeline, context, file_path)
+                            post_futures[post_future] = (file_path, pre_elapsed)
+                        else:
+                            completed += 1
+                            progress.advance(task_id, 1)
+                            failures.append((file_path, error))
+                            batch_records.append(
+                                {
+                                    "input_file": file_path,
+                                    "status": "failed",
+                                    "elapsed_seconds": pre_elapsed,
+                                    "error": str(error),
+                                }
+                            )
+                            completed_rows.append((_display_name(file_path), f"{pre_elapsed:.1f}s", "[red]FAIL[/red]"))
+
+                    done_post = []
+                    if post_futures:
+                        try:
+                            for future in as_completed(post_futures, timeout=0.2):
+                                done_post.append(future)
+                                break
+                        except TimeoutError:
+                            pass
+
+                    for future in done_post:
+                        file_path, pre_elapsed = post_futures.pop(future)
+                        try:
+                            success, error, post_elapsed = future.result()
+                        except Exception as e:
+                            success, error, post_elapsed = False, str(e), 0.0
+
+                        total_elapsed_file = pre_elapsed + post_elapsed
+                        completed += 1
+                        progress.advance(task_id, 1)
+                        if success:
+                            succeeded += 1
+                            batch_records.append(
+                                {
+                                    "input_file": file_path,
+                                    "status": "success",
+                                    "elapsed_seconds": total_elapsed_file,
+                                    "error": None,
+                                }
+                            )
+                            completed_rows.append((_display_name(file_path), f"{total_elapsed_file:.1f}s", "[green]OK[/green]"))
+                        else:
+                            failures.append((file_path, error))
+                            batch_records.append(
+                                {
+                                    "input_file": file_path,
+                                    "status": "failed",
+                                    "elapsed_seconds": total_elapsed_file,
+                                    "error": str(error),
+                                }
+                            )
+                            completed_rows.append((_display_name(file_path), f"{total_elapsed_file:.1f}s", "[red]FAIL[/red]"))
+
+                    active_workers = min(workers, len(pre_futures)) + (1 if post_futures else 0)
+                    live.update(render(active_workers=active_workers))
     else:
         with Live(render(active_workers=workers), console=console, refresh_per_second=5, transient=False) as live:
             with ThreadPoolExecutor(max_workers=workers) as executor:

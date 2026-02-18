@@ -1,0 +1,106 @@
+{
+  "generated_at_utc": "2026-02-18T10:59:46Z",
+  "molden_input": "E:\\Prasanna\\KNF-CORE\\molden.input",
+  "method_scope": "NCI stage only (does not include xTB optimization/single-point)",
+  "torch_cuda_available": true,
+  "multiwfn": {
+    "runs_seconds": [
+      20.097922299988568,
+      24.96486300008837,
+      22.22503610001877
+    ],
+    "avg_seconds": 22.429273800031904,
+    "min_seconds": 20.097922299988568,
+    "max_seconds": 24.96486300008837,
+    "std_seconds": 1.992161761027784
+  },
+  "torch_cpu_measured_after_warmup": {
+    "runs_seconds": [
+      0.7487826000433415,
+      0.8366479000542313,
+      0.8191737999441102,
+      0.8072456000372767,
+      0.8092114999890327
+    ],
+    "avg_seconds": 0.8042122800135985,
+    "min_seconds": 0.7487826000433415,
+    "max_seconds": 0.8366479000542313,
+    "std_seconds": 0.029605942573697377
+  },
+  "torch_gpu_measured_after_warmup": {
+    "runs_seconds": [
+      0.30575210007373244,
+      0.30457290005870163,
+      0.30183629994280636,
+      0.29583800002001226,
+      0.29695900005754083
+    ],
+    "avg_seconds": 0.3009916600305587,
+    "min_seconds": 0.29583800002001226,
+    "max_seconds": 0.30575210007373244,
+    "std_seconds": 0.003975501077536589
+  },
+  "torch_cpu_last_timings_seconds": {
+    "parse_molden": 0.008698699995875359,
+    "build_grid": 5.080003757029772e-05,
+    "compute_fields": 0.7955341999186203,
+    "export_grid": 0.004819300025701523
+  },
+  "torch_gpu_last_timings_seconds": {
+    "parse_molden": 0.009525700006633997,
+    "build_grid": 5.779997445642948e-05,
+    "compute_fields": 0.2833902999991551,
+    "export_grid": 0.0038501000963151455
+  },
+  "accuracy": {
+    "cpu_all_points": {
+      "n": 1762490,
+      "pearson_sl2rho": 0.07174997035552365,
+      "pearson_rdg": 0.40382602324879113,
+      "spearman_sl2rho": 0.9509954219589888,
+      "spearman_rdg": 0.32318222524622137,
+      "mae_sl2rho": 0.015489639503361593,
+      "mae_rdg": 51.497651344774724,
+      "rmse_sl2rho": 0.600642041083646,
+      "rmse_rdg": 869.1188378103967
+    },
+    "cpu_low_rdg": {
+      "n": 346893,
+      "pearson_sl2rho": 0.9900953111610613,
+      "pearson_rdg": 0.9989565944965898,
+      "spearman_sl2rho": 0.9898756728785998,
+      "spearman_rdg": 0.9992799159385664,
+      "mae_sl2rho": 0.00022648704688152236,
+      "mae_rdg": 0.008945248083195708,
+      "rmse_sl2rho": 0.0033390690550405516,
+      "rmse_rdg": 0.01759291013580337,
+      "threshold": 2.0
+    },
+    "gpu_all_points": {
+      "n": 1762490,
+      "pearson_sl2rho": 0.07174997035552365,
+      "pearson_rdg": 0.403826023248791,
+      "spearman_sl2rho": 0.9509954219589888,
+      "spearman_rdg": 0.32318222524622137,
+      "mae_sl2rho": 0.01548963950336159,
+      "mae_rdg": 51.497651344774724,
+      "rmse_sl2rho": 0.600642041083646,
+      "rmse_rdg": 869.1188378103967
+    },
+    "gpu_low_rdg": {
+      "n": 346893,
+      "pearson_sl2rho": 0.9900953111610613,
+      "pearson_rdg": 0.9989565944965901,
+      "spearman_sl2rho": 0.9898756728785998,
+      "spearman_rdg": 0.9992799159385664,
+      "mae_sl2rho": 0.00022648704688152236,
+      "mae_rdg": 0.008945248083195606,
+      "rmse_sl2rho": 0.003339069055040551,
+      "rmse_rdg": 0.01759291013580329,
+      "threshold": 2.0
+    }
+  },
+  "speedup_cpu_vs_multiwfn": 27.889742991306534,
+  "speedup_gpu_vs_multiwfn": 74.51792450912006,
+  "speedup_gpu_vs_cpu": 2.6718756258294643
+}

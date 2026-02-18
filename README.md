@@ -97,7 +97,12 @@ Useful options:
 - `--force`
 - `--clean`
 - `--debug`
-- `--processing <single|multi>` (alias: `--processes`)
+- `--processing <auto|single|multi>` (alias: `--processes`)
+- `--multi` (shortcut for multi-processing mode)
+- `--single` (shortcut for single-processing mode)
+- `--torch` (shortcut for torch backend, auto device)
+- `--gpu` (shortcut for torch backend on CUDA)
+- `--cpu` (shortcut for torch backend on CPU)
 - `--workers <int>`
 - `--output-dir <path>`
 - `--ram-per-job <MB>`
@@ -105,14 +110,9 @@ Useful options:
 - `--storage-efficient`
 - `--refresh-first-run`
 - `--multiwfn-path <path>`
-- `--nci-backend <multiwfn|torch>`
-- `--nci-grid-spacing <float>`
-- `--nci-grid-padding <float>`
-- `--nci-device <auto|cuda|cpu>`
-- `--nci-dtype <float32|float64>`
-- `--nci-batch-size <int>`
-- `--nci-rho-floor <float>`
-- `--nci-apply-primitive-norm` (optional; default off, usually keep off for xTB Molden)
+
+Advanced NCI tuning flags are still supported but hidden from default `--help`.
+`--gpu` now defaults to `float64` for better CUDA eigensolver stability.
 
 Examples:
 
@@ -126,6 +126,12 @@ knf example.mol --nci-backend torch --nci-device cuda --nci-grid-spacing 0.2
 ## Experimental Torch NCI Backend
 
 Set `--nci-backend torch` to run the internal Molden parser + grid + density/derivatives/Hessian/eigen/RDG path instead of Multiwfn.
+For GPU execution, use `--nci-device cuda` (or `--nci-device auto` to use CUDA when available).
+
+For comparison runs, `scripts/compare_nci.py` now defaults to minimal output:
+- one focused plot (`RDG` low region)
+- summary + subsets JSON
+- no large custom grid dump unless `--save-custom-grid` is set
 
 Current scope:
 - Cartesians shells are supported for basis expansion.

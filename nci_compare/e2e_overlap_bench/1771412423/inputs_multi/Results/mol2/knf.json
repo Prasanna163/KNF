@@ -1,0 +1,60 @@
+{
+    "SNCI": 42.60423795605065,
+    "SCDI_variance": 0.9999974881223049,
+    "KNF_vector": [
+        5.479651226511908,
+        152.4603916221232,
+        0.0,
+        5.366,
+        88.523235,
+        124201.0,
+        -0.00635391227962648,
+        0.044411232801451504,
+        -11.93317609752187
+    ],
+    "metadata": {
+        "charge": 0,
+        "spin": 1,
+        "fragments": 2,
+        "geometry_fragment_pair": [
+            0,
+            1
+        ],
+        "nci_backend": "torch",
+        "nci_status": "success",
+        "nci_data_path": "E:\\Prasanna\\KNF-CORE\\nci_compare\\e2e_overlap_bench\\1771412423\\inputs_multi\\Results\\mol2\\nci_grid.npz",
+        "nci_engine_metadata": {
+            "device": "cuda",
+            "elapsed_seconds": 0.7907587999943644,
+            "timings_seconds": {
+                "parse_molden": 0.2560336000751704,
+                "build_grid": 5.4299947805702686e-05,
+                "compute_fields": 0.5307897999882698,
+                "export_grid": 0.003880099975503981
+            },
+            "gpu": {
+                "cuda_available": true,
+                "is_cuda_run": true,
+                "device_requested": "cuda",
+                "device_resolved": "cuda",
+                "cuda_device_name": "NVIDIA GeForce RTX 3050 6GB Laptop GPU",
+                "cuda_device_capability": [
+                    8,
+                    6
+                ]
+            },
+            "n_atoms": 22,
+            "n_basis": 49,
+            "grid_shape": [
+                71,
+                52,
+                48
+            ],
+            "n_grid_points": 177216,
+            "apply_primitive_normalization": false,
+            "eig_batch_size": 200000,
+            "output_binary_path": "E:\\Prasanna\\KNF-CORE\\nci_compare\\e2e_overlap_bench\\1771412423\\inputs_multi\\Results\\mol2\\nci_grid.npz",
+            "output_text_path": null
+        }
+    }
+}

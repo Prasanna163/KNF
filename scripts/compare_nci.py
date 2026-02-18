@@ -4,6 +4,7 @@ import os
 from typing import Dict, Tuple
 
 import numpy as np
+import torch
 from scipy.stats import spearmanr
 
 from knf_core import utils
@@ -67,6 +68,8 @@ def _make_plots(
     rdg_pred: np.ndarray,
     sample_size: int,
     seed: int,
+    mode: str,
+    rdg_low_threshold: float,
 ) -> Dict[str, str]:
     try:
         import matplotlib.pyplot as plt
@@ -84,6 +87,28 @@ def _make_plots(
     rdg_ref_s = rdg_ref[idx]
     sl2_pred_s = sl2_pred[idx]
     rdg_pred_s = rdg_pred[idx]
+
+    # Focused scatter in low-RDG regime where NCI interpretation is usually done.
+    low_mask = (rdg_ref_s <= rdg_low_threshold) & (rdg_pred_s <= rdg_low_threshold)
+    low_path = os.path.join(outdir, "scatter_overlay_low_rdg_le_2.png")
+    if np.any(low_mask):
+        fig, ax = plt.subplots(figsize=(9, 7), dpi=150)
+        ax.scatter(sl2_ref_s[low_mask], rdg_ref_s[low_mask], s=2, alpha=0.35, label="Multiwfn")
+        ax.scatter(sl2_pred_s[low_mask], rdg_pred_s[low_mask], s=2, alpha=0.35, label="Custom Torch")
+        ax.set_xlabel("sign(lambda2)rho")
+        ax.set_ylabel("RDG")
+        ax.set_title(f"NCI Scatter Overlay (RDG <= {rdg_low_threshold:g})")
+        ax.legend(markerscale=5)
+        fig.tight_layout()
+        fig.savefig(low_path)
+        plt.close(fig)
+    else:
+        low_path = ""
+
+    if mode == "minimal":
+        return {
+            "overlay_low_rdg_plot": low_path,
+        }
 
     overlay_path = os.path.join(outdir, "scatter_overlay_rdg_vs_sl2rho.png")
     fig, ax = plt.subplots(figsize=(9, 7), dpi=150)
@@ -110,23 +135,6 @@ def _make_plots(
     fig.tight_layout()
     fig.savefig(parity_path)
     plt.close(fig)
-
-    # Focused scatter in low-RDG regime where NCI interpretation is usually done.
-    low_mask = (rdg_ref_s <= 2.0) & (rdg_pred_s <= 2.0)
-    low_path = os.path.join(outdir, "scatter_overlay_low_rdg_le_2.png")
-    if np.any(low_mask):
-        fig, ax = plt.subplots(figsize=(9, 7), dpi=150)
-        ax.scatter(sl2_ref_s[low_mask], rdg_ref_s[low_mask], s=2, alpha=0.35, label="Multiwfn")
-        ax.scatter(sl2_pred_s[low_mask], rdg_pred_s[low_mask], s=2, alpha=0.35, label="Custom Torch")
-        ax.set_xlabel("sign(lambda2)rho")
-        ax.set_ylabel("RDG")
-        ax.set_title("NCI Scatter Overlay (RDG <= 2)")
-        ax.legend(markerscale=5)
-        fig.tight_layout()
-        fig.savefig(low_path)
-        plt.close(fig)
-    else:
-        low_path = ""
 
     # Quantile-clipped parity to reduce outlier domination.
     q_path = os.path.join(outdir, "parity_quantile_clipped_99_9.png")
@@ -179,6 +187,17 @@ def main() -> None:
         "--custom-output-name",
         default="custom_torch_output_units_fixed.txt",
         help="Filename for custom torch output in outdir",
+    )
+    parser.add_argument(
+        "--save-custom-grid",
+        action="store_true",
+        help="Write custom x y z sign(lambda2)rho RDG text output (large file)",
+    )
+    parser.add_argument(
+        "--plots",
+        choices=["minimal", "full"],
+        default="minimal",
+        help="Plot output mode: minimal (low-RDG overlay only) or full",
     )
     parser.add_argument(
         "--mw-coord-unit",
@@ -248,8 +267,9 @@ def main() -> None:
     sl2_pred = sl2_custom[ix, iy, iz]
     rdg_pred = rdg_custom[ix, iy, iz]
 
-    out = np.column_stack([xyz, sl2_pred, rdg_pred])
-    np.savetxt(custom_path, out, fmt="%.8f %.8f %.8f %.10e %.10e")
+    if args.save_custom_grid:
+        out = np.column_stack([xyz, sl2_pred, rdg_pred])
+        np.savetxt(custom_path, out, fmt="%.8f %.8f %.8f %.10e %.10e")
 
     all_mask = np.ones(sl2_mw.shape[0], dtype=bool)
     attractive_mask = sl2_mw < 0
@@ -274,14 +294,21 @@ def main() -> None:
         "n_points": int(xyz.shape[0]),
         "grid_shape": [int(x.size), int(y.size), int(z.size)],
         "device_used": str(device),
+        "device_requested": args.device,
+        "dtype": args.dtype,
+        "batch_size": int(args.batch_size),
+        "cuda_available": bool(torch.cuda.is_available()),
         "assumption": f"Multiwfn coordinates treated as {args.mw_coord_unit}",
         "apply_primitive_normalization": bool(args.apply_primitive_norm),
         "files": {
             "multiwfn_output": mw_path,
-            "custom_output": custom_path,
         },
         "all_points": subsets["all_points"],
     }
+    if args.save_custom_grid:
+        summary["files"]["custom_output"] = custom_path
+    if str(device).startswith("cuda"):
+        summary["cuda_device_name"] = torch.cuda.get_device_name(device)
     summary["plots"] = _make_plots(
         outdir=outdir,
         sl2_ref=sl2_mw,
@@ -290,6 +317,8 @@ def main() -> None:
         rdg_pred=rdg_pred,
         sample_size=args.plot_sample_size,
         seed=args.seed,
+        mode=args.plots,
+        rdg_low_threshold=float(args.rdg_low_threshold),
     )
 
     with open(summary_path, "w", encoding="utf-8") as f:

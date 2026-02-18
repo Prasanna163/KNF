@@ -144,15 +144,20 @@ To keep all intermediates, use `--full-files`.
 ## 4. Parallelization Model
 
 ## 4.1 Inter-File Parallelization (Batch)
-In batch `multi` mode (`run_batch_directory`):
-- Uses `ThreadPoolExecutor(max_workers=workers)`
-- Submits one future per input file (`process_file`)
-- Harvests completions via `as_completed(..., timeout=1)` in refresh loop
+Batch mode now has two execution paths:
+
+- Standard path:
+  - Uses `ThreadPoolExecutor(max_workers=workers)`
+  - Submits one future per input file (`process_file`)
+  - Harvests completions via `as_completed(..., timeout=1)` in refresh loop
+- GPU-overlap path (activated for `torch + cuda + multi`):
+  - CPU pool (`workers`) runs `process_file_pre_nci` in parallel (geometry + xTB)
+  - Single GPU lane (`max_workers=1`) runs `process_file_post_nci` (NCI + SNCI/SCDI + write)
+  - CPU and GPU stages overlap in producer-consumer style
 
 Concurrency granularity:
-- **File-level parallelism only**
-
-Each worker thread executes a full pipeline for one molecule, including blocking subprocess calls to xTB/Multiwfn.
+- File-level parallelism for pre-NCI CPU work
+- Single-lane serialized GPU NCI stage to avoid device contention
 
 ## 4.2 Worker Count Selection
 If user does not pass `--workers`:
@@ -168,7 +173,9 @@ If user passes `--workers`:
 - OMP/BLAS thread caps derived as `logical_threads // workers`
 
 ## 4.3 Intra-File Parallelization
-Per-file `KNFPipeline.run()` is sequential.
+Per-file execution still respects stage dependencies, but is now explicitly split:
+- `run_pre_nci_stage()` (geometry + xTB)
+- `run_post_nci_stage()` (NCI + downstream descriptors + output)
 
 Within torch backend, parallelism is numerical and device-side:
 - Basis evaluation and tensor math are vectorized in PyTorch
@@ -189,12 +196,15 @@ In single-mode branch inside `run_batch_directory`:
 This is a simple FIFO structure for serial processing; no parallel consumers.
 
 ## 5.2 Multi-Path Pending Set (Parallel)
-In multi-mode branch:
+In standard multi-mode branch:
 - No `Queue` object is used
 - Pending work is represented by a `dict` of `future -> file_path`
 - Completion polling via `as_completed`
 
-So practically, queueing is handled by `ThreadPoolExecutor` internal task queue + the futures map.
+In GPU-overlap branch:
+- Pre-stage pending work: `dict` of CPU pre-futures (`future -> file_path`)
+- Post-stage pending work: `dict` of GPU futures (`future -> (file_path, pre_elapsed)`)
+- This behaves as an in-memory two-stage queue system with explicit backpressure at the single GPU lane
 
 ## 5.3 What Is Not Present
 There is currently no:
@@ -209,7 +219,8 @@ Failure handling is immediate per future; failures are collected and reported.
 ## 6. Synchronization and Data Handoffs
 
 Main synchronization boundaries:
-- Stage boundaries inside pipeline are strict and sequential.
+- Stage boundaries inside each file are strict and ordered.
+- In overlap mode, synchronization occurs between pre-stage completion and GPU post-stage submission.
 - File outputs are used as next-stage inputs (e.g., `molden.input` -> NCI stage).
 - In batch mode, each file pipeline is isolated by per-file results directories.
 
@@ -241,11 +252,12 @@ Torch path timings are already surfaced in metadata (`parse_molden`, `build_grid
 
 ## 10. Practical Summary
 
-Current system is a **hybrid sequential-per-job + parallel-across-jobs** architecture:
-- Sequential pipeline stages per molecule
-- ThreadPool-based concurrent molecules in batch mode
+Current system is a **hybrid staged-per-job + parallel-across-jobs** architecture:
+- Stage-separated file pipeline (`pre-NCI` and `post-NCI`)
+- Standard threadpool batch path for generic workloads
+- CPU-producer + single-GPU-consumer overlap path for `torch + cuda` workloads
 - Heavy file-based IPC across external scientific tools
 - PyTorch internal vectorization/chunking for torch NCI backend
-- Minimal queueing abstraction (FIFO queue in serial path; futures map in parallel path)
+- In-memory queueing abstraction (FIFO queue in serial path; futures maps in standard and overlap paths)
 
 This keeps behavior deterministic and straightforward, but there is no advanced queue orchestration layer yet.
