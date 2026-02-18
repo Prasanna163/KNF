@@ -41,14 +41,47 @@ def run_xtb_opt(filepath: str, charge: int = 0, uhf: int = 0) -> str:
     # Detailed instruction "1. optimise using --opt" matches the flag `--opt`.
     # I will keep `--cosmo water` for stability of SCDI unless it breaks.
     
-    cmd = ['xtb', filename, '--opt', '--cosmo', 'water', '--charge', str(charge), '--uhf', str(uhf)]
-    
+    # Cap ANC optimization cycles at 50; xTB will still terminate earlier if converged.
+    cmd = [
+        'xtb',
+        filename,
+        '--opt',
+        '--cycles',
+        '50',
+        '--cosmo',
+        'water',
+        '--charge',
+        str(charge),
+        '--uhf',
+        str(uhf),
+    ]
+
     logging.info(f"Wrapper Executing xTB Opt: {cmd} in {cwd}")
-    run_subprocess(cmd, cwd=cwd)
-    
+    xtb_opt_log = os.path.join(cwd, 'xtb_opt.log')
+    with open(xtb_opt_log, 'w', encoding='utf-8', errors='replace') as log:
+        result = subprocess.run(
+            cmd,
+            cwd=cwd,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            text=True,
+            errors='replace',
+            check=False,
+        )
+
     output = os.path.join(cwd, 'xtbopt.xyz')
+    if result.returncode != 0:
+        if os.path.exists(output):
+            logging.warning(
+                "xTB optimization exited with code %s, but xtbopt.xyz exists. "
+                "Proceeding to NCI pipeline using the latest available geometry.",
+                result.returncode,
+            )
+            return output
+        raise subprocess.CalledProcessError(result.returncode, cmd)
+
     if not os.path.exists(output):
-         raise FileNotFoundError(f"xTB opt failed: {output}")
+        raise FileNotFoundError(f"xTB opt failed: {output}")
     return output
 
 def run_xtb_sp(filepath: str, charge: int = 0, uhf: int = 0):

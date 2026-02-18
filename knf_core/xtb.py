@@ -3,14 +3,23 @@ import re
 import subprocess
 import numpy as np
 import logging
-from .utils import run_subprocess
 
 def run_xtb_optimization(filepath: str, charge: int = 0, uhf: int = 0) -> str:
     """
     Runs xTB geometry optimization.
     Returns path to optimized geometry file.
     """
-    cmd = ['xtb', os.path.basename(filepath), '--opt', '--charge', str(charge), '--uhf', str(uhf)]
+    cmd = [
+        'xtb',
+        os.path.basename(filepath),
+        '--opt',
+        '--cycles',
+        '50',
+        '--charge',
+        str(charge),
+        '--uhf',
+        str(uhf),
+    ]
     
     # Run in the directory of the input file to keep outputs there
     cwd = os.path.dirname(os.path.abspath(filepath))
@@ -20,9 +29,27 @@ def run_xtb_optimization(filepath: str, charge: int = 0, uhf: int = 0) -> str:
     
     logging.info(f"Running xTB optimization on {filepath}...")
     logging.info(f"CMD: {cmd}")
-    run_subprocess(cmd, cwd=cwd)
-    
     optimized_file = os.path.join(cwd, 'xtbopt.xyz')
+    opt_log = os.path.join(cwd, 'xtb_opt.log')
+    with open(opt_log, 'w', encoding='utf-8', errors='replace') as log:
+        result = subprocess.run(
+            cmd,
+            cwd=cwd,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            text=True,
+            errors='replace',
+            check=False,
+        )
+    if result.returncode != 0:
+        if os.path.exists(optimized_file):
+            logging.warning(
+                "xTB optimization exited with code %s, but xtbopt.xyz exists. "
+                "Proceeding with latest available geometry.",
+                result.returncode,
+            )
+            return optimized_file
+        raise subprocess.CalledProcessError(result.returncode, cmd)
     if not os.path.exists(optimized_file):
         raise FileNotFoundError(f"xTB optimization failed to produce {optimized_file}")
         
