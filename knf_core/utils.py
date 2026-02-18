@@ -8,6 +8,15 @@ from typing import Optional
 
 TOOL_CONFIG_DIR = ".knf"
 TOOL_CONFIG_FILE = "tool_paths.json"
+_MOJIBAKE_PROBE_CHARS = {
+    "\u00c2",  # Â
+    "\u00c3",  # Ã
+    "\u00ce",  # Î
+    "\u00cf",  # Ï
+    "\u00d0",  # Ð
+    "\u00d1",  # Ñ
+    "\u00e2",  # â
+}
 
 
 def setup_logging(debug: bool = False):
@@ -220,17 +229,25 @@ def _repair_mojibake(text: str) -> str:
     """Attempts to repair common UTF-8->Latin-1/CP1252 mojibake artifacts."""
     if not text:
         return text
-    probe = ("\u00c3" in text) or ("\u00c2" in text) or ("\u00e2" in text)
-    if not probe:
+    if text.isascii():
         return text
-    for enc in ("latin-1", "cp1252"):
-        try:
-            fixed = text.encode(enc, errors="strict").decode("utf-8", errors="strict")
-            if fixed and fixed != text:
-                return fixed
-        except Exception:
-            continue
-    return text
+    if not any(ch in text for ch in _MOJIBAKE_PROBE_CHARS):
+        return text
+    current = text
+    for _ in range(2):
+        changed = False
+        for enc in ("latin-1", "cp1252"):
+            try:
+                fixed = current.encode(enc, errors="strict").decode("utf-8", errors="strict")
+            except Exception:
+                continue
+            if fixed and fixed != current:
+                current = fixed
+                changed = True
+                break
+        if not changed:
+            break
+    return current
 
 
 def normalize_name_for_matching(name: str) -> str:
@@ -276,12 +293,20 @@ def resolve_artifacted_path(path: str) -> str:
     if not parent or not os.path.isdir(parent):
         return abs_path
 
-    target_key = normalize_name_for_matching(target_name).casefold()
-    if not target_key:
+    target_keys = {
+        normalize_name_for_matching(target_name).casefold(),
+        unicodedata.normalize("NFKC", target_name).strip().casefold(),
+    }
+    target_keys.discard("")
+    if not target_keys:
         return abs_path
 
     for candidate in os.listdir(parent):
-        if normalize_name_for_matching(candidate).casefold() == target_key:
+        candidate_keys = {
+            normalize_name_for_matching(candidate).casefold(),
+            unicodedata.normalize("NFKC", candidate).strip().casefold(),
+        }
+        if target_keys & candidate_keys:
             return os.path.join(parent, candidate)
 
     return abs_path
