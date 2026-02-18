@@ -7,7 +7,7 @@
   <title>KNF Control</title>
   <meta name="description"
     content="KNF-Core GUI V3 web interface for computational chemistry workflows" />
-  <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css', v=asset_version) }}" />
   <script src="https://cdn.plot.ly/plotly-2.35.2.min.js" charset="utf-8"></script>
   <script src="https://3Dmol.org/build/3Dmol-min.js" charset="utf-8"></script>
 </head>
@@ -40,21 +40,38 @@
           Input Path
           <div class="path-row">
             <input id="inputPath" name="input_path" type="text" placeholder="E:\path\to\molecule.or.folder" required />
-            <button type="button" class="btn btn-secondary browse-btn" id="browseInputFile">File…</button>
-            <button type="button" class="btn btn-secondary browse-btn" id="browseInputDir">Folder…</button>
+            <button type="button" class="btn btn-secondary browse-btn" id="browseInputFile">File...</button>
+            <button type="button" class="btn btn-secondary browse-btn" id="browseInputDir">Folder...</button>
           </div>
         </label>
         <label>
           Output Directory (optional)
           <div class="path-row">
             <input id="outputDir" name="output_dir" type="text" placeholder="E:\path\to\Results" />
-            <button type="button" class="btn btn-secondary browse-btn" id="browseOutputDir">Browse…</button>
+            <button type="button" class="btn btn-secondary browse-btn" id="browseOutputDir">Browse...</button>
+          </div>
+        </label>
+        <label>
+          Presets
+          <div class="path-row">
+            <button type="button" class="btn btn-secondary browse-btn" id="presetTorchCpu">Torch CPU</button>
+            <button type="button" class="btn btn-secondary browse-btn" id="presetTorchGpu">Torch GPU</button>
+            <button type="button" class="btn btn-secondary browse-btn" id="presetMultiwfn">Multiwfn</button>
+          </div>
+        </label>
+        <label>
+          Processing Buttons
+          <div class="path-row">
+            <button type="button" class="btn btn-secondary browse-btn" id="processingAutoBtn">Auto</button>
+            <button type="button" class="btn btn-secondary browse-btn" id="processingSingleBtn">Single</button>
+            <button type="button" class="btn btn-secondary browse-btn" id="processingMultiBtn">Multi</button>
           </div>
         </label>
 
         <label>
           Processing Mode
           <select id="processing" name="processing">
+            <option value="auto">auto</option>
             <option value="single">single</option>
             <option value="multi">multi</option>
           </select>
@@ -62,6 +79,48 @@
         <label>
           Workers (optional)
           <input id="workers" name="workers" type="number" min="1" placeholder="auto" />
+        </label>
+        <label>
+          NCI Backend
+          <select id="nciBackend" name="nci_backend">
+            <option value="torch">torch</option>
+            <option value="multiwfn">multiwfn</option>
+          </select>
+        </label>
+        <label>
+          NCI Device
+          <select id="nciDevice" name="nci_device">
+            <option value="cpu">cpu</option>
+            <option value="cuda">cuda</option>
+            <option value="auto">auto</option>
+          </select>
+        </label>
+        <label>
+          NCI Dtype
+          <select id="nciDtype" name="nci_dtype">
+            <option value="float32">float32</option>
+            <option value="float64">float64</option>
+          </select>
+        </label>
+        <label>
+          Grid Spacing (Angstrom)
+          <input id="nciGridSpacing" name="nci_grid_spacing" type="number" step="0.01" min="0.01" value="0.2" />
+        </label>
+        <label>
+          Grid Padding (Angstrom)
+          <input id="nciGridPadding" name="nci_grid_padding" type="number" step="0.1" min="0.0" value="3.0" />
+        </label>
+        <label>
+          NCI Batch Size
+          <input id="nciBatchSize" name="nci_batch_size" type="number" min="1" value="250000" />
+        </label>
+        <label>
+          NCI Eig Batch Size
+          <input id="nciEigBatchSize" name="nci_eig_batch_size" type="number" min="1" value="200000" />
+        </label>
+        <label>
+          Rho Floor
+          <input id="nciRhoFloor" name="nci_rho_floor" type="number" step="1e-13" min="0" value="1e-12" />
         </label>
 
         <label>
@@ -82,9 +141,11 @@
           <label><input type="checkbox" id="force" /> Force Recompute</label>
           <label><input type="checkbox" id="clean" /> Clean Existing Result Dir</label>
           <label><input type="checkbox" id="debug" /> Debug Logs</label>
-          <label><input type="checkbox" id="storageEfficient" /> Storage Efficient Cleanup</label>
+          <label><input type="checkbox" id="storageEfficient" checked /> Storage Efficient Cleanup</label>
           <label><input type="checkbox" id="refreshAutoconfig" /> Refresh Autoconfig</label>
+          <label><input type="checkbox" id="refreshFirstRun" /> Refresh First-Run Checks</label>
           <label><input type="checkbox" id="quietConfig" /> Quiet Config Banner</label>
+          <label><input type="checkbox" id="nciPrimitiveNorm" /> Primitive Normalization</label>
         </div>
 
         <div class="actions">
@@ -194,7 +255,7 @@
     </div>
   </div>
 
-  <script src="{{ url_for('static', filename='app.js') }}"></script>
+  <script src="{{ url_for('static', filename='app.js', v=asset_version) }}"></script>
 </body>
 
 </html>

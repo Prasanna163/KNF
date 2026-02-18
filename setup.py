@@ -33,6 +33,9 @@ setup(
         'flask>=3.0.0',
         # 'rdkit', # Assuming rdkit is pre-installed in the environment (e.g., conda)
     ],
+    extras_require={
+        'torch-nci': ['torch'],
+    },
     classifiers=[
         'Programming Language :: Python :: 3',
         'Programming Language :: Python :: 3.8',

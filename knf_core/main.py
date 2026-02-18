@@ -23,7 +23,7 @@ from rich.table import Table
 CLI_TITLE = "KNF-Core v1.0"
 DISPLAY_NAME_LIMIT = 40
 
-def check_dependencies(multiwfn_path: str = None):
+def check_dependencies(multiwfn_path: str = None, nci_backend: str = "torch"):
     """Checks if required external tools are available in PATH."""
     # Attempt to add Multiwfn to PATH if missing
     utils.ensure_multiwfn_in_path(explicit_path=multiwfn_path)
@@ -36,7 +36,8 @@ def check_dependencies(multiwfn_path: str = None):
     if not shutil.which('xtb'):
         missing.append('xtb (Extended Tight Binding)')
         
-    if not shutil.which('Multiwfn') and not shutil.which('Multiwfn.exe'):
+    backend = (nci_backend or "multiwfn").strip().lower()
+    if backend == "multiwfn" and not shutil.which('Multiwfn') and not shutil.which('Multiwfn.exe'):
         missing.append('Multiwfn')
         
     if missing:
@@ -46,20 +47,33 @@ def check_dependencies(multiwfn_path: str = None):
         print("Please resolve these dependencies for full functionality.")
         print("-" * 50)
 
+def _build_pipeline(file_path: str, args, output_root: str = None) -> KNFPipeline:
+    return KNFPipeline(
+        input_file=file_path,
+        charge=args.charge,
+        spin=args.spin,
+        force=args.force,
+        clean=args.clean,
+        debug=args.debug,
+        output_root=output_root,
+        keep_full_files=args.full_files,
+        nci_backend=args.nci_backend,
+        nci_grid_spacing=args.nci_grid_spacing,
+        nci_grid_padding=args.nci_grid_padding,
+        nci_device=args.nci_device,
+        nci_dtype=args.nci_dtype,
+        nci_batch_size=args.nci_batch_size,
+        nci_eig_batch_size=args.nci_eig_batch_size,
+        nci_rho_floor=args.nci_rho_floor,
+        nci_apply_primitive_norm=args.nci_apply_primitive_norm,
+    )
+
+
 def process_file(file_path: str, args, output_root: str = None):
     """Runs the pipeline for a single file and returns status."""
     start = time.perf_counter()
     try:
-        pipeline = KNFPipeline(
-            input_file=file_path,
-            charge=args.charge,
-            spin=args.spin,
-            force=args.force,
-            clean=args.clean,
-            debug=args.debug,
-            output_root=output_root,
-            storage_efficient=args.storage_efficient,
-        )
+        pipeline = _build_pipeline(file_path, args, output_root=output_root)
         pipeline.run()
         return True, None, time.perf_counter() - start
     except Exception as e:
@@ -67,6 +81,35 @@ def process_file(file_path: str, args, output_root: str = None):
             logging.exception(f"Error processing {file_path}:")
         else:
             logging.error(f"Error processing {file_path}: {e}")
+        return False, str(e), time.perf_counter() - start
+
+
+def process_file_pre_nci(file_path: str, args, output_root: str = None):
+    """Runs pre-NCI stages only (geometry + xTB) and returns pipeline context."""
+    start = time.perf_counter()
+    try:
+        pipeline = _build_pipeline(file_path, args, output_root=output_root)
+        context = pipeline.run_pre_nci_stage()
+        return True, None, time.perf_counter() - start, pipeline, context
+    except Exception as e:
+        if args.debug:
+            logging.exception(f"Pre-NCI error processing {file_path}:")
+        else:
+            logging.error(f"Pre-NCI error processing {file_path}: {e}")
+        return False, str(e), time.perf_counter() - start, None, None
+
+
+def process_file_post_nci(pipeline: KNFPipeline, context: dict, file_path: str):
+    """Runs post-NCI stage (NCI + SNCI/SCDI + final output write)."""
+    start = time.perf_counter()
+    try:
+        pipeline.run_post_nci_stage(context)
+        return True, None, time.perf_counter() - start
+    except Exception as e:
+        if pipeline.debug:
+            logging.exception(f"Post-NCI error processing {file_path}:")
+        else:
+            logging.error(f"Post-NCI error processing {file_path}: {e}")
         return False, str(e), time.perf_counter() - start
 
 
@@ -322,6 +365,14 @@ def run_batch_directory(directory: str, args):
 
     results_root = resolve_results_root(directory, args.output_dir)
     mode = args.processing.lower()
+    if mode == "auto":
+        mode = "multi" if len(files) > 1 else "single"
+    use_gpu_overlap = (
+        mode == "multi"
+        and len(files) > 1
+        and (args.nci_backend or "").strip().lower() == "torch"
+        and (args.nci_device or "").strip().lower() == "cuda"
+    )
     workers = 1
     failures = []
     batch_records = []
@@ -390,8 +441,11 @@ def run_batch_directory(directory: str, args):
         header.add_row("KNF-Core", "v1.0")
         header.add_row("Detected", f"{physical}C / {logical}T")
         if mode == "multi":
-            mode_text = "auto" if args.workers is None else "manual"
-            header.add_row("Mode", f"multi ({mode_text} -> {workers} workers)")
+            if use_gpu_overlap:
+                header.add_row("Mode", f"multi (cpu->gpu overlap: {workers} CPU + 1 GPU)")
+            else:
+                mode_text = "auto" if args.workers is None else "manual"
+                header.add_row("Mode", f"multi ({mode_text} -> {workers} workers)")
         else:
             header.add_row("Mode", "single")
         header.add_row("Files", str(total))
@@ -450,6 +504,94 @@ def run_batch_directory(directory: str, args):
                     completed_rows.append((_display_name(file_path), f"{elapsed:.1f}s", "[red]FAIL[/red]"))
                 live.update(render(active_workers=0))
                 queue.task_done()
+    elif use_gpu_overlap:
+        with Live(render(active_workers=workers + 1), console=console, refresh_per_second=5, transient=False) as live:
+            with ThreadPoolExecutor(max_workers=workers) as cpu_executor, ThreadPoolExecutor(max_workers=1) as gpu_executor:
+                pre_futures = {
+                    cpu_executor.submit(process_file_pre_nci, file_path, args, results_root): file_path
+                    for file_path in files
+                }
+                post_futures = {}
+
+                while pre_futures or post_futures:
+                    done_pre = []
+                    if pre_futures:
+                        try:
+                            for future in as_completed(pre_futures, timeout=0.2):
+                                done_pre.append(future)
+                                if len(done_pre) >= workers:
+                                    break
+                        except TimeoutError:
+                            pass
+
+                    for future in done_pre:
+                        file_path = pre_futures.pop(future)
+                        try:
+                            success, error, pre_elapsed, pipeline, context = future.result()
+                        except Exception as e:
+                            success, error, pre_elapsed, pipeline, context = False, str(e), 0.0, None, None
+
+                        if success:
+                            post_future = gpu_executor.submit(process_file_post_nci, pipeline, context, file_path)
+                            post_futures[post_future] = (file_path, pre_elapsed)
+                        else:
+                            completed += 1
+                            progress.advance(task_id, 1)
+                            failures.append((file_path, error))
+                            batch_records.append(
+                                {
+                                    "input_file": file_path,
+                                    "status": "failed",
+                                    "elapsed_seconds": pre_elapsed,
+                                    "error": str(error),
+                                }
+                            )
+                            completed_rows.append((_display_name(file_path), f"{pre_elapsed:.1f}s", "[red]FAIL[/red]"))
+
+                    done_post = []
+                    if post_futures:
+                        try:
+                            for future in as_completed(post_futures, timeout=0.2):
+                                done_post.append(future)
+                                break
+                        except TimeoutError:
+                            pass
+
+                    for future in done_post:
+                        file_path, pre_elapsed = post_futures.pop(future)
+                        try:
+                            success, error, post_elapsed = future.result()
+                        except Exception as e:
+                            success, error, post_elapsed = False, str(e), 0.0
+
+                        total_elapsed_file = pre_elapsed + post_elapsed
+                        completed += 1
+                        progress.advance(task_id, 1)
+                        if success:
+                            succeeded += 1
+                            batch_records.append(
+                                {
+                                    "input_file": file_path,
+                                    "status": "success",
+                                    "elapsed_seconds": total_elapsed_file,
+                                    "error": None,
+                                }
+                            )
+                            completed_rows.append((_display_name(file_path), f"{total_elapsed_file:.1f}s", "[green]OK[/green]"))
+                        else:
+                            failures.append((file_path, error))
+                            batch_records.append(
+                                {
+                                    "input_file": file_path,
+                                    "status": "failed",
+                                    "elapsed_seconds": total_elapsed_file,
+                                    "error": str(error),
+                                }
+                            )
+                            completed_rows.append((_display_name(file_path), f"{total_elapsed_file:.1f}s", "[red]FAIL[/red]"))
+
+                    active_workers = min(workers, len(pre_futures)) + (1 if post_futures else 0)
+                    live.update(render(active_workers=active_workers))
     else:
         with Live(render(active_workers=workers), console=console, refresh_per_second=5, transient=False) as live:
             with ThreadPoolExecutor(max_workers=workers) as executor:
@@ -546,17 +688,11 @@ def main():
             format='%(asctime)s - %(levelname)s - %(message)s',
             datefmt='%H:%M:%S'
         )
-        first_ok = first_run.ensure_first_run_setup()
-        check_dependencies()
-        if not first_ok:
-            print("First-time setup is incomplete. Please install missing tools and run again.")
-            sys.exit(1)
         print("\n------------------------------------------------------------")
         print("      KNF-Core Interactive Mode")
         print("------------------------------------------------------------\n")
         
         while True:
-            # Only ask for input path. No other prompts.
             input_path = input("Enter path to input file or folder (or 'q' to quit): ").strip()
             if input_path.lower() == 'q':
                 sys.exit(0)
@@ -568,6 +704,13 @@ def main():
                 print(f"Error: Path '{input_path}' not found.")
                 continue
             break
+
+        nci_mode = input(
+            "Run mode [default/gpu/multiwfn] (default: default): "
+        ).strip().lower()
+        if nci_mode not in {"", "default", "gpu", "multiwfn"}:
+            print(f"Unknown mode '{nci_mode}'. Using default.")
+            nci_mode = "default"
         
         # Define defaults for interactive mode
         class Args:
@@ -577,18 +720,42 @@ def main():
             clean = True # "Just do this" often implies fresh run.
             debug = True # Helpful for user to see what's happening.
             output_dir = None
-            processing = 'single'
+            processing = 'auto'
             workers = None
             ram_per_job = 50.0
             refresh_autoconfig = False
             quiet_config = False
-            storage_efficient = False
+            full_files = False
+            nci_backend = "torch"
+            nci_grid_spacing = 0.2
+            nci_grid_padding = 3.0
+            nci_device = "cpu"
+            nci_dtype = "float32"
+            nci_batch_size = 250000
+            nci_eig_batch_size = 200000
+            nci_rho_floor = 1e-12
+            nci_apply_primitive_norm = False
             
         args = Args()
+
+        if nci_mode == "gpu":
+            args.nci_backend = "torch"
+            args.nci_device = "cuda"
+        elif nci_mode == "multiwfn":
+            args.nci_backend = "multiwfn"
+            args.nci_device = "auto"
+
+        first_ok = first_run.ensure_first_run_setup(
+            require_multiwfn=(args.nci_backend == "multiwfn"),
+        )
+        check_dependencies(nci_backend=args.nci_backend)
+        if not first_ok:
+            print("First-time setup is incomplete. Please install missing tools and run again.")
+            sys.exit(1)
         
         if os.path.isdir(input_path):
-            mode = input("Processing mode [single/multi] (default: single): ").strip().lower()
-            if mode in {'single', 'multi'}:
+            mode = input("Processing mode [auto/single/multi] (default: auto): ").strip().lower()
+            if mode in {'auto', 'single', 'multi'}:
                 args.processing = mode
             run_batch_directory(input_path, args)
         else:
@@ -616,9 +783,19 @@ def main():
         '--processing',
         '--processes',
         dest='processing',
-        choices=['single', 'multi'],
-        default='single',
-        help="Batch processing mode for directories (alias: --processes)"
+        choices=['auto', 'single', 'multi'],
+        default='auto',
+        help="Processing mode: auto (default), single, multi"
+    )
+    parser.add_argument(
+        '--multi',
+        action='store_true',
+        help="Shortcut for --processing multi"
+    )
+    parser.add_argument(
+        '--single',
+        action='store_true',
+        help="Shortcut for --processing single"
     )
     parser.add_argument(
         '--workers',
@@ -648,12 +825,74 @@ def main():
         help="Hide auto-configuration summary banner"
     )
     parser.add_argument(
-        '--storage-efficient',
+        '--full-files',
         action='store_true',
         help=(
-            "Delete heavy intermediate files after each successful molecule run "
-            "(keeps knf.json, output.txt, and batch aggregates)"
+            "Keep all intermediate and large files. "
+            "Default behavior is storage-efficient cleanup."
         ),
+    )
+    parser.add_argument(
+        '--gpu',
+        action='store_true',
+        help="Shortcut: use torch NCI backend on CUDA"
+    )
+    parser.add_argument(
+        '--multiwfn',
+        action='store_true',
+        help="Use Multiwfn backend for NCI instead of default Torch backend"
+    )
+    parser.add_argument(
+        '--nci-backend',
+        choices=['multiwfn', 'torch'],
+        default='torch',
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        '--nci-grid-spacing',
+        type=float,
+        default=0.2,
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        '--nci-grid-padding',
+        type=float,
+        default=3.0,
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        '--nci-device',
+        default='cpu',
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        '--nci-dtype',
+        choices=['float32', 'float64'],
+        default='float32',
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        '--nci-batch-size',
+        type=int,
+        default=250000,
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        '--nci-eig-batch-size',
+        type=int,
+        default=200000,
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        '--nci-rho-floor',
+        type=float,
+        default=1e-12,
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        '--nci-apply-primitive-norm',
+        action='store_true',
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         '--refresh-first-run',
@@ -669,6 +908,24 @@ def main():
     args = parser.parse_args()
     args.input_path = utils.resolve_artifacted_path(args.input_path)
 
+    if args.multi and args.single:
+        parser.error("Use only one of --multi or --single.")
+    if args.gpu and args.multiwfn:
+        parser.error("Use only one of --gpu or --multiwfn.")
+
+    if args.multi:
+        args.processing = "multi"
+    elif args.single:
+        args.processing = "single"
+
+    if args.multiwfn:
+        args.nci_backend = "multiwfn"
+        args.nci_device = "auto"
+    elif args.gpu:
+        args.nci_backend = "torch"
+        args.nci_device = "cuda"
+        args.nci_dtype = "float64"
+
     # Configure logging after CLI args are known.
     if args.debug:
         logging.basicConfig(
@@ -682,8 +939,9 @@ def main():
     first_ok = first_run.ensure_first_run_setup(
         force=args.refresh_first_run,
         multiwfn_path=args.multiwfn_path,
+        require_multiwfn=(args.nci_backend == "multiwfn"),
     )
-    check_dependencies(multiwfn_path=args.multiwfn_path)
+    check_dependencies(multiwfn_path=args.multiwfn_path, nci_backend=args.nci_backend)
     if not first_ok:
         logging.error("First-time setup is incomplete. Install missing tools and retry.")
         sys.exit(1)

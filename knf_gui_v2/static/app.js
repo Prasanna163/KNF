@@ -31,6 +31,22 @@ const els = {
   jobHistory: document.getElementById("jobHistory"),
   inputPath: document.getElementById("inputPath"),
   outputDir: document.getElementById("outputDir"),
+  presetTorchCpu: document.getElementById("presetTorchCpu"),
+  presetTorchGpu: document.getElementById("presetTorchGpu"),
+  presetMultiwfn: document.getElementById("presetMultiwfn"),
+  processingAutoBtn: document.getElementById("processingAutoBtn"),
+  processingSingleBtn: document.getElementById("processingSingleBtn"),
+  processingMultiBtn: document.getElementById("processingMultiBtn"),
+  nciBackend: document.getElementById("nciBackend"),
+  nciDevice: document.getElementById("nciDevice"),
+  nciDtype: document.getElementById("nciDtype"),
+  nciGridSpacing: document.getElementById("nciGridSpacing"),
+  nciGridPadding: document.getElementById("nciGridPadding"),
+  nciBatchSize: document.getElementById("nciBatchSize"),
+  nciEigBatchSize: document.getElementById("nciEigBatchSize"),
+  nciRhoFloor: document.getElementById("nciRhoFloor"),
+  refreshFirstRun: document.getElementById("refreshFirstRun"),
+  nciPrimitiveNorm: document.getElementById("nciPrimitiveNorm"),
   browseInputFile: document.getElementById("browseInputFile"),
   browseInputDir: document.getElementById("browseInputDir"),
   browseOutputDir: document.getElementById("browseOutputDir"),
@@ -115,7 +131,7 @@ function setupDropZone() {
 
 async function handleFileUpload(file) {
   try {
-    els.dropFilename.textContent = `Uploading ${file.name}…`;
+    els.dropFilename.textContent = `Uploading ${file.name}...`;
     const result = await uploadFile(file);
     els.inputPath.value = result.path;
     els.dropFilename.textContent = `✓ ${result.filename}`;
@@ -131,7 +147,7 @@ async function fetchMolecule3D(path) {
   if (!path) return;
 
   const container = els.moleculeViewer;
-  container.innerHTML = "Loading 3D structure…";
+  container.innerHTML = "Loading 3D structure...";
   container.style.color = "#6e6e73";
 
   try {
@@ -275,6 +291,14 @@ function payloadFromForm() {
     input_path: document.getElementById("inputPath").value.trim(),
     output_dir: document.getElementById("outputDir").value.trim() || null,
     processing: document.getElementById("processing").value,
+    nci_backend: document.getElementById("nciBackend").value,
+    nci_device: document.getElementById("nciDevice").value,
+    nci_dtype: document.getElementById("nciDtype").value,
+    nci_grid_spacing: Number(document.getElementById("nciGridSpacing").value || 0.2),
+    nci_grid_padding: Number(document.getElementById("nciGridPadding").value || 3.0),
+    nci_batch_size: Number(document.getElementById("nciBatchSize").value || 250000),
+    nci_eig_batch_size: Number(document.getElementById("nciEigBatchSize").value || 200000),
+    nci_rho_floor: Number(document.getElementById("nciRhoFloor").value || 1e-12),
     workers: document.getElementById("workers").value.trim() || null,
     charge: Number(document.getElementById("charge").value || 0),
     spin: Number(document.getElementById("spin").value || 1),
@@ -284,9 +308,15 @@ function payloadFromForm() {
     debug: document.getElementById("debug").checked,
     storage_efficient: document.getElementById("storageEfficient").checked,
     refresh_autoconfig: document.getElementById("refreshAutoconfig").checked,
+    refresh_first_run: document.getElementById("refreshFirstRun").checked,
     quiet_config: document.getElementById("quietConfig").checked,
+    nci_apply_primitive_norm: document.getElementById("nciPrimitiveNorm").checked,
     multiwfn_path: state.multiwfnPath || null,
   };
+}
+
+function isMultiwfnBackendSelected() {
+  return (els.nciBackend?.value || "torch") === "multiwfn";
 }
 
 function showMultiwfnModal(message = "") {
@@ -301,7 +331,7 @@ function hideMultiwfnModal() {
   els.multiwfnModal.classList.add("hidden");
 }
 
-async function refreshDependencyStatus(showPromptIfMissing = false) {
+async function refreshDependencyStatus(requireMultiwfn = false, showPromptIfMissing = false) {
   const payload = await jsonFetch("/api/dependencies");
   const dep = payload?.multiwfn || {};
   state.multiwfnDetected = !!dep.detected;
@@ -309,10 +339,82 @@ async function refreshDependencyStatus(showPromptIfMissing = false) {
   if (state.multiwfnPath) {
     els.multiwfnPath.value = state.multiwfnPath;
   }
-  if (!state.multiwfnDetected && showPromptIfMissing) {
+  if (requireMultiwfn && !state.multiwfnDetected && showPromptIfMissing) {
     showMultiwfnModal("Multiwfn is required before launching jobs.");
-  } else if (state.multiwfnDetected) {
+  } else if (!requireMultiwfn || state.multiwfnDetected) {
     hideMultiwfnModal();
+  }
+}
+
+function syncBackendControls() {
+  const useMultiwfn = isMultiwfnBackendSelected();
+  if (useMultiwfn) {
+    els.nciDevice.value = "auto";
+    els.nciDevice.disabled = true;
+    els.nciDtype.disabled = true;
+    els.nciGridSpacing.disabled = true;
+    els.nciGridPadding.disabled = true;
+    els.nciBatchSize.disabled = true;
+    els.nciEigBatchSize.disabled = true;
+    els.nciRhoFloor.disabled = true;
+    els.nciPrimitiveNorm.disabled = true;
+  } else {
+    els.nciDevice.disabled = false;
+    els.nciDtype.disabled = false;
+    els.nciGridSpacing.disabled = false;
+    els.nciGridPadding.disabled = false;
+    els.nciBatchSize.disabled = false;
+    els.nciEigBatchSize.disabled = false;
+    els.nciRhoFloor.disabled = false;
+    els.nciPrimitiveNorm.disabled = false;
+  }
+}
+
+function applyPreset(preset) {
+  if (preset === "torch-cpu") {
+    els.nciBackend.value = "torch";
+    els.nciDevice.value = "cpu";
+    els.nciDtype.value = "float32";
+    els.nciGridSpacing.value = "0.2";
+    els.nciGridPadding.value = "3.0";
+    els.nciBatchSize.value = "250000";
+    els.nciEigBatchSize.value = "200000";
+    els.nciRhoFloor.value = "1e-12";
+  } else if (preset === "torch-gpu") {
+    els.nciBackend.value = "torch";
+    els.nciDevice.value = "cuda";
+    els.nciDtype.value = "float64";
+    els.nciGridSpacing.value = "0.2";
+    els.nciGridPadding.value = "3.0";
+    els.nciBatchSize.value = "250000";
+    els.nciEigBatchSize.value = "200000";
+    els.nciRhoFloor.value = "1e-12";
+  } else if (preset === "multiwfn") {
+    els.nciBackend.value = "multiwfn";
+    els.nciDevice.value = "auto";
+  }
+  syncBackendControls();
+  refreshDependencyStatus(isMultiwfnBackendSelected(), false).catch(() => {});
+}
+
+function applyProcessingMode(mode) {
+  if (!["auto", "single", "multi"].includes(mode)) return;
+  document.getElementById("processing").value = mode;
+}
+
+function sanitizeNumericPayload(payload) {
+  // Keep the command clean by not sending NaN/invalid values.
+  const fallback = {
+    nci_grid_spacing: 0.2,
+    nci_grid_padding: 3.0,
+    nci_batch_size: 250000,
+    nci_eig_batch_size: 200000,
+    nci_rho_floor: 1e-12,
+  };
+  for (const [key, value] of Object.entries(fallback)) {
+    if (!Number.isFinite(payload[key])) {
+      payload[key] = value;
+    }
   }
 }
 
@@ -461,7 +563,7 @@ function renderHistory(jobs) {
 async function pullCurrentJob() {
   if (!state.currentJobId) return;
   if (state.currentJobInFlight) return;
-  if (["completed", "failed", "cancelled"].includes(state.currentJobStatus)) return;
+  if (["completed", "succeeded", "failed", "cancelled"].includes(state.currentJobStatus)) return;
   state.currentJobInFlight = true;
   try {
     const job = await jsonFetch(`/api/jobs/${state.currentJobId}`);
@@ -502,17 +604,19 @@ async function checkHealth() {
 
 async function startRun(event) {
   event.preventDefault();
+  const payload = payloadFromForm();
+  sanitizeNumericPayload(payload);
+  const requireMultiwfn = payload.nci_backend === "multiwfn";
   try {
-    await refreshDependencyStatus(true);
+    await refreshDependencyStatus(requireMultiwfn, true);
   } catch (err) {
     alert(err.message);
     return;
   }
-  if (!state.multiwfnDetected) {
+  if (requireMultiwfn && !state.multiwfnDetected) {
     showMultiwfnModal("Set Multiwfn path to continue.");
     return;
   }
-  const payload = payloadFromForm();
   try {
     const out = await jsonFetch("/api/run", {
       method: "POST",
@@ -581,14 +685,27 @@ function init() {
   els.browseInputFile.addEventListener("click", () => browsePath("file", els.inputPath));
   els.browseInputDir.addEventListener("click", () => browsePath("directory", els.inputPath));
   els.browseOutputDir.addEventListener("click", () => browsePath("directory", els.outputDir));
+  els.presetTorchCpu.addEventListener("click", () => applyPreset("torch-cpu"));
+  els.presetTorchGpu.addEventListener("click", () => applyPreset("torch-gpu"));
+  els.presetMultiwfn.addEventListener("click", () => applyPreset("multiwfn"));
+  els.processingAutoBtn.addEventListener("click", () => applyProcessingMode("auto"));
+  els.processingSingleBtn.addEventListener("click", () => applyProcessingMode("single"));
+  els.processingMultiBtn.addEventListener("click", () => applyProcessingMode("multi"));
+  els.nciBackend.addEventListener("change", () => {
+    syncBackendControls();
+    refreshDependencyStatus(isMultiwfnBackendSelected(), false).catch(() => {});
+  });
   els.browseMultiwfnFile.addEventListener("click", () => browseMultiwfnPath("multiwfn_file"));
   els.browseMultiwfnDir.addEventListener("click", () => browseMultiwfnPath("multiwfn_directory"));
   els.saveMultiwfnPath.addEventListener("click", saveMultiwfnPath);
   els.closeMultiwfnModal.addEventListener("click", hideMultiwfnModal);
   setupDropZone();
+  syncBackendControls();
   checkHealth();
-  refreshDependencyStatus(true).catch((err) => {
-    showMultiwfnModal(err.message);
+  refreshDependencyStatus(isMultiwfnBackendSelected(), true).catch((err) => {
+    if (isMultiwfnBackendSelected()) {
+      showMultiwfnModal(err.message);
+    }
   });
   pullJobs();
   startPolling();

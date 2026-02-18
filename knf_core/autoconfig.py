@@ -76,6 +76,7 @@ def _load_cached_config(project_root: Optional[str] = None) -> Optional[dict]:
 
 def _save_cached_config(payload: dict, project_root: Optional[str] = None) -> None:
     path = _config_path(project_root)
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 

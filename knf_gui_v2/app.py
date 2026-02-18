@@ -60,6 +60,20 @@ def _append_log(job: dict, line: str):
         del logs[:overflow]
 
 
+def _as_int(value, default: int) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return int(default)
+
+
+def _as_float(value, default: float) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return float(default)
+
+
 def _resolve_results_root(input_path: str, output_dir: Optional[str]) -> str:
     if output_dir:
         return os.path.abspath(output_dir)
@@ -165,21 +179,33 @@ def _normalize_payload(raw: dict) -> dict:
     payload["input_path"] = input_path
     payload["output_dir"] = (payload.get("output_dir") or "").strip() or None
     payload["processing"] = (payload.get("processing") or "single").lower()
-    payload["charge"] = int(payload.get("charge", 0))
-    payload["spin"] = int(payload.get("spin", 1))
-    payload["ram_per_job"] = float(payload.get("ram_per_job", 50.0))
+    payload["nci_backend"] = (payload.get("nci_backend") or "torch").strip().lower()
+    payload["nci_device"] = (payload.get("nci_device") or "cpu").strip().lower()
+    payload["nci_dtype"] = (payload.get("nci_dtype") or "float32").strip().lower()
+    payload["nci_grid_spacing"] = _as_float(payload.get("nci_grid_spacing", 0.2), 0.2)
+    payload["nci_grid_padding"] = _as_float(payload.get("nci_grid_padding", 3.0), 3.0)
+    payload["nci_batch_size"] = _as_int(payload.get("nci_batch_size", 250000), 250000)
+    payload["nci_eig_batch_size"] = _as_int(payload.get("nci_eig_batch_size", 200000), 200000)
+    payload["nci_rho_floor"] = _as_float(payload.get("nci_rho_floor", 1e-12), 1e-12)
+    payload["charge"] = _as_int(payload.get("charge", 0), 0)
+    payload["spin"] = _as_int(payload.get("spin", 1), 1)
+    payload["ram_per_job"] = _as_float(payload.get("ram_per_job", 50.0), 50.0)
     workers = payload.get("workers")
-    payload["workers"] = int(workers) if workers not in (None, "", 0, "0") else None
+    payload["workers"] = _as_int(workers, 1) if workers not in (None, "", 0, "0") else None
     payload["multiwfn_path"] = (payload.get("multiwfn_path") or "").strip() or None
     for flag in (
         "force",
         "clean",
         "debug",
         "refresh_autoconfig",
+        "refresh_first_run",
         "quiet_config",
-        "storage_efficient",
+        "nci_apply_primitive_norm",
     ):
         payload[flag] = bool(payload.get(flag, False))
+    payload["storage_efficient"] = bool(payload.get("storage_efficient", True))
+    # New CLI uses --full-files; keep legacy GUI checkbox as inverse.
+    payload["full_files"] = not bool(payload["storage_efficient"])
     return payload
 
 
@@ -189,6 +215,14 @@ def _build_command(payload: dict) -> list:
     cmd.extend(["--spin", str(payload["spin"])])
     cmd.extend(["--processing", payload["processing"]])
     cmd.extend(["--ram-per-job", str(payload["ram_per_job"])])
+    cmd.extend(["--nci-backend", payload["nci_backend"]])
+    cmd.extend(["--nci-device", payload["nci_device"]])
+    cmd.extend(["--nci-dtype", payload["nci_dtype"]])
+    cmd.extend(["--nci-grid-spacing", str(payload["nci_grid_spacing"])])
+    cmd.extend(["--nci-grid-padding", str(payload["nci_grid_padding"])])
+    cmd.extend(["--nci-batch-size", str(payload["nci_batch_size"])])
+    cmd.extend(["--nci-eig-batch-size", str(payload["nci_eig_batch_size"])])
+    cmd.extend(["--nci-rho-floor", str(payload["nci_rho_floor"])])
     if payload["workers"] is not None:
         cmd.extend(["--workers", str(payload["workers"])])
     if payload["output_dir"]:
@@ -203,10 +237,14 @@ def _build_command(payload: dict) -> list:
         cmd.append("--debug")
     if payload["refresh_autoconfig"]:
         cmd.append("--refresh-autoconfig")
+    if payload["refresh_first_run"]:
+        cmd.append("--refresh-first-run")
     if payload["quiet_config"]:
         cmd.append("--quiet-config")
-    if payload["storage_efficient"]:
-        cmd.append("--storage-efficient")
+    if payload["nci_apply_primitive_norm"]:
+        cmd.append("--nci-apply-primitive-norm")
+    if payload["full_files"]:
+        cmd.append("--full-files")
     return cmd
 
 
@@ -267,7 +305,7 @@ def create_app() -> Flask:
 
     @app.get("/")
     def index():
-        return render_template("index.html")
+        return render_template("index.html", asset_version=int(time.time()))
 
     @app.get("/api/health")
     def health():
@@ -335,8 +373,8 @@ def create_app() -> Flask:
             return jsonify({"error": "input_path is required"}), 400
         if not os.path.exists(payload["input_path"]):
             return jsonify({"error": f"Input path not found: {payload['input_path']}"}), 400
-        if payload["processing"] not in {"single", "multi"}:
-            return jsonify({"error": "processing must be 'single' or 'multi'"}), 400
+        if payload["processing"] not in {"auto", "single", "multi"}:
+            return jsonify({"error": "processing must be 'auto', 'single', or 'multi'"}), 400
 
         job_id = str(uuid.uuid4())
         cmd = _build_command(payload)
