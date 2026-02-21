@@ -2,7 +2,8 @@
 
 KNF-CORE is an automated computational chemistry pipeline that generates:
 - SNCI
-- SCDI variance
+- SCDI (normalized; when fixed bounds are provided)
+- SCDI variance (raw VarA)
 - 9D KNF vector (`f1` to `f9`)
 
 from molecular structure files using xTB + NCI backend + KNF post-processing.
@@ -116,6 +117,14 @@ knf input_molecule.sdf
 - `--full-files`
 - `--refresh-first-run`
 - `--multiwfn-path <path>`
+- `--scdi-var-min <float>`
+- `--scdi-var-max <float>`
+
+SCDI normalization can also be provided globally via:
+- `KNF_SCDI_VAR_MIN`
+- `KNF_SCDI_VAR_MAX`
+
+If bounds are not provided, KNF still computes and reports raw `SCDI_variance` (VarA), and `SCDI` is emitted as `null`/`n/a`.
 
 ### Backend options
 
