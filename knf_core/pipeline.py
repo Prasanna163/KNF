@@ -115,7 +115,7 @@ class KNFPipeline:
 
     def _stage(self, index: int, name: str):
         if self.debug:
-            logging.info(f"[{index}/4] {name}")
+            logging.info(f"[{index}/5] {name}")
         
     def setup_directories(self):
         """Creates directory structure."""
@@ -137,6 +137,17 @@ class KNFPipeline:
 
         self._stage(1, "Geometry")
         target_xyz = converter.ensure_xyz(self.input_file, self.input_dir)
+
+        # ---- .xyz format warning ------------------------------------
+        input_ext = os.path.splitext(self.input_file)[1].lower()
+        if input_ext == '.xyz':
+            logging.warning(
+                "⚠️  Direct .xyz input detected. Be careful — .xyz files "
+                "carry no bond/connectivity information, so bond perception "
+                "is heuristic and may unintentionally alter bonds and affect "
+                "final convergence.  For best results, prefer "
+                ".mol / .mol2 / .sdf formats."
+            )
 
         mol = geometry.load_molecule(target_xyz)
         fragments = geometry.detect_fragments(mol)
@@ -175,14 +186,19 @@ class KNFPipeline:
 
         if not os.path.exists(optimized_xyz) or self.force:
             uhf = self.spin - 1
-            self._stage(2, "xTB Opt")
+            # ---- UFF pre-optimisation --------------------------------
+            self._stage(2, "UFF Pre-optimisation")
+            wrapper.run_uff_preopt(work_xyz)
+
+            self._stage(3, "xTB Opt")
             wrapper.run_xtb_opt(work_xyz, self.charge, uhf)
+
 
         wbo_file = os.path.join(self.results_dir, 'wbo')
         molden_file = os.path.join(self.results_dir, 'molden.input')
         if not os.path.exists(wbo_file) or not os.path.exists(molden_file) or self.force:
             uhf = self.spin - 1
-            self._stage(3, "xTB SP")
+            self._stage(4, "xTB SP")
             wrapper.run_xtb_sp(optimized_xyz, self.charge, uhf)
 
         cosmo_files = [f for f in os.listdir(self.results_dir) if f.endswith('.cosmo')]
@@ -232,7 +248,7 @@ class KNFPipeline:
 
         if not os.path.exists(nci_data_path) or self.force:
             if self.nci_backend == "multiwfn":
-                self._stage(4, "NCI (Multiwfn)")
+                self._stage(5, "NCI (Multiwfn)")
                 multiwfn.run_multiwfn(molden_file, self.results_dir)
                 if os.path.exists(nci_grid_file):
                     os.replace(nci_grid_file, final_grid_text_path)
@@ -240,7 +256,7 @@ class KNFPipeline:
                 else:
                     raise RuntimeError("Multiwfn executed but did not produce expected output.")
             elif self.nci_backend == "torch":
-                self._stage(4, "NCI (Torch Experimental)")
+                self._stage(5, "NCI (Torch Experimental)")
                 from .nci_torch import run_nci_torch
                 text_export_path = final_grid_text_path if self.keep_full_files else None
                 nci_engine_metadata = run_nci_torch(

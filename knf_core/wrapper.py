@@ -2,6 +2,86 @@ import os
 import subprocess
 import logging
 
+
+def run_uff_preopt(filepath: str, max_iters: int = 200) -> str:
+    """
+    Runs a UFF (Universal Force Field) pre-optimisation on the input
+    geometry using RDKit.  Overwrites *filepath* in-place with the
+    relaxed coordinates so that the downstream xTB optimiser starts
+    from a better initial geometry.
+
+    Returns the (unchanged) filepath for chaining convenience.
+    """
+    from rdkit import Chem
+    from rdkit.Chem import AllChem, rdDetermineBonds
+
+    ext = os.path.splitext(filepath)[1].lower()
+
+    # ---- load molecule ------------------------------------------------
+    if ext == '.xyz':
+        mol = Chem.MolFromXYZFile(filepath)
+        if mol is not None:
+            try:
+                rdDetermineBonds.DetermineConnectivity(mol)
+                rdDetermineBonds.DetermineBondOrders(mol)
+            except Exception as e:
+                logging.warning("UFF pre-opt: bond perception failed for "
+                                ".xyz input (%s). Skipping UFF step.", e)
+                return filepath
+    elif ext == '.mol' or ext == '.mol2':
+        mol = Chem.MolFromMolFile(filepath, removeHs=False)
+    elif ext == '.sdf':
+        suppl = Chem.SDMolSupplier(filepath, removeHs=False)
+        mol = suppl[0] if len(suppl) > 0 else None
+    else:
+        logging.warning("UFF pre-opt: unsupported extension '%s'. "
+                        "Skipping UFF step.", ext)
+        return filepath
+
+    if mol is None:
+        logging.warning("UFF pre-opt: RDKit failed to load %s. "
+                        "Skipping UFF step.", filepath)
+        return filepath
+
+    # ---- add hydrogens if missing & embed if no 3-D coords -----------
+    try:
+        mol = Chem.AddHs(mol, addCoords=True)
+    except Exception:
+        pass  # keep original if AddHs fails
+
+    if mol.GetNumConformers() == 0:
+        AllChem.EmbedMolecule(mol, AllChem.ETKDGv3())
+
+    # ---- UFF relaxation -----------------------------------------------
+    try:
+        ff_result = AllChem.UFFOptimizeMolecule(mol, maxIters=max_iters)
+        if ff_result == 0:
+            logging.info("UFF pre-optimisation converged in ≤%d iterations.",
+                         max_iters)
+        elif ff_result == 1:
+            logging.info("UFF pre-optimisation hit iteration cap (%d). "
+                         "Using best geometry so far.", max_iters)
+        else:
+            logging.warning("UFF setup/optimisation returned code %s. "
+                            "Skipping UFF step.", ff_result)
+            return filepath
+    except Exception as e:
+        logging.warning("UFF pre-opt failed (%s). Skipping UFF step.", e)
+        return filepath
+
+    # ---- write relaxed geometry back as XYZ ---------------------------
+    try:
+        xyz_block = Chem.MolToXYZBlock(mol)
+        with open(filepath, 'w', encoding='utf-8') as f:
+            f.write(xyz_block)
+        logging.info("UFF-relaxed geometry written to %s", filepath)
+    except Exception as e:
+        logging.warning("UFF pre-opt: failed to write relaxed geometry "
+                        "(%s). Original file preserved.", e)
+
+    return filepath
+
+
 def run_subprocess(cmd: list, cwd: str = None) -> subprocess.CompletedProcess:
     """Runs a subprocess command."""
     try:
