@@ -26,6 +26,8 @@ class KNFPipeline:
         nci_eig_batch_size: int = 200000,
         nci_rho_floor: float = 1e-12,
         nci_apply_primitive_norm: bool = False,
+        scdi_var_min: float = None,
+        scdi_var_max: float = None,
     ):
         self.input_file = utils.resolve_artifacted_path(input_file)
         self.charge = charge
@@ -46,6 +48,8 @@ class KNFPipeline:
         self.nci_eig_batch_size = nci_eig_batch_size
         self.nci_rho_floor = nci_rho_floor
         self.nci_apply_primitive_norm = bool(nci_apply_primitive_norm)
+        self.scdi_var_min = scdi_var_min
+        self.scdi_var_max = scdi_var_max
         
         self.base_name = Path(self.input_file).stem
         default_output_root = os.path.join(os.path.dirname(self.input_file), "Results")
@@ -185,8 +189,12 @@ class KNFPipeline:
             self._stage(3, "xTB SP")
             wrapper.run_xtb_sp(optimized_xyz, self.charge, uhf)
 
-        cosmo_files = [f for f in os.listdir(self.results_dir) if f.endswith('.cosmo')]
-        cosmo_file = os.path.join(self.results_dir, cosmo_files[0]) if cosmo_files else None
+        cosmo_files = sorted(f for f in os.listdir(self.results_dir) if f.endswith('.cosmo'))
+        cosmo_file = None
+        if "xtb.cosmo" in cosmo_files:
+            cosmo_file = os.path.join(self.results_dir, "xtb.cosmo")
+        elif cosmo_files:
+            cosmo_file = os.path.join(self.results_dir, cosmo_files[0])
 
         xtb_log = os.path.join(self.results_dir, 'xtb.log')
         try:
@@ -289,15 +297,23 @@ class KNFPipeline:
                 logging.error(f"SNCI computation failed: {e}")
 
         scdi_var = 0.0
+        scdi_value = None
         if cosmo_file:
             try:
-                scdi_var = scdi.compute_scdi(cosmo_file)
+                scdi_metrics = scdi.compute_scdi_metrics(
+                    cosmo_file,
+                    var_min=self.scdi_var_min,
+                    var_max=self.scdi_var_max,
+                )
+                scdi_var = scdi_metrics.variance
+                scdi_value = scdi_metrics.scdi
             except Exception as e:
                 logging.error(f"SCDI computation failed: {e}")
 
         vector = knf_vector.assemble_knf_vector(f1, f2, f3, f4, f5, f6, f7, f8, f9)
         result = knf_vector.KNFResult(
             SNCI=snci_val,
+            SCDI=scdi_value,
             SCDI_variance=scdi_var,
             KNF_vector=vector,
             metadata={

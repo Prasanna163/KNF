@@ -66,6 +66,8 @@ def _build_pipeline(file_path: str, args, output_root: str = None) -> KNFPipelin
         nci_eig_batch_size=args.nci_eig_batch_size,
         nci_rho_floor=args.nci_rho_floor,
         nci_apply_primitive_norm=args.nci_apply_primitive_norm,
+        scdi_var_min=args.scdi_var_min,
+        scdi_var_max=args.scdi_var_max,
     )
 
 
@@ -327,7 +329,7 @@ def write_batch_aggregate_json(
     with open(aggregate_path, "w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2)
 
-    csv_fields = ["File"] + [f"f{i}" for i in range(1, 10)] + ["SNCI", "SCDI"]
+    csv_fields = ["File"] + [f"f{i}" for i in range(1, 10)] + ["SNCI", "SCDI", "SCDI_variance"]
     with open(aggregate_csv_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=csv_fields)
         writer.writeheader()
@@ -337,7 +339,8 @@ def write_batch_aggregate_json(
             row = {
                 "File": entry.get("input_file_name", ""),
                 "SNCI": knf_data.get("SNCI", ""),
-                "SCDI": knf_data.get("SCDI_variance", ""),
+                "SCDI": knf_data.get("SCDI", ""),
+                "SCDI_variance": knf_data.get("SCDI_variance", ""),
             }
             for idx in range(9):
                 row[f"f{idx + 1}"] = knf_vector[idx] if idx < len(knf_vector) else ""
@@ -735,6 +738,8 @@ def main():
             nci_eig_batch_size = 200000
             nci_rho_floor = 1e-12
             nci_apply_primitive_norm = False
+            scdi_var_min = None
+            scdi_var_max = None
             
         args = Args()
 
@@ -893,6 +898,18 @@ def main():
         '--nci-apply-primitive-norm',
         action='store_true',
         help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        '--scdi-var-min',
+        type=float,
+        default=None,
+        help="Fixed global Var_min for SCDI normalization.",
+    )
+    parser.add_argument(
+        '--scdi-var-max',
+        type=float,
+        default=None,
+        help="Fixed global Var_max for SCDI normalization.",
     )
     parser.add_argument(
         '--refresh-first-run',

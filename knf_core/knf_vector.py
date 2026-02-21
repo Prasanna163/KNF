@@ -1,9 +1,11 @@
 from dataclasses import dataclass, asdict
 import json
+from typing import Optional
 
 @dataclass
 class KNFResult:
     SNCI: float
+    SCDI: Optional[float]
     SCDI_variance: float
     KNF_vector: list[float]
     metadata: dict
@@ -25,6 +27,10 @@ def write_output_txt(filepath: str, result: KNFResult):
         f.write("KNF-Core Analysis Results\n")
         f.write("=========================\n\n")
         f.write(f"SNCI_raw:       {result.SNCI:.6f}\n")
+        if result.SCDI is None:
+            f.write("SCDI:           n/a (set fixed var_min/var_max for normalization)\n")
+        else:
+            f.write(f"SCDI:           {result.SCDI:.6f}\n")
         f.write(f"SCDI_variance:  {result.SCDI_variance:.6f}\n\n")
         
         vec = result.KNF_vector
