@@ -20,6 +20,8 @@ This `KNF-GPU` branch includes:
 - Robust filename/path artifact handling for mojibake/Unicode path variants.
 - xTB optimization capped to 50 cycles (`--cycles 50`) and pipeline continues if `xtbopt.xyz` exists.
 - Batch aggregate outputs: `batch_knf.json` and `batch_knf.csv`.
+- Optional graceful mid-run stop in batch mode (`--enable-stop-key`, press `q`).
+- Batch normalized/quadrant outputs: `SNCI_Norm`, `SCDI_Norm`, quadrant PNG + JSON.
 
 ## Fragment Handling
 
@@ -115,6 +117,8 @@ knf input_molecule.sdf
 - `--refresh-autoconfig`
 - `--quiet-config`
 - `--full-files`
+- `--enable-stop-key` (press `q` during batch processing to stop new jobs safely)
+- `--interactive-quadrant-plot`
 - `--refresh-first-run`
 - `--multiwfn-path <path>`
 - `--scdi-var-min <float>`
@@ -173,6 +177,12 @@ Final outputs:
 Batch root outputs:
 - `batch_knf.json`
 - `batch_knf.csv`
+- `snci_scdi_quadrants.png`
+- `snci_scdi_quadrants.json`
+
+`batch_knf.csv` includes normalized columns:
+- `SNCI_Norm`
+- `SCDI_Norm`
 
 When `--full-files` is used, intermediate artifacts are retained (for example NCI grid artifacts and xTB/Multiwfn intermediates). Without it, storage-efficient cleanup runs automatically.
 

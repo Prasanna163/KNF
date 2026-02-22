@@ -12,6 +12,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     KNF_MULTIWFN_PATH=/opt/Multiwfn/Multiwfn \
     MAMBA_ROOT_PREFIX=/opt/conda \
     XTBHOME=/opt/conda \
+    MPLBACKEND=Agg \
     OMP_NUM_THREADS=4 \
     OPENBLAS_NUM_THREADS=4 \
     MKL_NUM_THREADS=4 \
@@ -28,6 +29,8 @@ RUN micromamba install -y -n base -c conda-forge \
     python=3.11 \
     numpy \
     scipy \
+    matplotlib \
+    rdkit \
     openbabel \
     xtb \
     && micromamba clean --all --yes
@@ -45,7 +48,8 @@ RUN wget "${MULTIWFN_URL}" -O Multiwfn.zip \
 WORKDIR /app
 COPY . /app
 
-RUN pip install --no-cache-dir ".[torch-nci]"
+RUN pip install --no-cache-dir . \
+    && pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch
 
 RUN sed -i 's/\r$//' /app/scripts/docker-entrypoint.sh \
     && chmod +x /app/scripts/docker-entrypoint.sh \
@@ -54,7 +58,7 @@ RUN sed -i 's/\r$//' /app/scripts/docker-entrypoint.sh \
 USER mambauser
 
 HEALTHCHECK --interval=60s --timeout=10s --start-period=30s --retries=3 \
-  CMD bash -lc "command -v knf && command -v xtb && command -v obabel && command -v Multiwfn"
+  CMD bash -lc "command -v knf && command -v xtb && command -v obabel && command -v Multiwfn && python -c 'import torch, matplotlib'"
 
 ENTRYPOINT ["/usr/bin/tini", "--", "/app/scripts/docker-entrypoint.sh"]
 CMD ["--help"]

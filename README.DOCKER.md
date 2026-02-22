@@ -7,14 +7,18 @@ This guide covers containerized KNF CLI usage.
 The Docker image installs:
 - Python 3.11
 - KNF package (`knf`)
+- PyTorch (CPU build; Torch NCI backend ready out-of-box)
 - xTB (from conda-forge)
 - Open Babel (`obabel`)
+- RDKit
+- Matplotlib (headless PNG generation)
 - Multiwfn (Linux no-GUI binary)
 
 Runtime environment exported in image/entrypoint:
 - `PATH=/opt/conda/bin:/opt/conda/condabin:/opt/Multiwfn:$PATH`
 - `KNF_MULTIWFN_PATH=/opt/Multiwfn/Multiwfn`
 - `XTBHOME=/opt/conda`
+- `MPLBACKEND=Agg` (headless plotting inside container)
 - `OMP_NUM_THREADS`, `OPENBLAS_NUM_THREADS`, `MKL_NUM_THREADS` (default `4`)
 
 ## Files
@@ -32,7 +36,7 @@ docker build -t knf-core:latest .
 
 Build includes:
 - `xtb` install via `micromamba install -c conda-forge xtb`
-- optional torch extra via `pip install .[torch-nci]`
+- PyTorch CPU wheel install (Torch backend enabled by default)
 
 ## Run: CLI
 
@@ -73,7 +77,9 @@ Edit `command` to run your own inputs/options.
 Compose also provides default environment wiring for Multiwfn/xTB:
 - `KNF_MULTIWFN_PATH=/opt/Multiwfn/Multiwfn`
 - `XTBHOME=/opt/conda`
+- `MPLBACKEND=Agg`
 - thread env vars for BLAS/OMP
+- `stdin_open: true` and `tty: true` for interactive CLI input
 
 ## Output Behavior
 
@@ -86,6 +92,7 @@ Common outputs:
 - `output.txt`
 - `xtbopt.xyz`
 - `batch_knf.json` / `batch_knf.csv` (batch mode)
+- `snci_scdi_quadrants.png` / `snci_scdi_quadrants.json` (batch normalization + quadrant report)
 
 ## Health/Tool Checks
 

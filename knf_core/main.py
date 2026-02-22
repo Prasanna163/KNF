@@ -6,8 +6,9 @@ import logging
 import time
 import json
 import csv
+import statistics
 from queue import Queue
-from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError
+from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError, CancelledError
 from datetime import datetime, timezone
 from .pipeline import KNFPipeline
 from . import utils
@@ -22,6 +23,7 @@ from rich.table import Table
 
 CLI_TITLE = "KNF-Core v1.0"
 DISPLAY_NAME_LIMIT = 40
+STOP_KEY = "q"
 
 def check_dependencies(multiwfn_path: str = None, nci_backend: str = "torch"):
     """Checks if required external tools are available in PATH."""
@@ -156,6 +158,213 @@ def _self_ram_mb() -> float:
         return 0.0
 
 
+def _safe_float(value):
+    try:
+        if value is None:
+            return None
+        val = float(value)
+        if val != val:  # NaN
+            return None
+        return val
+    except (TypeError, ValueError):
+        return None
+
+
+def _normalize_minmax(values, invert: bool = False):
+    finite = [v for v in values if v is not None]
+    if not finite:
+        return [None] * len(values)
+
+    vmin = min(finite)
+    vmax = max(finite)
+    if abs(vmax - vmin) <= 1e-12:
+        return [0.5 if v is not None else None for v in values]
+
+    out = []
+    for v in values:
+        if v is None:
+            out.append(None)
+            continue
+        normalized = (v - vmin) / (vmax - vmin)
+        if invert:
+            normalized = 1.0 - normalized
+        out.append(max(0.0, min(1.0, float(normalized))))
+    return out
+
+
+def _classify_quadrant(x: float, y: float, mx: float, my: float) -> str:
+    if x >= mx and y >= my:
+        return "Q1"
+    if x < mx and y >= my:
+        return "Q2"
+    if x < mx and y < my:
+        return "Q3"
+    return "Q4"
+
+
+def _compute_norm_and_quadrants(
+    enriched_records: list[dict],
+    results_root: str,
+    interactive_plot: bool = False,
+):
+    normalized_rows = []
+    for entry in enriched_records:
+        if entry.get("status") != "success":
+            continue
+        knf_data = entry.get("knf") or {}
+        snci_val = _safe_float(knf_data.get("SNCI"))
+        scdi_val = _safe_float(knf_data.get("SCDI"))
+        scdi_var = _safe_float(knf_data.get("SCDI_variance"))
+        normalized_rows.append(
+            {
+                "entry": entry,
+                "file_name": entry.get("input_file_name", ""),
+                "snci": snci_val,
+                "scdi": scdi_val,
+                "scdi_variance": scdi_var,
+                "snci_norm": None,
+                "scdi_norm": None,
+            }
+        )
+
+    if normalized_rows:
+        snci_values = [row["snci"] for row in normalized_rows]
+        snci_norm = _normalize_minmax(snci_values, invert=False)
+        for row, norm_val in zip(normalized_rows, snci_norm):
+            row["snci_norm"] = norm_val
+
+        has_complete_scdi = all(row["scdi"] is not None for row in normalized_rows)
+        if has_complete_scdi:
+            for row in normalized_rows:
+                row["scdi_norm"] = max(0.0, min(1.0, float(row["scdi"])))
+            scdi_norm_source = "SCDI"
+        else:
+            variance_values = [row["scdi_variance"] for row in normalized_rows]
+            scdi_norm = _normalize_minmax(variance_values, invert=True)
+            for row, norm_val in zip(normalized_rows, scdi_norm):
+                row["scdi_norm"] = norm_val
+            scdi_norm_source = "SCDI_variance_inverse_minmax"
+
+        for row in normalized_rows:
+            row["entry"]["SNCI_Norm"] = row["snci_norm"]
+            row["entry"]["SCDI_Norm"] = row["scdi_norm"]
+    else:
+        scdi_norm_source = None
+
+    valid_plot_rows = [
+        row
+        for row in normalized_rows
+        if row["snci_norm"] is not None and row["scdi_norm"] is not None
+    ]
+    if not valid_plot_rows:
+        return {
+            "SNCI_Norm_source": "minmax",
+            "SCDI_Norm_source": scdi_norm_source,
+            "median_SNCI_Norm": None,
+            "median_SCDI_Norm": None,
+            "quadrants": {},
+            "quadrant_json": None,
+            "quadrant_plot_png": None,
+            "plot_error": "No successful normalized rows available.",
+        }
+
+    snci_norm_vals = [row["snci_norm"] for row in valid_plot_rows]
+    scdi_norm_vals = [row["scdi_norm"] for row in valid_plot_rows]
+    median_x = float(statistics.median(snci_norm_vals))
+    median_y = float(statistics.median(scdi_norm_vals))
+
+    quadrants = {
+        "Q1": {"count": 0, "files": []},
+        "Q2": {"count": 0, "files": []},
+        "Q3": {"count": 0, "files": []},
+        "Q4": {"count": 0, "files": []},
+    }
+    for row in valid_plot_rows:
+        q = _classify_quadrant(row["snci_norm"], row["scdi_norm"], median_x, median_y)
+        quadrants[q]["count"] += 1
+        quadrants[q]["files"].append(row["file_name"])
+        row["entry"]["quadrant"] = q
+
+    quadrant_json_path = os.path.join(results_root, "snci_scdi_quadrants.json")
+    with open(quadrant_json_path, "w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "median_SNCI_Norm": median_x,
+                "median_SCDI_Norm": median_y,
+                "quadrants": quadrants,
+            },
+            f,
+            indent=2,
+        )
+
+    plot_png_path = os.path.join(results_root, "snci_scdi_quadrants.png")
+    plot_error = None
+    try:
+        import matplotlib.pyplot as plt
+
+        fig, ax = plt.subplots(figsize=(10, 7), dpi=150)
+        ax.scatter(snci_norm_vals, scdi_norm_vals, s=45, alpha=0.75)
+        ax.axvline(median_x, color="crimson", linestyle="--", linewidth=1.8, label=f"Median X = {median_x:.4f}")
+        ax.axhline(median_y, color="darkgreen", linestyle="--", linewidth=1.8, label=f"Median Y = {median_y:.4f}")
+        ax.set_xlabel("SNCI_Norm")
+        ax.set_ylabel("SCDI_Norm")
+        ax.set_title("SCDI_Norm vs SNCI_Norm with Median Quadrants")
+        ax.grid(True, linestyle="--", alpha=0.4)
+
+        x_min, x_max = ax.get_xlim()
+        y_min, y_max = ax.get_ylim()
+        x_left = x_min + 0.08 * (x_max - x_min)
+        x_right = x_min + 0.58 * (x_max - x_min)
+        y_top = y_min + 0.94 * (y_max - y_min)
+        y_bottom = y_min + 0.40 * (y_max - y_min)
+
+        ax.text(x_right, y_top, f"Q1\n(n={quadrants['Q1']['count']})", fontsize=13, fontweight="bold")
+        ax.text(x_left, y_top, f"Q2\n(n={quadrants['Q2']['count']})", fontsize=13, fontweight="bold")
+        ax.text(x_left, y_bottom, f"Q3\n(n={quadrants['Q3']['count']})", fontsize=13, fontweight="bold")
+        ax.text(x_right, y_bottom, f"Q4\n(n={quadrants['Q4']['count']})", fontsize=13, fontweight="bold")
+        ax.legend(loc="lower right")
+        fig.tight_layout()
+        fig.savefig(plot_png_path)
+        if interactive_plot:
+            plt.show()
+        plt.close(fig)
+    except Exception as e:
+        plot_error = str(e)
+        plot_png_path = None
+
+    return {
+        "SNCI_Norm_source": "minmax",
+        "SCDI_Norm_source": scdi_norm_source,
+        "median_SNCI_Norm": median_x,
+        "median_SCDI_Norm": median_y,
+        "quadrants": quadrants,
+        "quadrant_json": quadrant_json_path,
+        "quadrant_plot_png": plot_png_path,
+        "plot_error": plot_error,
+    }
+
+
+def _poll_stop_key(enable_stop_key: bool) -> bool:
+    if not enable_stop_key:
+        return False
+    try:
+        if os.name == "nt":
+            import msvcrt
+            while msvcrt.kbhit():
+                ch = msvcrt.getwch()
+                if ch and ch.lower() == STOP_KEY:
+                    return True
+            return False
+        import select
+        ready, _, _ = select.select([sys.stdin], [], [], 0)
+        if ready:
+            ch = sys.stdin.read(1)
+            return bool(ch and ch.lower() == STOP_KEY)
+        return False
+    except Exception:
+        return False
+
+
 def run_single_file(file_path: str, args):
     results_root = resolve_results_root(file_path, args.output_dir)
     console = Console()
@@ -255,6 +464,7 @@ def write_batch_aggregate_json(
     mode: str,
     workers: int,
     total_time: float,
+    interactive_quadrant_plot: bool = False,
 ):
     """Writes combined JSON and CSV payloads for batch outputs."""
     aggregate_path = os.path.join(results_root, "batch_knf.json")
@@ -265,6 +475,7 @@ def write_batch_aggregate_json(
     knf_results = []
     success_count = 0
     failure_count = 0
+    stopped_count = 0
 
     for record in records:
         input_file = os.path.abspath(record["input_file"])
@@ -304,10 +515,18 @@ def write_batch_aggregate_json(
             entry["status"] = "failed"
             entry["error"] = "Missing knf.json output."
             failure_count += 1
+        elif record["status"] == "stopped":
+            stopped_count += 1
         else:
             failure_count += 1
 
         enriched_records.append(entry)
+
+    quadrant_payload = _compute_norm_and_quadrants(
+        enriched_records=enriched_records,
+        results_root=results_root,
+        interactive_plot=interactive_quadrant_plot,
+    )
 
     payload = {
         "schema_version": 1,
@@ -320,8 +539,10 @@ def write_batch_aggregate_json(
             "total_files": len(records),
             "successful_files": success_count,
             "failed_files": failure_count,
+            "stopped_files": stopped_count,
             "total_time_seconds": round(float(total_time), 4),
         },
+        "normalization_and_quadrants": quadrant_payload,
         "records": enriched_records,
         "knf_results": knf_results,
     }
@@ -329,7 +550,7 @@ def write_batch_aggregate_json(
     with open(aggregate_path, "w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2)
 
-    csv_fields = ["File"] + [f"f{i}" for i in range(1, 10)] + ["SNCI", "SCDI", "SCDI_variance"]
+    csv_fields = ["File"] + [f"f{i}" for i in range(1, 10)] + ["SNCI", "SCDI", "SCDI_variance", "SNCI_Norm", "SCDI_Norm"]
     with open(aggregate_csv_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=csv_fields)
         writer.writeheader()
@@ -341,12 +562,14 @@ def write_batch_aggregate_json(
                 "SNCI": knf_data.get("SNCI", ""),
                 "SCDI": knf_data.get("SCDI", ""),
                 "SCDI_variance": knf_data.get("SCDI_variance", ""),
+                "SNCI_Norm": entry.get("SNCI_Norm", ""),
+                "SCDI_Norm": entry.get("SCDI_Norm", ""),
             }
             for idx in range(9):
                 row[f"f{idx + 1}"] = knf_vector[idx] if idx < len(knf_vector) else ""
             writer.writerow(row)
 
-    return aggregate_path, aggregate_csv_path
+    return aggregate_path, aggregate_csv_path, quadrant_payload
 
 def run_batch_directory(directory: str, args):
     """Runs the pipeline for all valid files in a directory using a queue."""
@@ -380,6 +603,7 @@ def run_batch_directory(directory: str, args):
     failures = []
     batch_records = []
     succeeded = 0
+    stopped_count = 0
 
     if mode == 'multi' and len(files) > 1:
         if args.workers is None:
@@ -411,6 +635,15 @@ def run_batch_directory(directory: str, args):
     logical = psutil.cpu_count(logical=True) or (os.cpu_count() or 1)
     physical = psutil.cpu_count(logical=False) or max(1, logical // 2)
     console = Console()
+    enable_stop_key = bool(getattr(args, "enable_stop_key", False))
+    interactive_quadrant_plot = bool(getattr(args, "interactive_quadrant_plot", False))
+    stop_requested = False
+    stop_notice_emitted = False
+
+    if enable_stop_key:
+        console.print(
+            f"[yellow]Stop control enabled: press '{STOP_KEY}' to stop new jobs and finish safely.[/yellow]"
+        )
 
     completed_rows = []
     total = len(files)
@@ -427,6 +660,61 @@ def run_batch_directory(directory: str, args):
         TimeRemainingColumn(),
     )
     task_id = progress.add_task("Overall", total=total)
+
+    def maybe_request_stop() -> bool:
+        nonlocal stop_requested, stop_notice_emitted
+        if not stop_requested and _poll_stop_key(enable_stop_key):
+            stop_requested = True
+        if stop_requested and not stop_notice_emitted:
+            console.print("[yellow]Stop requested. Completing running tasks and finalizing partial outputs...[/yellow]")
+            stop_notice_emitted = True
+        return stop_requested
+
+    def add_success(file_path: str, elapsed: float):
+        nonlocal completed, succeeded
+        completed += 1
+        succeeded += 1
+        progress.advance(task_id, 1)
+        batch_records.append(
+            {
+                "input_file": file_path,
+                "status": "success",
+                "elapsed_seconds": elapsed,
+                "error": None,
+            }
+        )
+        completed_rows.append((_display_name(file_path), f"{elapsed:.1f}s", "[green]OK[/green]"))
+
+    def add_failure(file_path: str, error: str, elapsed: float):
+        nonlocal completed
+        completed += 1
+        progress.advance(task_id, 1)
+        failures.append((file_path, error))
+        batch_records.append(
+            {
+                "input_file": file_path,
+                "status": "failed",
+                "elapsed_seconds": elapsed,
+                "error": str(error),
+            }
+        )
+        completed_rows.append((_display_name(file_path), f"{elapsed:.1f}s", "[red]FAIL[/red]"))
+
+    def add_stopped(file_path: str, elapsed: float = 0.0, reason: str = "Stopped by user before processing."):
+        nonlocal completed, stopped_count
+        completed += 1
+        stopped_count += 1
+        progress.advance(task_id, 1)
+        batch_records.append(
+            {
+                "input_file": file_path,
+                "status": "stopped",
+                "elapsed_seconds": elapsed,
+                "error": reason,
+            }
+        )
+        elapsed_text = f"{elapsed:.1f}s" if elapsed > 0 else "-"
+        completed_rows.append((_display_name(file_path), elapsed_text, "[yellow]STOP[/yellow]"))
 
     def render(active_workers: int):
         elapsed = time.perf_counter() - t0
@@ -479,32 +767,21 @@ def run_batch_directory(directory: str, args):
             for path in files:
                 queue.put(path)
             while not queue.empty():
+                maybe_request_stop()
+                if stop_requested:
+                    while not queue.empty():
+                        pending_file = queue.get()
+                        add_stopped(pending_file)
+                        queue.task_done()
+                    live.update(render(active_workers=0))
+                    break
+
                 file_path = queue.get()
                 success, error, elapsed = process_file(file_path, args, output_root=results_root)
-                completed += 1
-                progress.advance(task_id, 1)
                 if success:
-                    succeeded += 1
-                    batch_records.append(
-                        {
-                            "input_file": file_path,
-                            "status": "success",
-                            "elapsed_seconds": elapsed,
-                            "error": None,
-                        }
-                    )
-                    completed_rows.append((_display_name(file_path), f"{elapsed:.1f}s", "[green]OK[/green]"))
+                    add_success(file_path, elapsed)
                 else:
-                    failures.append((file_path, error))
-                    batch_records.append(
-                        {
-                            "input_file": file_path,
-                            "status": "failed",
-                            "elapsed_seconds": elapsed,
-                            "error": str(error),
-                        }
-                    )
-                    completed_rows.append((_display_name(file_path), f"{elapsed:.1f}s", "[red]FAIL[/red]"))
+                    add_failure(file_path, error, elapsed)
                 live.update(render(active_workers=0))
                 queue.task_done()
     elif use_gpu_overlap:
@@ -515,8 +792,17 @@ def run_batch_directory(directory: str, args):
                     for file_path in files
                 }
                 post_futures = {}
+                pre_cancel_applied = False
 
                 while pre_futures or post_futures:
+                    maybe_request_stop()
+                    if stop_requested and not pre_cancel_applied:
+                        for future, file_path in list(pre_futures.items()):
+                            if future.cancel():
+                                pre_futures.pop(future, None)
+                                add_stopped(file_path)
+                        pre_cancel_applied = True
+
                     done_pre = []
                     if pre_futures:
                         try:
@@ -529,27 +815,28 @@ def run_batch_directory(directory: str, args):
 
                     for future in done_pre:
                         file_path = pre_futures.pop(future)
+                        if future.cancelled():
+                            add_stopped(file_path)
+                            continue
                         try:
                             success, error, pre_elapsed, pipeline, context = future.result()
+                        except CancelledError:
+                            add_stopped(file_path)
+                            continue
                         except Exception as e:
                             success, error, pre_elapsed, pipeline, context = False, str(e), 0.0, None, None
 
-                        if success:
+                        if success and not stop_requested:
                             post_future = gpu_executor.submit(process_file_post_nci, pipeline, context, file_path)
                             post_futures[post_future] = (file_path, pre_elapsed)
-                        else:
-                            completed += 1
-                            progress.advance(task_id, 1)
-                            failures.append((file_path, error))
-                            batch_records.append(
-                                {
-                                    "input_file": file_path,
-                                    "status": "failed",
-                                    "elapsed_seconds": pre_elapsed,
-                                    "error": str(error),
-                                }
+                        elif success:
+                            add_stopped(
+                                file_path,
+                                elapsed=pre_elapsed,
+                                reason="Stopped by user after pre-NCI stage.",
                             )
-                            completed_rows.append((_display_name(file_path), f"{pre_elapsed:.1f}s", "[red]FAIL[/red]"))
+                        else:
+                            add_failure(file_path, error, pre_elapsed)
 
                     done_post = []
                     if post_futures:
@@ -562,36 +849,22 @@ def run_batch_directory(directory: str, args):
 
                     for future in done_post:
                         file_path, pre_elapsed = post_futures.pop(future)
+                        if future.cancelled():
+                            add_stopped(file_path, elapsed=pre_elapsed)
+                            continue
                         try:
                             success, error, post_elapsed = future.result()
+                        except CancelledError:
+                            add_stopped(file_path, elapsed=pre_elapsed)
+                            continue
                         except Exception as e:
                             success, error, post_elapsed = False, str(e), 0.0
 
                         total_elapsed_file = pre_elapsed + post_elapsed
-                        completed += 1
-                        progress.advance(task_id, 1)
                         if success:
-                            succeeded += 1
-                            batch_records.append(
-                                {
-                                    "input_file": file_path,
-                                    "status": "success",
-                                    "elapsed_seconds": total_elapsed_file,
-                                    "error": None,
-                                }
-                            )
-                            completed_rows.append((_display_name(file_path), f"{total_elapsed_file:.1f}s", "[green]OK[/green]"))
+                            add_success(file_path, total_elapsed_file)
                         else:
-                            failures.append((file_path, error))
-                            batch_records.append(
-                                {
-                                    "input_file": file_path,
-                                    "status": "failed",
-                                    "elapsed_seconds": total_elapsed_file,
-                                    "error": str(error),
-                                }
-                            )
-                            completed_rows.append((_display_name(file_path), f"{total_elapsed_file:.1f}s", "[red]FAIL[/red]"))
+                            add_failure(file_path, error, total_elapsed_file)
 
                     active_workers = min(workers, len(pre_futures)) + (1 if post_futures else 0)
                     live.update(render(active_workers=active_workers))
@@ -602,8 +875,17 @@ def run_batch_directory(directory: str, args):
                     executor.submit(process_file, file_path, args, results_root): file_path
                     for file_path in files
                 }
+                cancellation_applied = False
 
                 while futures:
+                    maybe_request_stop()
+                    if stop_requested and not cancellation_applied:
+                        for future, file_path in list(futures.items()):
+                            if future.cancel():
+                                futures.pop(future, None)
+                                add_stopped(file_path)
+                        cancellation_applied = True
+
                     done_futures = []
                     try:
                         for future in as_completed(futures, timeout=1):
@@ -615,49 +897,37 @@ def run_batch_directory(directory: str, args):
 
                     for future in done_futures:
                         file_path = futures.pop(future)
+                        if future.cancelled():
+                            add_stopped(file_path)
+                            continue
                         try:
                             success, error, elapsed = future.result()
+                        except CancelledError:
+                            add_stopped(file_path)
+                            continue
                         except Exception as e:  # Defensive fallback for executor failures
                             success, error, elapsed = False, str(e), 0.0
 
-                        completed += 1
-                        progress.advance(task_id, 1)
                         if success:
-                            succeeded += 1
-                            batch_records.append(
-                                {
-                                    "input_file": file_path,
-                                    "status": "success",
-                                    "elapsed_seconds": elapsed,
-                                    "error": None,
-                                }
-                            )
-                            completed_rows.append((_display_name(file_path), f"{elapsed:.1f}s", "[green]OK[/green]"))
+                            add_success(file_path, elapsed)
                         else:
-                            batch_records.append(
-                                {
-                                    "input_file": file_path,
-                                    "status": "failed",
-                                    "elapsed_seconds": elapsed,
-                                    "error": str(error),
-                                }
-                            )
-                            completed_rows.append((_display_name(file_path), f"{elapsed:.1f}s", "[red]FAIL[/red]"))
-                            failures.append((file_path, error))
+                            add_failure(file_path, error, elapsed)
 
                     active_workers = min(workers, len(futures))
                     live.update(render(active_workers=active_workers))
 
     total_time = time.perf_counter() - t0
-    throughput = (total / total_time) * 3600 if total_time > 0 else 0.0
-    avg_per_molecule = total_time / total if total else 0.0
-    aggregate_json_path, aggregate_csv_path = write_batch_aggregate_json(
+    completed_non_stopped = max(0, total - stopped_count)
+    throughput = (completed_non_stopped / total_time) * 3600 if total_time > 0 else 0.0
+    avg_per_molecule = total_time / completed_non_stopped if completed_non_stopped else 0.0
+    aggregate_json_path, aggregate_csv_path, quadrant_payload = write_batch_aggregate_json(
         directory=directory,
         results_root=results_root,
         records=batch_records,
         mode=mode,
         workers=workers,
         total_time=total_time,
+        interactive_quadrant_plot=(interactive_quadrant_plot or stop_requested),
     )
 
     summary = Table.grid(padding=(0, 2))
@@ -666,14 +936,23 @@ def run_batch_directory(directory: str, args):
     summary.add_row("Total files", str(total))
     summary.add_row("Success", str(succeeded))
     summary.add_row("Failed", str(len(failures)))
+    summary.add_row("Stopped", str(stopped_count))
     summary.add_row("Total time", _fmt_elapsed(total_time))
-    summary.add_row("Avg per molecule", f"{avg_per_molecule:.1f}s")
-    summary.add_row("Throughput", f"{throughput:.1f} jobs/hour")
+    summary.add_row("Avg per molecule", f"{avg_per_molecule:.1f}s" if completed_non_stopped else "n/a")
+    summary.add_row("Throughput", f"{throughput:.1f} jobs/hour" if completed_non_stopped else "n/a")
     summary.add_row("Peak CPU", f"{peak_cpu:.1f}%")
     summary.add_row("Peak RAM", f"{peak_ram:.1f} MB")
     summary.add_row("Batch JSON", aggregate_json_path)
     summary.add_row("Batch CSV", aggregate_csv_path)
-    console.print(Panel(summary, title="Batch Completed", border_style="green"))
+    if quadrant_payload.get("quadrant_plot_png"):
+        summary.add_row("Quadrant Plot", quadrant_payload["quadrant_plot_png"])
+    elif quadrant_payload.get("plot_error"):
+        summary.add_row("Quadrant Plot", f"not generated ({quadrant_payload['plot_error']})")
+    if quadrant_payload.get("quadrant_json"):
+        summary.add_row("Quadrant JSON", quadrant_payload["quadrant_json"])
+    panel_title = "Batch Stopped" if stop_requested else "Batch Completed"
+    panel_color = "yellow" if stop_requested else "green"
+    console.print(Panel(summary, title=panel_title, border_style=panel_color))
 
     if failures:
         fail_table = Table(title="Failed Files", expand=True)
@@ -740,6 +1019,8 @@ def main():
             nci_apply_primitive_norm = False
             scdi_var_min = None
             scdi_var_max = None
+            enable_stop_key = True
+            interactive_quadrant_plot = False
             
         args = Args()
 
@@ -836,6 +1117,16 @@ def main():
             "Keep all intermediate and large files. "
             "Default behavior is storage-efficient cleanup."
         ),
+    )
+    parser.add_argument(
+        '--enable-stop-key',
+        action='store_true',
+        help=f"Enable graceful stop during batch runs by pressing '{STOP_KEY}'.",
+    )
+    parser.add_argument(
+        '--interactive-quadrant-plot',
+        action='store_true',
+        help="Open an interactive SNCI_Norm vs SCDI_Norm quadrant plot window after batch aggregation.",
     )
     parser.add_argument(
         '--gpu',
