@@ -14,6 +14,7 @@ from .pipeline import KNFPipeline
 from . import utils
 from . import autoconfig
 from . import first_run
+from . import knf_vector
 import psutil
 from rich.console import Console, Group
 from rich.live import Live
@@ -21,9 +22,190 @@ from rich.panel import Panel
 from rich.progress import BarColumn, Progress, TaskProgressColumn, TextColumn, TimeRemainingColumn, TimeElapsedColumn
 from rich.table import Table
 
-CLI_TITLE = "KNF-Core v1.0"
+CLI_TITLE = "KNF-Core v1.0.4"
 DISPLAY_NAME_LIMIT = 40
 STOP_KEY = "q"
+
+
+def _final_output_name(filename: str, water: bool) -> str:
+    if not water:
+        return filename
+    stem, ext = os.path.splitext(filename)
+    return f"{stem}_water{ext}"
+
+
+BATCH_METRIC_SPECS = list(knf_vector.METRIC_SPECS) + [
+    ("SNCI_Norm", "SNCI_Norm", ""),
+    ("SCDI_Norm", "SCDI_Norm", ""),
+]
+
+
+def _metric_value_map_from_batch_entry(entry: dict) -> dict:
+    knf_data = entry.get("knf") or {}
+    vector = knf_data.get("KNF_vector") or []
+    return {
+        "SNCI": knf_data.get("SNCI"),
+        "SCDI": knf_data.get("SCDI"),
+        "SCDI_variance": knf_data.get("SCDI_variance"),
+        "f1": vector[0] if len(vector) > 0 else None,
+        "f2": vector[1] if len(vector) > 1 else None,
+        "f3": vector[2] if len(vector) > 2 else None,
+        "f4": vector[3] if len(vector) > 3 else None,
+        "f5": vector[4] if len(vector) > 4 else None,
+        "f6": vector[5] if len(vector) > 5 else None,
+        "f7": vector[6] if len(vector) > 6 else None,
+        "f8": vector[7] if len(vector) > 7 else None,
+        "f9": vector[8] if len(vector) > 8 else None,
+        "SNCI_Norm": entry.get("SNCI_Norm"),
+        "SCDI_Norm": entry.get("SCDI_Norm"),
+    }
+
+
+def _numeric_delta(current, reference):
+    if current is None or reference is None:
+        return None
+    try:
+        return float(current) - float(reference)
+    except (TypeError, ValueError):
+        return None
+
+
+def _format_metric_value(value) -> str:
+    if value is None:
+        return "n/a"
+    try:
+        return f"{float(value):.6f}"
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def write_batch_water_delta_outputs(
+    delta_txt_path: str,
+    delta_json_path: str,
+    reference_aggregate_path: str,
+    water_aggregate_path: str,
+    water_payload: dict,
+):
+    reference_found = os.path.exists(reference_aggregate_path)
+    reference_payload = None
+    if reference_found:
+        with open(reference_aggregate_path, "r", encoding="utf-8") as f:
+            reference_payload = json.load(f)
+
+    water_records = {
+        entry.get("input_file"): entry
+        for entry in (water_payload.get("records") or [])
+        if entry.get("input_file")
+    }
+    reference_records = {
+        entry.get("input_file"): entry
+        for entry in ((reference_payload or {}).get("records") or [])
+        if entry.get("input_file")
+    }
+
+    summary_keys = [
+        "total_files",
+        "successful_files",
+        "failed_files",
+        "stopped_files",
+        "total_time_seconds",
+    ]
+    water_summary = (water_payload.get("summary") or {}).copy()
+    reference_summary = ((reference_payload or {}).get("summary") or {}).copy()
+    summary_delta = {
+        key: _numeric_delta(water_summary.get(key), reference_summary.get(key))
+        for key in summary_keys
+    }
+
+    file_deltas = []
+    for input_file in sorted(set(reference_records) | set(water_records)):
+        water_entry = water_records.get(input_file, {})
+        reference_entry = reference_records.get(input_file, {})
+        water_metrics = _metric_value_map_from_batch_entry(water_entry)
+        reference_metrics = _metric_value_map_from_batch_entry(reference_entry)
+        metrics_payload = {}
+        for key, label, unit in BATCH_METRIC_SPECS:
+            water_value = water_metrics.get(key)
+            reference_value = reference_metrics.get(key)
+            metrics_payload[key] = {
+                "label": label,
+                "unit": unit or None,
+                "reference": reference_value,
+                "water": water_value,
+                "delta": _numeric_delta(water_value, reference_value),
+            }
+
+        file_deltas.append(
+            {
+                "input_file": input_file,
+                "input_file_name": water_entry.get("input_file_name") or reference_entry.get("input_file_name"),
+                "reference_status": reference_entry.get("status"),
+                "water_status": water_entry.get("status"),
+                "reference_result_dir": reference_entry.get("result_dir"),
+                "water_result_dir": water_entry.get("result_dir"),
+                "metrics": metrics_payload,
+            }
+        )
+
+    payload = {
+        "comparison": "water_minus_reference",
+        "reference_found": reference_found,
+        "reference_file": reference_aggregate_path,
+        "water_file": water_aggregate_path,
+        "summary": {
+            "reference": reference_summary,
+            "water": water_summary,
+            "delta": summary_delta,
+        },
+        "files": file_deltas,
+    }
+
+    with open(delta_json_path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
+
+    with open(delta_txt_path, "w", encoding="utf-8") as f:
+        f.write("KNF-Core Batch Water Delta Results\n")
+        f.write("=================================\n\n")
+        f.write("Comparison: water - reference\n")
+        f.write(f"Reference batch file: {reference_aggregate_path}\n")
+        f.write(f"Water batch file:     {water_aggregate_path}\n\n")
+
+        if not reference_found:
+            f.write("Reference batch_knf.json not found. Batch delta metrics are unavailable.\n")
+            return
+
+        f.write("Summary:\n")
+        for key in summary_keys:
+            f.write(
+                f"  {key}: "
+                f"reference={_format_metric_value(reference_summary.get(key))} "
+                f"water={_format_metric_value(water_summary.get(key))} "
+                f"delta={_format_metric_value(summary_delta.get(key))}\n"
+            )
+        f.write("\n")
+
+        for file_delta in file_deltas:
+            name = file_delta.get("input_file_name") or file_delta.get("input_file") or "unknown"
+            f.write(f"{name}\n")
+            f.write(f"{'-' * len(name)}\n")
+            f.write(
+                f"Status: reference={file_delta.get('reference_status', 'n/a')} "
+                f"water={file_delta.get('water_status', 'n/a')}\n"
+            )
+            f.write(f"{'Metric':<22} {'Reference':>14} {'Water':>14} {'Delta':>14}\n")
+            f.write(f"{'-' * 22} {'-' * 14} {'-' * 14} {'-' * 14}\n")
+            for key, label, unit in BATCH_METRIC_SPECS:
+                metric = file_delta["metrics"][key]
+                f.write(
+                    f"{label:<22} "
+                    f"{_format_metric_value(metric['reference']):>14} "
+                    f"{_format_metric_value(metric['water']):>14} "
+                    f"{_format_metric_value(metric['delta']):>14}"
+                )
+                if unit:
+                    f.write(f"  {unit}")
+                f.write("\n")
+            f.write("\n")
 
 def check_dependencies(multiwfn_path: str = None, nci_backend: str = "torch"):
     """Checks if required external tools are available in PATH."""
@@ -54,6 +236,7 @@ def _build_pipeline(file_path: str, args, output_root: str = None) -> KNFPipelin
         input_file=file_path,
         charge=args.charge,
         spin=args.spin,
+        water=args.water,
         force=args.force,
         clean=args.clean,
         debug=args.debug,
@@ -205,6 +388,7 @@ def _classify_quadrant(x: float, y: float, mx: float, my: float) -> str:
 def _compute_norm_and_quadrants(
     enriched_records: list[dict],
     results_root: str,
+    water: bool = False,
     interactive_plot: bool = False,
 ):
     normalized_rows = []
@@ -285,7 +469,10 @@ def _compute_norm_and_quadrants(
         quadrants[q]["files"].append(row["file_name"])
         row["entry"]["quadrant"] = q
 
-    quadrant_json_path = os.path.join(results_root, "snci_scdi_quadrants.json")
+    quadrant_json_path = os.path.join(
+        results_root,
+        _final_output_name("snci_scdi_quadrants.json", water),
+    )
     with open(quadrant_json_path, "w", encoding="utf-8") as f:
         json.dump(
             {
@@ -297,7 +484,10 @@ def _compute_norm_and_quadrants(
             indent=2,
         )
 
-    plot_png_path = os.path.join(results_root, "snci_scdi_quadrants.png")
+    plot_png_path = os.path.join(
+        results_root,
+        _final_output_name("snci_scdi_quadrants.png", water),
+    )
     plot_error = None
     try:
         import matplotlib.pyplot as plt
@@ -464,11 +654,14 @@ def write_batch_aggregate_json(
     mode: str,
     workers: int,
     total_time: float,
+    water: bool = False,
     interactive_quadrant_plot: bool = False,
 ):
     """Writes combined JSON and CSV payloads for batch outputs."""
-    aggregate_path = os.path.join(results_root, "batch_knf.json")
-    aggregate_csv_path = os.path.join(results_root, "batch_knf.csv")
+    aggregate_path = os.path.join(results_root, _final_output_name("batch_knf.json", water))
+    aggregate_csv_path = os.path.join(results_root, _final_output_name("batch_knf.csv", water))
+    delta_json_path = None
+    delta_txt_path = None
     os.makedirs(results_root, exist_ok=True)
 
     enriched_records = []
@@ -481,7 +674,7 @@ def write_batch_aggregate_json(
         input_file = os.path.abspath(record["input_file"])
         stem = os.path.splitext(os.path.basename(input_file))[0]
         result_dir = os.path.join(results_root, stem)
-        knf_path = os.path.join(result_dir, "knf.json")
+        knf_path = os.path.join(result_dir, _final_output_name("knf.json", water))
 
         entry = {
             "input_file": input_file,
@@ -509,11 +702,11 @@ def write_batch_aggregate_json(
                 success_count += 1
             except Exception as e:
                 entry["status"] = "failed"
-                entry["error"] = f"Failed to read knf.json: {e}"
+                entry["error"] = f"Failed to read {_final_output_name('knf.json', water)}: {e}"
                 failure_count += 1
         elif record["status"] == "success":
             entry["status"] = "failed"
-            entry["error"] = "Missing knf.json output."
+            entry["error"] = f"Missing {_final_output_name('knf.json', water)} output."
             failure_count += 1
         elif record["status"] == "stopped":
             stopped_count += 1
@@ -525,6 +718,7 @@ def write_batch_aggregate_json(
     quadrant_payload = _compute_norm_and_quadrants(
         enriched_records=enriched_records,
         results_root=results_root,
+        water=water,
         interactive_plot=interactive_quadrant_plot,
     )
 
@@ -569,7 +763,18 @@ def write_batch_aggregate_json(
                 row[f"f{idx + 1}"] = knf_vector[idx] if idx < len(knf_vector) else ""
             writer.writerow(row)
 
-    return aggregate_path, aggregate_csv_path, quadrant_payload
+    if water:
+        delta_json_path = os.path.join(results_root, _final_output_name("batch_delta.json", water))
+        delta_txt_path = os.path.join(results_root, _final_output_name("batch_delta.txt", water))
+        write_batch_water_delta_outputs(
+            delta_txt_path=delta_txt_path,
+            delta_json_path=delta_json_path,
+            reference_aggregate_path=os.path.join(results_root, "batch_knf.json"),
+            water_aggregate_path=aggregate_path,
+            water_payload=payload,
+        )
+
+    return aggregate_path, aggregate_csv_path, quadrant_payload, delta_json_path, delta_txt_path
 
 def run_batch_directory(directory: str, args):
     """Runs the pipeline for all valid files in a directory using a queue."""
@@ -920,13 +1125,14 @@ def run_batch_directory(directory: str, args):
     completed_non_stopped = max(0, total - stopped_count)
     throughput = (completed_non_stopped / total_time) * 3600 if total_time > 0 else 0.0
     avg_per_molecule = total_time / completed_non_stopped if completed_non_stopped else 0.0
-    aggregate_json_path, aggregate_csv_path, quadrant_payload = write_batch_aggregate_json(
+    aggregate_json_path, aggregate_csv_path, quadrant_payload, batch_delta_json_path, batch_delta_txt_path = write_batch_aggregate_json(
         directory=directory,
         results_root=results_root,
         records=batch_records,
         mode=mode,
         workers=workers,
         total_time=total_time,
+        water=bool(getattr(args, "water", False)),
         interactive_quadrant_plot=(interactive_quadrant_plot or stop_requested),
     )
 
@@ -944,6 +1150,10 @@ def run_batch_directory(directory: str, args):
     summary.add_row("Peak RAM", f"{peak_ram:.1f} MB")
     summary.add_row("Batch JSON", aggregate_json_path)
     summary.add_row("Batch CSV", aggregate_csv_path)
+    if batch_delta_json_path:
+        summary.add_row("Batch Delta JSON", batch_delta_json_path)
+    if batch_delta_txt_path:
+        summary.add_row("Batch Delta TXT", batch_delta_txt_path)
     if quadrant_payload.get("quadrant_plot_png"):
         summary.add_row("Quadrant Plot", quadrant_payload["quadrant_plot_png"])
     elif quadrant_payload.get("plot_error"):
@@ -1062,6 +1272,11 @@ def main():
     parser.add_argument('input_path', help="Path to input molecular file or directory")
     parser.add_argument('--charge', type=int, default=0, help="Total system charge")
     parser.add_argument('--spin', type=int, default=1, help="Total system spin multiplicity")
+    parser.add_argument(
+        '--water',
+        action='store_true',
+        help="Use xTB '--alpb water' for optimization and single-point instead of the default '--cosmo water'.",
+    )
     parser.add_argument('--force', action='store_true', help="Force recomputation")
     parser.add_argument('--clean', action='store_true', help="Clean results")
     parser.add_argument('--debug', action='store_true', help="Debug logging")

@@ -5,12 +5,20 @@ from pathlib import Path
 
 from . import utils, geometry, xtb, multiwfn, snci, scdi, knf_vector, converter, wrapper
 
+
+def _final_output_name(filename: str, water: bool) -> str:
+    if not water:
+        return filename
+    stem, ext = os.path.splitext(filename)
+    return f"{stem}_water{ext}"
+
 class KNFPipeline:
     def __init__(
         self,
         input_file: str,
         charge: int = 0,
         spin: int = 1,
+        water: bool = False,
         force: bool = False,
         clean: bool = False,
         debug: bool = False,
@@ -32,6 +40,7 @@ class KNFPipeline:
         self.input_file = utils.resolve_artifacted_path(input_file)
         self.charge = charge
         self.spin = spin
+        self.water = bool(water)
         self.force = force
         self.clean = clean
         self.debug = debug
@@ -195,7 +204,7 @@ class KNFPipeline:
             wrapper.run_uff_preopt(work_xyz)
 
             self._stage(3, "xTB Opt")
-            wrapper.run_xtb_opt(work_xyz, self.charge, uhf)
+            wrapper.run_xtb_opt(work_xyz, self.charge, uhf, use_water=self.water)
 
 
         wbo_file = os.path.join(self.results_dir, 'wbo')
@@ -204,7 +213,7 @@ class KNFPipeline:
         if not os.path.exists(wbo_file) or not os.path.exists(molden_file) or self.force:
             uhf = self.spin - 1
             self._stage(4, "xTB SP")
-            wrapper.run_xtb_sp(optimized_xyz, self.charge, uhf)
+            wrapper.run_xtb_sp(optimized_xyz, self.charge, uhf, use_water=self.water)
 
         cosmo_files = sorted(f for f in os.listdir(self.results_dir) if f.endswith('.cosmo'))
         cosmo_file = None
@@ -212,6 +221,11 @@ class KNFPipeline:
             cosmo_file = os.path.join(self.results_dir, "xtb.cosmo")
         elif cosmo_files:
             cosmo_file = os.path.join(self.results_dir, cosmo_files[0])
+        elif self.water:
+            logging.warning(
+                "xTB ALPB water mode does not emit a .cosmo file; SCDI will be unavailable for %s.",
+                self.base_name,
+            )
 
         xtb_log = os.path.join(self.results_dir, 'xtb.log')
         try:
@@ -357,6 +371,7 @@ class KNFPipeline:
                 'spin': self.spin,
                 'fragments': fragment_count,
                 'geometry_fragment_pair': pair_indices,
+                'xtb_water': self.water,
                 'nci_backend': self.nci_backend,
                 'nci_status': 'success' if nci_success else 'skipped',
                 'nci_data_path': nci_data_path,
@@ -364,10 +379,21 @@ class KNFPipeline:
             }
         )
 
-        final_output_txt = os.path.join(self.results_dir, 'output.txt')
-        final_json = os.path.join(self.results_dir, 'knf.json')
+        final_output_txt = os.path.join(self.results_dir, _final_output_name('output.txt', self.water))
+        final_json = os.path.join(self.results_dir, _final_output_name('knf.json', self.water))
         knf_vector.write_output_txt(final_output_txt, result)
         knf_vector.write_knf_json(final_json, result)
+        if self.water:
+            delta_txt = os.path.join(self.results_dir, _final_output_name('delta.txt', self.water))
+            delta_json = os.path.join(self.results_dir, _final_output_name('delta.json', self.water))
+            reference_json = os.path.join(self.results_dir, 'knf.json')
+            knf_vector.write_water_delta_outputs(
+                delta_txt_path=delta_txt,
+                delta_json_path=delta_json,
+                water_result=result,
+                reference_json_path=reference_json,
+                water_json_path=final_json,
+            )
 
         if not self.keep_full_files:
             self._cleanup_storage_heavy_files()

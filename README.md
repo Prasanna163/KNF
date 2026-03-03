@@ -8,7 +8,7 @@ KNF-CORE is an automated computational chemistry pipeline that generates:
 
 from molecular structure files using xTB + NCI backend + KNF post-processing.
 
-Current package version in this branch: `1.0.3`
+Current package version in this branch: `1.0.4`
 
 ## Branch Highlights
 
@@ -19,7 +19,7 @@ This `KNF-GPU` branch includes:
 - Storage-efficient default output behavior (intermediates removed by default, keep with `--full-files`).
 - Robust filename/path artifact handling for mojibake/Unicode path variants.
 - xTB optimization capped to 50 cycles (`--cycles 50`) and pipeline continues if `xtbopt.xyz` exists.
-- Batch aggregate outputs: `batch_knf.json` and `batch_knf.csv`.
+- Batch aggregate outputs: `batch_knf.json` and `batch_knf.csv` (or `*_water.*` when `--water` is used).
 - Optional graceful mid-run stop in batch mode (`--enable-stop-key`, press `q`).
 - Batch normalized/quadrant outputs: `SNCI_Norm`, `SCDI_Norm`, quadrant PNG + JSON.
 
@@ -106,6 +106,7 @@ knf input_molecule.sdf
 
 - `--charge <int>`
 - `--spin <int>`
+- `--water` (switch xTB opt/SP from default `--cosmo water` to `--alpb water`; ALPB mode does not produce `.cosmo`, so SCDI is unavailable)
 - `--force`
 - `--clean`
 - `--debug`
@@ -151,6 +152,7 @@ If bounds are not provided, KNF still computes and reports raw `SCDI_variance` (
 
 ```bash
 knf example.mol --force
+knf example.mol --water
 knf ./molecules --processing multi --workers 4 --ram-per-job 200
 knf example.mol --nci-backend torch --nci-device cuda --nci-dtype float64
 knf example.mol --gpu
@@ -174,11 +176,25 @@ Final outputs:
 - `knf.json`
 - `output.txt`
 
+With `--water`, final outputs are suffixed for easier comparison:
+- `knf_water.json`
+- `output_water.txt`
+- `delta_water.json`
+- `delta_water.txt`
+
 Batch root outputs:
 - `batch_knf.json`
 - `batch_knf.csv`
 - `snci_scdi_quadrants.png`
 - `snci_scdi_quadrants.json`
+
+With `--water`, batch-level final outputs are similarly suffixed:
+- `batch_knf_water.json`
+- `batch_knf_water.csv`
+- `batch_delta_water.json`
+- `batch_delta_water.txt`
+- `snci_scdi_quadrants_water.png`
+- `snci_scdi_quadrants_water.json`
 
 `batch_knf.csv` includes normalized columns:
 - `SNCI_Norm`
