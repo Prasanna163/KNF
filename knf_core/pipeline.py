@@ -200,6 +200,7 @@ class KNFPipeline:
 
         wbo_file = os.path.join(self.results_dir, 'wbo')
         molden_file = os.path.join(self.results_dir, 'molden.input')
+        xtb_topology_file = os.path.join(self.results_dir, 'xtbtopo.mol')
         if not os.path.exists(wbo_file) or not os.path.exists(molden_file) or self.force:
             uhf = self.spin - 1
             self._stage(4, "xTB SP")
@@ -217,7 +218,26 @@ class KNFPipeline:
             xtb_data = xtb.parse_xtb_log(xtb_log)
             f4 = xtb_data.get('f4', 0.0)
             f5 = xtb_data.get('f5', 0.0)
-            f3 = xtb.parse_interfragment_wbo(wbo_file, fragments)
+            wbo_fragments = fragments
+            if os.path.exists(xtb_topology_file):
+                try:
+                    topo_mol = geometry.load_molecule(xtb_topology_file)
+                    topo_fragments = geometry.detect_fragments(topo_mol)
+                    if topo_fragments:
+                        wbo_fragments = topo_fragments
+                        if topo_fragments != fragments:
+                            logging.info(
+                                "Using xTB topology fragments for WBO parsing "
+                                "(input fragments=%s, xTB fragments=%s).",
+                                len(fragments),
+                                len(topo_fragments),
+                            )
+                except Exception as exc:
+                    logging.warning(
+                        "Failed to load xTB topology for WBO parsing; falling back to input fragments: %s",
+                        exc,
+                    )
+            f3 = xtb.parse_interfragment_wbo(wbo_file, wbo_fragments)
         except Exception as e:
             logging.error(f"Failed to extract xTB descriptors: {e}")
             raise e
