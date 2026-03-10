@@ -155,3 +155,96 @@ def detect_hb_angle(mol: Chem.Mol, frag1_indices: list[int], frag2_indices: list
     best_hb = possible_hbs[0]
     
     return best_hb[1]
+
+
+def write_xyz(mol: Chem.Mol, filepath: str):
+    """Writes current 3D coordinates to an XYZ file."""
+    xyz_block = Chem.MolToXYZBlock(mol)
+    with open(filepath, "w", encoding="utf-8") as f:
+        f.write(xyz_block)
+
+
+def promote_hbond_interaction(
+    mol: Chem.Mol,
+    frag1_indices: list[int],
+    frag2_indices: list[int],
+    target_ha_distance: float = 1.95,
+) -> dict:
+    """
+    Attempts to enforce an intermolecular D-H...A contact between two fragments.
+
+    Strategy:
+    - Find donor hydrogens (H bound to N/O/F) on one fragment and acceptors (N/O/F) on the other.
+    - Select the shortest existing H...A candidate.
+    - Translate the acceptor fragment so A is placed along the D-H extension at target H...A distance.
+
+    Returns diagnostic dict:
+      {"applied": bool, "reason": str, "d_idx": int|None, "h_idx": int|None, "a_idx": int|None}
+    """
+    conf = mol.GetConformer()
+    frag1 = set(frag1_indices)
+    frag2 = set(frag2_indices)
+    electronegative = {7, 8, 9}  # N, O, F
+
+    donors = []      # (donor_idx, h_idx, donor_fragment_id)
+    acceptors_f1 = []
+    acceptors_f2 = []
+
+    for idx in frag1 | frag2:
+        atom = mol.GetAtomWithIdx(idx)
+        an = atom.GetAtomicNum()
+        if an in electronegative:
+            if idx in frag1:
+                acceptors_f1.append(idx)
+            else:
+                acceptors_f2.append(idx)
+        if an != 1:
+            continue
+        neighbors = atom.GetNeighbors()
+        if len(neighbors) != 1:
+            continue
+        donor = neighbors[0]
+        if donor.GetAtomicNum() not in electronegative:
+            continue
+        donors.append((donor.GetIdx(), idx, 1 if idx in frag1 else 2))
+
+    candidates = []  # (ha_dist, d_idx, h_idx, a_idx, move_fragment)
+    for d_idx, h_idx, donor_frag in donors:
+        h = np.array(conf.GetAtomPosition(h_idx))
+        if donor_frag == 1:
+            target_acceptors = acceptors_f2
+            move_fragment = frag2_indices
+        else:
+            target_acceptors = acceptors_f1
+            move_fragment = frag1_indices
+        for a_idx in target_acceptors:
+            a = np.array(conf.GetAtomPosition(a_idx))
+            ha_dist = float(np.linalg.norm(h - a))
+            candidates.append((ha_dist, d_idx, h_idx, a_idx, move_fragment))
+
+    if not candidates:
+        return {"applied": False, "reason": "no_donor_acceptor_pair", "d_idx": None, "h_idx": None, "a_idx": None}
+
+    candidates.sort(key=lambda x: x[0])
+    _, d_idx, h_idx, a_idx, move_fragment = candidates[0]
+
+    d = np.array(conf.GetAtomPosition(d_idx))
+    h = np.array(conf.GetAtomPosition(h_idx))
+    a = np.array(conf.GetAtomPosition(a_idx))
+
+    dh = h - d
+    dh_norm = np.linalg.norm(dh)
+    if dh_norm < 1e-8:
+        return {"applied": False, "reason": "degenerate_dh_vector", "d_idx": d_idx, "h_idx": h_idx, "a_idx": a_idx}
+
+    # Place acceptor on D-H extension to favor near-linear D-H...A geometry.
+    direction = dh / dh_norm
+    target_a = h + direction * float(target_ha_distance)
+    shift = target_a - a
+
+    for idx in move_fragment:
+        p = np.array(conf.GetAtomPosition(idx))
+        new_p = p + shift
+        conf.SetAtomPosition(idx, (float(new_p[0]), float(new_p[1]), float(new_p[2])))
+
+    return {"applied": True, "reason": "ok", "d_idx": d_idx, "h_idx": h_idx, "a_idx": a_idx}

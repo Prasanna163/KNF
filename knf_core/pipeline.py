@@ -36,6 +36,7 @@ class KNFPipeline:
         nci_apply_primitive_norm: bool = False,
         scdi_var_min: float = None,
         scdi_var_max: float = None,
+        wbo_mode: str = "native",
     ):
         self.input_file = utils.resolve_artifacted_path(input_file)
         self.charge = charge
@@ -59,6 +60,7 @@ class KNFPipeline:
         self.nci_apply_primitive_norm = bool(nci_apply_primitive_norm)
         self.scdi_var_min = scdi_var_min
         self.scdi_var_max = scdi_var_max
+        self.wbo_mode = (wbo_mode or "native").strip().lower()
         
         self.base_name = Path(self.input_file).stem
         default_output_root = os.path.join(os.path.dirname(self.input_file), "Results")
@@ -164,6 +166,19 @@ class KNFPipeline:
 
         mol = geometry.load_molecule(target_xyz)
         fragments = geometry.detect_fragments(mol)
+
+        # Promote intermolecular contact for 2-fragment donor/acceptor systems.
+        if len(fragments) == 2:
+            hb_seed = geometry.promote_hbond_interaction(mol, fragments[0], fragments[1])
+            if hb_seed.get("applied"):
+                logging.info(
+                    "Applied H-bond interaction seeding: D=%s H=%s A=%s",
+                    hb_seed.get("d_idx"),
+                    hb_seed.get("h_idx"),
+                    hb_seed.get("a_idx"),
+                )
+            else:
+                logging.info("H-bond interaction seeding skipped: %s", hb_seed.get("reason"))
         pair_indices = None
 
         if len(fragments) == 1:
@@ -193,9 +208,9 @@ class KNFPipeline:
 
         optimized_xyz = os.path.join(self.results_dir, 'xtbopt.xyz')
         work_xyz = os.path.join(self.results_dir, 'input.xyz')
-        if os.path.abspath(target_xyz) != os.path.abspath(work_xyz):
-            if not os.path.exists(work_xyz) or self.force:
-                utils.safe_copy(target_xyz, work_xyz)
+        if not os.path.exists(work_xyz) or self.force:
+            # Persist potentially re-oriented fragment geometry for downstream UFF/xTB.
+            geometry.write_xyz(mol, work_xyz)
 
         if not os.path.exists(optimized_xyz) or self.force:
             uhf = self.spin - 1
@@ -209,7 +224,6 @@ class KNFPipeline:
 
         wbo_file = os.path.join(self.results_dir, 'wbo')
         molden_file = os.path.join(self.results_dir, 'molden.input')
-        xtb_topology_file = os.path.join(self.results_dir, 'xtbtopo.mol')
         if not os.path.exists(wbo_file) or not os.path.exists(molden_file) or self.force:
             uhf = self.spin - 1
             self._stage(4, "xTB SP")
@@ -232,26 +246,25 @@ class KNFPipeline:
             xtb_data = xtb.parse_xtb_log(xtb_log)
             f4 = xtb_data.get('f4', 0.0)
             f5 = xtb_data.get('f5', 0.0)
-            wbo_fragments = fragments
-            if os.path.exists(xtb_topology_file):
-                try:
-                    topo_mol = geometry.load_molecule(xtb_topology_file)
-                    topo_fragments = geometry.detect_fragments(topo_mol)
-                    if topo_fragments:
-                        wbo_fragments = topo_fragments
-                        if topo_fragments != fragments:
-                            logging.info(
-                                "Using xTB topology fragments for WBO parsing "
-                                "(input fragments=%s, xTB fragments=%s).",
-                                len(fragments),
-                                len(topo_fragments),
-                            )
-                except Exception as exc:
-                    logging.warning(
-                        "Failed to load xTB topology for WBO parsing; falling back to input fragments: %s",
-                        exc,
-                    )
-            f3 = xtb.parse_interfragment_wbo(wbo_file, wbo_fragments)
+            if self.wbo_mode == "native":
+                wbo_native = xtb.compute_wbo_from_molden_details(
+                    molden_file,
+                    fragments=fragments,
+                    use_identity_overlap=True,
+                )
+                f3 = wbo_native["max_inter_wbo"]
+                wbo_max_global = wbo_native["max_wbo_global"]
+            elif self.wbo_mode == "xtb":
+                f3 = xtb.parse_interfragment_wbo(wbo_file, fragments, xtb_log_path=xtb_log)
+                wbo_max_global = xtb.parse_max_wbo(wbo_file, xtb_log_path=xtb_log)
+                wbo_native = {
+                    "inter_pair_count": None,
+                    "inter_max_pair": None,
+                    "overlap_model": None,
+                    "n_ao": None,
+                }
+            else:
+                raise ValueError(f"Unsupported wbo_mode '{self.wbo_mode}'. Use 'native' or 'xtb'.")
         except Exception as e:
             logging.error(f"Failed to extract xTB descriptors: {e}")
             raise e
@@ -262,6 +275,12 @@ class KNFPipeline:
             "f3": f3,
             "f4": f4,
             "f5": f5,
+            "wbo_max_global": wbo_max_global,
+            "wbo_inter_pair_count": wbo_native["inter_pair_count"],
+            "wbo_inter_max_pair": wbo_native["inter_max_pair"],
+            "wbo_overlap_model": wbo_native["overlap_model"],
+            "wbo_native_n_ao": wbo_native["n_ao"],
+            "wbo_mode": self.wbo_mode,
             "molden_file": molden_file,
             "cosmo_file": cosmo_file,
             "pair_indices": pair_indices,
@@ -275,6 +294,12 @@ class KNFPipeline:
         f3 = context["f3"]
         f4 = context["f4"]
         f5 = context["f5"]
+        wbo_max_global = context.get("wbo_max_global")
+        wbo_inter_pair_count = context.get("wbo_inter_pair_count")
+        wbo_inter_max_pair = context.get("wbo_inter_max_pair")
+        wbo_overlap_model = context.get("wbo_overlap_model")
+        wbo_native_n_ao = context.get("wbo_native_n_ao")
+        wbo_mode = context.get("wbo_mode")
         molden_file = context["molden_file"]
         cosmo_file = context["cosmo_file"]
         pair_indices = context["pair_indices"]
@@ -371,6 +396,12 @@ class KNFPipeline:
                 'spin': self.spin,
                 'fragments': fragment_count,
                 'geometry_fragment_pair': pair_indices,
+                'wbo_max_global': wbo_max_global,
+                'wbo_inter_pair_count': wbo_inter_pair_count,
+                'wbo_inter_max_pair': wbo_inter_max_pair,
+                'wbo_overlap_model': wbo_overlap_model,
+                'wbo_native_n_ao': wbo_native_n_ao,
+                'wbo_mode': wbo_mode,
                 'xtb_water': self.water,
                 'nci_backend': self.nci_backend,
                 'nci_status': 'success' if nci_success else 'skipped',

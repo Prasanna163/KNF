@@ -253,6 +253,7 @@ def _build_pipeline(file_path: str, args, output_root: str = None) -> KNFPipelin
         nci_apply_primitive_norm=args.nci_apply_primitive_norm,
         scdi_var_min=args.scdi_var_min,
         scdi_var_max=args.scdi_var_max,
+        wbo_mode=getattr(args, "wbo_mode", "native"),
     )
 
 
@@ -1229,6 +1230,7 @@ def main():
             nci_apply_primitive_norm = False
             scdi_var_min = None
             scdi_var_max = None
+            wbo_mode = "native"
             enable_stop_key = True
             interactive_quadrant_plot = False
             
@@ -1416,6 +1418,12 @@ def main():
         type=float,
         default=None,
         help="Fixed global Var_max for SCDI normalization.",
+    )
+    parser.add_argument(
+        '--wbo-mode',
+        choices=['native', 'xtb'],
+        default='native',
+        help="WBO computation mode: native (default, from molden.input) or xtb (from xTB wbo file).",
     )
     parser.add_argument(
         '--refresh-first-run',
