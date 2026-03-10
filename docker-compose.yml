@@ -3,7 +3,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: knf-core:latest
+    image: knf-core:1.0.5
     container_name: knf-core
     working_dir: /work
     stdin_open: true

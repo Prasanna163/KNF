@@ -4,6 +4,10 @@ USER root
 
 ARG DEBIAN_FRONTEND=noninteractive
 ARG MULTIWFN_URL=http://sobereva.com/multiwfn/misc/Multiwfn_3.8_dev_bin_Linux_noGUI.zip
+ARG KNF_VERSION=1.0.5
+
+LABEL org.opencontainers.image.title="KNF-Core" \
+      org.opencontainers.image.version="${KNF_VERSION}"
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \

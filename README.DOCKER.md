@@ -31,7 +31,7 @@ Runtime environment exported in image/entrypoint:
 ## Build
 
 ```bash
-docker build -t knf-core:latest .
+docker build -t knf-core:1.0.5 -t knf-core:latest .
 ```
 
 Build includes:
@@ -43,19 +43,19 @@ Build includes:
 Single molecule:
 
 ```bash
-docker run --rm -v "$(pwd):/work" -w /work knf-core:latest example.mol --charge 0 --force
+docker run --rm -v "$(pwd):/work" -w /work knf-core:1.0.5 example.mol --charge 0 --force
 ```
 
 Directory batch:
 
 ```bash
-docker run --rm -v "$(pwd):/work" -w /work knf-core:latest molecules --processing multi --force
+docker run --rm -v "$(pwd):/work" -w /work knf-core:1.0.5 molecules --processing multi --force
 ```
 
 Interactive shell:
 
 ```bash
-docker run --rm -it -v "$(pwd):/work" -w /work knf-core:latest bash
+docker run --rm -it -v "$(pwd):/work" -w /work knf-core:1.0.5 bash
 ```
 
 ## Docker Compose
@@ -112,12 +112,12 @@ echo "$XTBHOME"
 Use `${PWD}` in mount expressions:
 
 ```powershell
-docker run --rm -v "${PWD}:/work" -w /work knf-core:latest example.mol --charge 0 --force
+docker run --rm -v "${PWD}:/work" -w /work knf-core:1.0.5 example.mol --charge 0 --force
 ```
 
 ## Troubleshooting
 
 - Build issues after dependency changes:
-  - `docker build --no-cache -t knf-core:latest .`
+  - `docker build --no-cache -t knf-core:1.0.5 -t knf-core:latest .`
 - No output files:
   - verify mounted path and input path inside `/work`

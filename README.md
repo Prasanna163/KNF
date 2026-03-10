@@ -8,7 +8,7 @@ KNF-CORE is an automated computational chemistry pipeline that generates:
 
 from molecular structure files using xTB + NCI backend + KNF post-processing.
 
-Current package version in this branch: `1.0.4`
+Current package version in this branch: `1.0.5`
 
 ## Branch Highlights
 
@@ -22,6 +22,7 @@ This `KNF-GPU` branch includes:
 - Batch aggregate outputs: `batch_knf.json` and `batch_knf.csv` (or `*_water.*` when `--water` is used).
 - Optional graceful mid-run stop in batch mode (`--enable-stop-key`, press `q`).
 - Batch normalized/quadrant outputs: `SNCI_Norm`, `SCDI_Norm`, quadrant PNG + JSON.
+- Native Molden-based WBO is now the default (`--wbo-mode native`) for `f3`.
 
 ## Fragment Handling
 
@@ -124,6 +125,7 @@ knf input_molecule.sdf
 - `--multiwfn-path <path>`
 - `--scdi-var-min <float>`
 - `--scdi-var-max <float>`
+- `--wbo-mode <native|xtb>` (default: `native`)
 
 SCDI normalization can also be provided globally via:
 - `KNF_SCDI_VAR_MIN`
@@ -211,13 +213,13 @@ Use `scripts/compare_nci.py` to compare Multiwfn and Torch NCI outputs/correlati
 Build:
 
 ```bash
-docker build -t knf-core:latest .
+docker build -t knf-core:1.0.5 -t knf-core:latest .
 ```
 
 Run:
 
 ```bash
-docker run --rm -v "$(pwd):/work" -w /work knf-core:latest example.mol --charge 0 --force
+docker run --rm -v "$(pwd):/work" -w /work knf-core:1.0.5 example.mol --charge 0 --force
 ```
 
 Compose:
