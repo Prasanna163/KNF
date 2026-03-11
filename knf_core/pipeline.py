@@ -414,6 +414,12 @@ class KNFPipeline:
         final_json = os.path.join(self.results_dir, _final_output_name('knf.json', self.water))
         knf_vector.write_output_txt(final_output_txt, result)
         knf_vector.write_knf_json(final_json, result)
+        stale_summary_txt = os.path.join(self.results_dir, _final_output_name('summary.txt', self.water))
+        if os.path.exists(stale_summary_txt):
+            try:
+                os.remove(stale_summary_txt)
+            except Exception:
+                logging.warning("Could not remove stale summary file: %s", stale_summary_txt)
         if self.water:
             delta_txt = os.path.join(self.results_dir, _final_output_name('delta.txt', self.water))
             delta_json = os.path.join(self.results_dir, _final_output_name('delta.json', self.water))

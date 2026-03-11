@@ -20,6 +20,7 @@ This `KNF-GPU` branch includes:
 - Robust filename/path artifact handling for mojibake/Unicode path variants.
 - xTB optimization capped to 50 cycles (`--cycles 50`) and pipeline continues if `xtbopt.xyz` exists.
 - Batch aggregate outputs: `batch_knf.json` and `batch_knf.csv` (or `*_water.*` when `--water` is used).
+- KUID-MVP output for batch runs: deterministic `KNF_vector (f1..f9) -> KUID` encoding with min-max calibration metadata.
 - Optional graceful mid-run stop in batch mode (`--enable-stop-key`, press `q`).
 - Batch normalized/quadrant outputs: `SNCI_Norm`, `SCDI_Norm`, quadrant PNG + JSON.
 - Native Molden-based WBO is now the default (`--wbo-mode native`) for `f3`.
@@ -187,12 +188,14 @@ With `--water`, final outputs are suffixed for easier comparison:
 Batch root outputs:
 - `batch_knf.json`
 - `batch_knf.csv`
+- `kuid_calibration.json`
 - `snci_scdi_quadrants.png`
 - `snci_scdi_quadrants.json`
 
 With `--water`, batch-level final outputs are similarly suffixed:
 - `batch_knf_water.json`
 - `batch_knf_water.csv`
+- `kuid_calibration_water.json`
 - `batch_delta_water.json`
 - `batch_delta_water.txt`
 - `snci_scdi_quadrants_water.png`
@@ -201,6 +204,10 @@ With `--water`, batch-level final outputs are similarly suffixed:
 `batch_knf.csv` includes normalized columns:
 - `SNCI_Norm`
 - `SCDI_Norm`
+- `KUID_raw` (18 hex chars; `00-FF` per feature in canonical order `f1..f9`)
+- `KUID` (display format `XX-XX-XX-XX-XX-XX-XX-XX-XX`)
+
+`knf.json` and `batch_knf.json` also include a dedicated `kuid` section when KUID is generated.
 
 When `--full-files` is used, intermediate artifacts are retained (for example NCI grid artifacts and xTB/Multiwfn intermediates). Without it, storage-efficient cleanup runs automatically.
 

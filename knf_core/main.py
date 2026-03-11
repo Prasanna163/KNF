@@ -14,7 +14,7 @@ from .pipeline import KNFPipeline
 from . import utils
 from . import autoconfig
 from . import first_run
-from . import knf_vector
+from . import knf_vector, kuid
 import psutil
 from rich.console import Console, Group
 from rich.live import Live
@@ -376,6 +376,153 @@ def _normalize_minmax(values, invert: bool = False):
     return out
 
 
+def _extract_knf_vector(entry: dict):
+    knf_data = entry.get("knf") or {}
+    vector = knf_data.get("KNF_vector") or []
+    if len(vector) < 9:
+        return None
+    values = [_safe_float(vector[idx]) for idx in range(9)]
+    if any(v is None for v in values):
+        return None
+    return values
+
+
+def _build_knf_result_from_entry(entry: dict):
+    knf_data = entry.get("knf") or {}
+    vector = _extract_knf_vector(entry)
+    if vector is None:
+        return None
+
+    snci_val = _safe_float(knf_data.get("SNCI"))
+    if snci_val is None:
+        snci_val = 0.0
+
+    scdi_val = _safe_float(knf_data.get("SCDI"))
+    scdi_var = _safe_float(knf_data.get("SCDI_variance"))
+    if scdi_var is None:
+        scdi_var = 0.0
+
+    metadata = knf_data.get("metadata")
+    if not isinstance(metadata, dict):
+        metadata = {}
+
+    return knf_vector.KNFResult(
+        SNCI=float(snci_val),
+        SCDI=scdi_val,
+        SCDI_variance=float(scdi_var),
+        KNF_vector=[float(v) for v in vector],
+        metadata=metadata,
+    )
+
+
+def _persist_entry_outputs_with_kuid(entry: dict, water: bool = False):
+    result = _build_knf_result_from_entry(entry)
+    if result is None:
+        return
+
+    result_dir = entry.get("result_dir")
+    if not result_dir:
+        return
+
+    output_txt_path = os.path.join(result_dir, _final_output_name("output.txt", water))
+    knf_json_path = os.path.join(result_dir, _final_output_name("knf.json", water))
+
+    knf_vector.write_output_txt(output_txt_path, result)
+    knf_vector.write_knf_json(knf_json_path, result)
+
+    stale_summary_txt = os.path.join(result_dir, _final_output_name("summary.txt", water))
+    if os.path.exists(stale_summary_txt):
+        try:
+            os.remove(stale_summary_txt)
+        except Exception as e:
+            logging.warning("Could not remove stale summary file %s: %s", stale_summary_txt, e)
+
+
+def _compute_kuid_payload(
+    enriched_records: list[dict],
+    results_root: str,
+    water: bool = False,
+):
+    valid_rows = []
+    invalid_files = []
+    persist_errors = []
+
+    for entry in enriched_records:
+        if entry.get("status") != "success":
+            continue
+        vector = _extract_knf_vector(entry)
+        if vector is None:
+            invalid_files.append(entry.get("input_file_name") or entry.get("input_file") or "unknown")
+            continue
+        valid_rows.append((entry, vector))
+
+    if not valid_rows:
+        return {
+            "enabled": False,
+            "error": "No valid successful KNF rows were available for KUID encoding.",
+            "records_with_kuid": 0,
+            "records_without_kuid": len(invalid_files),
+            "invalid_files": invalid_files,
+            "calibration_file": None,
+        }
+
+    calibration = kuid.build_calibration([vector for _, vector in valid_rows])
+    calibration_path = os.path.join(results_root, _final_output_name("kuid_calibration.json", water))
+    calibration_payload = dict(calibration)
+    calibration_payload["generated_at_utc"] = datetime.now(timezone.utc).isoformat()
+    with open(calibration_path, "w", encoding="utf-8") as f:
+        json.dump(calibration_payload, f, indent=2)
+
+    for entry, vector in valid_rows:
+        encoded = kuid.encode_knf_vector(vector, calibration)
+        entry["KUID_raw"] = encoded["raw"]
+        entry["KUID"] = encoded["display"]
+
+        knf_data = entry.get("knf") or {}
+        if isinstance(knf_data, dict):
+            kuid_section = {
+                "version": calibration.get("kuid_version"),
+                "calibration_id": calibration.get("calibration_id"),
+                "feature_order": calibration.get("feature_order"),
+                "bins_per_feature": calibration.get("bins_per_feature"),
+                "display_format": calibration.get("display_format"),
+                "raw": encoded["raw"],
+                "display": encoded["display"],
+                "bins": encoded["bins"],
+                "normalized": encoded["normalized"],
+            }
+            metadata = knf_data.setdefault("metadata", {})
+            metadata["kuid"] = kuid_section
+            knf_data["kuid"] = kuid_section
+            entry["kuid"] = kuid_section
+
+        try:
+            _persist_entry_outputs_with_kuid(entry, water=water)
+        except Exception as e:
+            persist_errors.append(
+                {
+                    "file": entry.get("input_file_name") or entry.get("input_file") or "unknown",
+                    "error": str(e),
+                }
+            )
+
+    return {
+        "enabled": True,
+        "kuid_version": calibration.get("kuid_version"),
+        "calibration_id": calibration.get("calibration_id"),
+        "normalization": calibration.get("normalization"),
+        "bins_per_feature": calibration.get("bins_per_feature"),
+        "feature_order": calibration.get("feature_order"),
+        "display_format": calibration.get("display_format"),
+        "feature_bounds": calibration.get("feature_bounds"),
+        "records_with_kuid": len(valid_rows),
+        "records_without_kuid": len(invalid_files),
+        "invalid_files": invalid_files,
+        "calibration_file": calibration_path,
+        "persist_errors": persist_errors,
+    }
+
+
 def _classify_quadrant(x: float, y: float, mx: float, my: float) -> str:
     if x >= mx and y >= my:
         return "Q1"
@@ -722,6 +869,11 @@ def write_batch_aggregate_json(
         water=water,
         interactive_plot=interactive_quadrant_plot,
     )
+    kuid_payload = _compute_kuid_payload(
+        enriched_records=enriched_records,
+        results_root=results_root,
+        water=water,
+    )
 
     payload = {
         "schema_version": 1,
@@ -738,6 +890,7 @@ def write_batch_aggregate_json(
             "total_time_seconds": round(float(total_time), 4),
         },
         "normalization_and_quadrants": quadrant_payload,
+        "kuid": kuid_payload,
         "records": enriched_records,
         "knf_results": knf_results,
     }
@@ -745,7 +898,11 @@ def write_batch_aggregate_json(
     with open(aggregate_path, "w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2)
 
-    csv_fields = ["File"] + [f"f{i}" for i in range(1, 10)] + ["SNCI", "SCDI", "SCDI_variance", "SNCI_Norm", "SCDI_Norm"]
+    csv_fields = (
+        ["File"]
+        + [f"f{i}" for i in range(1, 10)]
+        + ["KUID_raw", "KUID", "SNCI", "SCDI", "SCDI_variance", "SNCI_Norm", "SCDI_Norm"]
+    )
     with open(aggregate_csv_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=csv_fields)
         writer.writeheader()
@@ -754,6 +911,8 @@ def write_batch_aggregate_json(
             knf_vector = knf_data.get("KNF_vector") or []
             row = {
                 "File": entry.get("input_file_name", ""),
+                "KUID_raw": entry.get("KUID_raw", ""),
+                "KUID": entry.get("KUID", ""),
                 "SNCI": knf_data.get("SNCI", ""),
                 "SCDI": knf_data.get("SCDI", ""),
                 "SCDI_variance": knf_data.get("SCDI_variance", ""),

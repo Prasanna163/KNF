@@ -62,10 +62,34 @@ def write_output_txt(filepath: str, result: KNFResult):
         f.write(f"f8 (NCI Std):   {vec[7]:.6f}\n")
         f.write(f"f9 (NCI Skew):  {vec[8]:.6f}\n")
 
+        metadata = result.metadata if isinstance(result.metadata, dict) else {}
+        kuid_info = metadata.get("kuid") if isinstance(metadata, dict) else None
+        if isinstance(kuid_info, dict):
+            f.write("\nKUID:\n")
+            f.write(f"version:        {kuid_info.get('version', '')}\n")
+            f.write(f"calibration_id: {kuid_info.get('calibration_id', '')}\n")
+            f.write(f"KUID_raw:       {kuid_info.get('raw', '')}\n")
+            f.write(f"KUID:           {kuid_info.get('display', '')}\n")
+
 def write_knf_json(filepath: str, result: KNFResult):
     """Writes machine-readable knf.json."""
+    payload = asdict(result)
+    metadata = payload.get("metadata") if isinstance(payload, dict) else None
+    kuid_info = metadata.get("kuid") if isinstance(metadata, dict) else None
+    if isinstance(kuid_info, dict):
+        payload["kuid"] = {
+            "version": kuid_info.get("version"),
+            "calibration_id": kuid_info.get("calibration_id"),
+            "feature_order": kuid_info.get("feature_order"),
+            "bins_per_feature": kuid_info.get("bins_per_feature"),
+            "display_format": kuid_info.get("display_format"),
+            "raw": kuid_info.get("raw"),
+            "display": kuid_info.get("display"),
+            "bins": kuid_info.get("bins"),
+            "normalized": kuid_info.get("normalized"),
+        }
     with open(filepath, 'w') as f:
-        json.dump(asdict(result), f, indent=4)
+        json.dump(payload, f, indent=4)
 
 
 def _metric_value_map(result_dict: dict) -> dict:
