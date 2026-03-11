@@ -415,6 +415,35 @@ def _build_knf_result_from_entry(entry: dict):
     )
 
 
+def _build_kuid_section(calibration: dict, encoded: dict) -> dict:
+    return {
+        "version": calibration.get("kuid_version"),
+        "calibration_id": calibration.get("calibration_id"),
+        "feature_order": calibration.get("feature_order"),
+        "bins_per_feature": calibration.get("bins_per_feature"),
+        "display_format": calibration.get("display_format"),
+        "raw": encoded["raw"],
+        "display": encoded["display"],
+        "bins": encoded["bins"],
+        "normalized": encoded["normalized"],
+    }
+
+
+def _ensure_kuid_csv_field_order(fieldnames: list[str]) -> list[str]:
+    base_fields = [name for name in (fieldnames or []) if name not in {"KUID_raw", "KUID"}]
+    if not base_fields:
+        base_fields = (
+            ["File"]
+            + [f"f{i}" for i in range(1, 10)]
+            + ["SNCI", "SCDI", "SCDI_variance", "SNCI_Norm", "SCDI_Norm"]
+        )
+    if "f9" in base_fields:
+        insert_idx = base_fields.index("f9") + 1
+    else:
+        insert_idx = len(base_fields)
+    return base_fields[:insert_idx] + ["KUID_raw", "KUID"] + base_fields[insert_idx:]
+
+
 def _persist_entry_outputs_with_kuid(entry: dict, water: bool = False):
     result = _build_knf_result_from_entry(entry)
     if result is None:
@@ -436,6 +465,149 @@ def _persist_entry_outputs_with_kuid(entry: dict, water: bool = False):
             os.remove(stale_summary_txt)
         except Exception as e:
             logging.warning("Could not remove stale summary file %s: %s", stale_summary_txt, e)
+
+
+def _run_kuid_only_from_existing_batch(
+    directory: str,
+    results_root: str,
+    water: bool = False,
+):
+    aggregate_csv_path = os.path.join(results_root, _final_output_name("batch_knf.csv", water))
+    aggregate_json_path = os.path.join(results_root, _final_output_name("batch_knf.json", water))
+    calibration_path = os.path.join(results_root, _final_output_name("kuid_calibration.json", water))
+
+    if not os.path.exists(aggregate_csv_path):
+        return {"ran": False, "reason": "batch_knf.csv not found"}
+
+    with open(aggregate_csv_path, "r", newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        rows = [dict(row) for row in reader]
+        original_fieldnames = list(reader.fieldnames or [])
+
+    parsed_rows = []
+    vectors = []
+    for row in rows:
+        vec = [_safe_float(row.get(f"f{i}")) for i in range(1, 10)]
+        if any(v is None for v in vec):
+            parsed_rows.append((row, None))
+            continue
+        parsed_rows.append((row, vec))
+        vectors.append(vec)
+
+    if not vectors:
+        return {
+            "ran": True,
+            "updated_rows": 0,
+            "total_rows": len(rows),
+            "batch_csv": aggregate_csv_path,
+            "batch_json": aggregate_json_path if os.path.exists(aggregate_json_path) else None,
+            "calibration_file": None,
+            "reason": "No valid f1..f9 rows in batch_knf.csv",
+        }
+
+    calibration = kuid.build_calibration(vectors)
+    calibration_payload = dict(calibration)
+    calibration_payload["generated_at_utc"] = datetime.now(timezone.utc).isoformat()
+    with open(calibration_path, "w", encoding="utf-8") as f:
+        json.dump(calibration_payload, f, indent=2)
+
+    updated_rows = []
+    encoded_by_file = {}
+    for row, vec in parsed_rows:
+        file_name = (row.get("File") or "").strip()
+        if vec is None:
+            row["KUID_raw"] = ""
+            row["KUID"] = ""
+            updated_rows.append(row)
+            continue
+        encoded = kuid.encode_knf_vector(vec, calibration)
+        row["KUID_raw"] = encoded["raw"]
+        row["KUID"] = encoded["display"]
+        updated_rows.append(row)
+        if file_name:
+            encoded_by_file[file_name] = encoded
+
+    output_fieldnames = _ensure_kuid_csv_field_order(original_fieldnames)
+    with open(aggregate_csv_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=output_fieldnames, extrasaction="ignore")
+        writer.writeheader()
+        for row in updated_rows:
+            writer.writerow(row)
+
+    persist_errors = []
+    json_updated = False
+    if os.path.exists(aggregate_json_path):
+        try:
+            with open(aggregate_json_path, "r", encoding="utf-8") as f:
+                payload = json.load(f)
+
+            records = payload.get("records") or []
+            for entry in records:
+                input_file_name = (entry.get("input_file_name") or "").strip()
+                encoded = encoded_by_file.get(input_file_name)
+                if not encoded:
+                    vector = _extract_knf_vector(entry)
+                    if vector is None:
+                        continue
+                    encoded = kuid.encode_knf_vector(vector, calibration)
+
+                entry["KUID_raw"] = encoded["raw"]
+                entry["KUID"] = encoded["display"]
+                kuid_section = _build_kuid_section(calibration, encoded)
+                entry["kuid"] = kuid_section
+
+                knf_data = entry.get("knf") or {}
+                if isinstance(knf_data, dict):
+                    metadata = knf_data.setdefault("metadata", {})
+                    metadata["kuid"] = kuid_section
+                    knf_data["kuid"] = kuid_section
+
+                try:
+                    _persist_entry_outputs_with_kuid(entry, water=water)
+                except Exception as e:
+                    persist_errors.append(
+                        {
+                            "file": input_file_name or entry.get("input_file") or "unknown",
+                            "error": str(e),
+                        }
+                    )
+
+            payload["kuid"] = {
+                "enabled": True,
+                "kuid_version": calibration.get("kuid_version"),
+                "calibration_id": calibration.get("calibration_id"),
+                "normalization": calibration.get("normalization"),
+                "bins_per_feature": calibration.get("bins_per_feature"),
+                "feature_order": calibration.get("feature_order"),
+                "display_format": calibration.get("display_format"),
+                "feature_bounds": calibration.get("feature_bounds"),
+                "records_with_kuid": len(vectors),
+                "records_without_kuid": len(rows) - len(vectors),
+                "invalid_files": [
+                    (row.get("File") or "unknown")
+                    for row, vec in parsed_rows
+                    if vec is None
+                ],
+                "calibration_file": calibration_path,
+                "persist_errors": persist_errors,
+            }
+            payload["generated_at_utc"] = datetime.now(timezone.utc).isoformat()
+
+            with open(aggregate_json_path, "w", encoding="utf-8") as f:
+                json.dump(payload, f, indent=2)
+            json_updated = True
+        except Exception as e:
+            persist_errors.append({"file": aggregate_json_path, "error": str(e)})
+
+    return {
+        "ran": True,
+        "updated_rows": len(vectors),
+        "total_rows": len(rows),
+        "batch_csv": aggregate_csv_path,
+        "batch_json": aggregate_json_path if json_updated else None,
+        "calibration_file": calibration_path,
+        "persist_errors": persist_errors,
+    }
 
 
 def _compute_kuid_payload(
@@ -480,17 +652,7 @@ def _compute_kuid_payload(
 
         knf_data = entry.get("knf") or {}
         if isinstance(knf_data, dict):
-            kuid_section = {
-                "version": calibration.get("kuid_version"),
-                "calibration_id": calibration.get("calibration_id"),
-                "feature_order": calibration.get("feature_order"),
-                "bins_per_feature": calibration.get("bins_per_feature"),
-                "display_format": calibration.get("display_format"),
-                "raw": encoded["raw"],
-                "display": encoded["display"],
-                "bins": encoded["bins"],
-                "normalized": encoded["normalized"],
-            }
+            kuid_section = _build_kuid_section(calibration, encoded)
             metadata = knf_data.setdefault("metadata", {})
             metadata["kuid"] = kuid_section
             knf_data["kuid"] = kuid_section
@@ -939,6 +1101,29 @@ def write_batch_aggregate_json(
 def run_batch_directory(directory: str, args):
     """Runs the pipeline for all valid files in a directory using a queue."""
     valid_exts = {'.xyz', '.sdf', '.mol', '.pdb', '.mol2'}
+    results_root = resolve_results_root(directory, args.output_dir)
+    water_mode = bool(getattr(args, "water", False))
+    aggregate_csv_path = os.path.join(results_root, _final_output_name("batch_knf.csv", water_mode))
+
+    if os.path.exists(aggregate_csv_path) and not bool(getattr(args, "force", False)):
+        summary = _run_kuid_only_from_existing_batch(
+            directory=directory,
+            results_root=results_root,
+            water=water_mode,
+        )
+        if summary.get("ran"):
+            print("Detected existing batch_knf.csv. Skipping KNF recomputation and running KUID-only refresh.")
+            print(
+                f"KUID updated for {summary.get('updated_rows', 0)} / {summary.get('total_rows', 0)} rows."
+            )
+            print(f"Batch CSV:        {summary.get('batch_csv')}")
+            if summary.get("batch_json"):
+                print(f"Batch JSON:       {summary.get('batch_json')}")
+            print(f"Calibration JSON: {summary.get('calibration_file')}")
+            persist_errors = summary.get("persist_errors") or []
+            if persist_errors:
+                print(f"KUID-only refresh completed with {len(persist_errors)} persistence warnings.")
+            return
 
     files = []
     for entry in os.listdir(directory):
@@ -953,8 +1138,6 @@ def run_batch_directory(directory: str, args):
     if not files:
         print(f"No molecular files found in {directory}.")
         return
-
-    results_root = resolve_results_root(directory, args.output_dir)
     mode = args.processing.lower()
     if mode == "auto":
         mode = "multi" if len(files) > 1 else "single"

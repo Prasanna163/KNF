@@ -209,6 +209,9 @@ With `--water`, batch-level final outputs are similarly suffixed:
 
 `knf.json` and `batch_knf.json` also include a dedicated `kuid` section when KUID is generated.
 
+KUID-only fast path:
+- When running on a directory, if `batch_knf.csv` already exists and `--force` is not used, KNF skips full molecular recomputation and refreshes only KUID outputs from existing batch KNF data.
+
 When `--full-files` is used, intermediate artifacts are retained (for example NCI grid artifacts and xTB/Multiwfn intermediates). Without it, storage-efficient cleanup runs automatically.
 
 ## Compare Script
