@@ -50,10 +50,17 @@ def write_output_txt(filepath: str, result: KNFResult):
             f.write(f"SCDI:           {result.SCDI:.6f}\n")
         f.write(f"SCDI_variance:  {result.SCDI_variance:.6f}\n\n")
         
+        metadata = result.metadata if isinstance(result.metadata, dict) else {}
+        f2_defined = metadata.get("f2_defined")
+
         vec = result.KNF_vector
         f.write("KNF Vector Components:\n")
         f.write(f"f1 (COM Dist):  {vec[0]:.4f} A\n")
-        f.write(f"f2 (HB Angle):  {vec[1]:.2f} deg\n")
+        if f2_defined == 0:
+            reason = metadata.get("f2_undefined_reason", "undefined")
+            f.write(f"f2 (HB Angle):  n/a ({reason})\n")
+        else:
+            f.write(f"f2 (HB Angle):  {vec[1]:.2f} deg\n")
         f.write(f"f3 (Max Inter WBO):   {vec[2]:.4f}\n")
         f.write(f"f4 (Dipole):    {vec[3]:.4f} D\n")
         f.write(f"f5 (Pol):       {vec[4]:.4f} au\n")

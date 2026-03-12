@@ -2,6 +2,7 @@ import os
 import shutil
 import logging
 from pathlib import Path
+from rdkit import Chem
 
 from . import utils, geometry, xtb, multiwfn, snci, scdi, knf_vector, converter, wrapper
 
@@ -190,7 +191,6 @@ class KNFPipeline:
 
         if len(fragments) == 2:
             f1 = geometry.compute_fragment_distance(mol, fragments[0], fragments[1])
-            f2 = geometry.detect_hb_angle(mol, fragments[0], fragments[1])
             pair_indices = [0, 1]
         elif len(fragments) > 2:
             distances = []
@@ -198,13 +198,23 @@ class KNFPipeline:
                 for j in range(i + 1, len(fragments)):
                     distances.append(geometry.compute_fragment_distance(mol, fragments[i], fragments[j]))
             f1 = float(sum(distances) / len(distances)) if distances else 0.0
-            f2 = 180.0
             logging.info(
-                f"Using average COM distance across {len(distances)} fragment pairs; HB angle fixed at 180.0."
+                "Using average COM distance across %s fragment pairs.",
+                len(distances),
             )
         else:
             f1 = 0.0
-            f2 = 180.0
+
+        # f2 is finalized after xTB descriptor extraction, using weighted D-H...A triplets.
+        f2_info = {
+            "f2": float("nan"),
+            "f2_defined": 0,
+            "triplet_count": 0,
+            "weight_sum": 0.0,
+            "undefined_reason": "not_computed",
+            "weight_model": "inv_ha_distance*(1+wbo_da)*(1+nci_local)",
+            "top_triplets": [],
+        }
 
         optimized_xyz = os.path.join(self.results_dir, 'xtbopt.xyz')
         work_xyz = os.path.join(self.results_dir, 'input.xyz')
@@ -269,9 +279,72 @@ class KNFPipeline:
             logging.error(f"Failed to extract xTB descriptors: {e}")
             raise e
 
+        if len(fragments) >= 2:
+            f2_mol = Chem.Mol(mol)
+            if os.path.exists(optimized_xyz):
+                try:
+                    optimized_mol = geometry.load_molecule(optimized_xyz)
+                    if optimized_mol.GetNumAtoms() == mol.GetNumAtoms():
+                        src_conf = optimized_mol.GetConformer()
+                        dst_conf = f2_mol.GetConformer()
+                        for atom_idx in range(mol.GetNumAtoms()):
+                            p = src_conf.GetAtomPosition(atom_idx)
+                            dst_conf.SetAtomPosition(atom_idx, (float(p.x), float(p.y), float(p.z)))
+                    else:
+                        logging.warning(
+                            "Optimized geometry atom count (%s) does not match input (%s); "
+                            "falling back to input geometry for f2.",
+                            optimized_mol.GetNumAtoms(),
+                            mol.GetNumAtoms(),
+                        )
+                except Exception as e:
+                    logging.warning("Failed to load optimized geometry for f2 weighting: %s", e)
+
+            wbo_pair_map = {}
+            try:
+                wbo_pair_map = xtb.parse_wbo_pair_map(wbo_file, xtb_log_path=xtb_log)
+            except Exception as e:
+                logging.warning("Failed to parse WBO pair map for f2 weighting; using geometry-only weights: %s", e)
+
+            f2_info = geometry.compute_weighted_hbond_angle(
+                mol=f2_mol,
+                fragments=fragments,
+                wbo_by_pair=wbo_pair_map,
+                nci_strength_by_triplet=None,
+            )
+            if not f2_info.get("f2_defined"):
+                logging.info(
+                    "f2 undefined after weighted triplet evaluation (%s).",
+                    f2_info.get("undefined_reason"),
+                )
+            else:
+                logging.info(
+                    "f2 weighted over %s triplets (weight_sum=%.6f).",
+                    f2_info.get("triplet_count", 0),
+                    float(f2_info.get("weight_sum", 0.0)),
+                )
+        else:
+            f2_info = {
+                "f2": float("nan"),
+                "f2_defined": 0,
+                "triplet_count": 0,
+                "weight_sum": 0.0,
+                "undefined_reason": "single_fragment",
+                "weight_model": "inv_ha_distance*(1+wbo_da)*(1+nci_local)",
+                "top_triplets": [],
+            }
+
+        f2 = float(f2_info.get("f2", float("nan")))
+
         return {
             "f1": f1,
             "f2": f2,
+            "f2_defined": int(f2_info.get("f2_defined", 0)),
+            "f2_triplet_count": int(f2_info.get("triplet_count", 0)),
+            "f2_weight_sum": float(f2_info.get("weight_sum", 0.0)),
+            "f2_undefined_reason": f2_info.get("undefined_reason"),
+            "f2_weight_model": f2_info.get("weight_model"),
+            "f2_top_triplets": f2_info.get("top_triplets", []),
             "f3": f3,
             "f4": f4,
             "f5": f5,
@@ -291,6 +364,12 @@ class KNFPipeline:
         """Runs NCI + SNCI/SCDI + KNF assembly using a precomputed xTB context."""
         f1 = context["f1"]
         f2 = context["f2"]
+        f2_defined = int(context.get("f2_defined", 0))
+        f2_triplet_count = int(context.get("f2_triplet_count", 0))
+        f2_weight_sum = float(context.get("f2_weight_sum", 0.0))
+        f2_undefined_reason = context.get("f2_undefined_reason")
+        f2_weight_model = context.get("f2_weight_model")
+        f2_top_triplets = context.get("f2_top_triplets") or []
         f3 = context["f3"]
         f4 = context["f4"]
         f5 = context["f5"]
@@ -396,6 +475,12 @@ class KNFPipeline:
                 'spin': self.spin,
                 'fragments': fragment_count,
                 'geometry_fragment_pair': pair_indices,
+                'f2_defined': f2_defined,
+                'f2_triplet_count': f2_triplet_count,
+                'f2_weight_sum': f2_weight_sum,
+                'f2_undefined_reason': f2_undefined_reason,
+                'f2_weight_model': f2_weight_model,
+                'f2_top_triplets': f2_top_triplets,
                 'wbo_max_global': wbo_max_global,
                 'wbo_inter_pair_count': wbo_inter_pair_count,
                 'wbo_inter_max_pair': wbo_inter_max_pair,

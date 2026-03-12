@@ -27,9 +27,13 @@ This `KNF-GPU` branch includes:
 
 ## Fragment Handling
 
-- `1` fragment: `f1 = 0.0`, `f2 = 180.0`
-- `2` fragments: `f1` = COM distance, `f2` = detected H-bond angle
-- `>2` fragments: `f1` = average COM distance over unique pairs, `f2 = 180.0`
+- `1` fragment: `f1 = 0.0`; `f2` is undefined (`NaN`) with `f2_defined = 0`.
+- `>=2` fragments:
+  - `f1` = COM distance for 2 fragments, or average COM distance over unique fragment pairs for multi-fragment systems.
+  - `f2` is a weighted D-H...A angle over all candidate cross-fragment donor-H-acceptor triplets:
+    - `f2 = sum_j(w_j * theta_j) / sum_j(w_j)`
+    - default weight model: inverse H...A distance, reweighted by interfragment donor-acceptor WBO when available.
+  - if no meaningful triplets exist, `f2` remains undefined (`NaN`) and `f2_defined = 0` (no fake `180.0` fallback).
 
 ## Requirements
 
@@ -210,6 +214,7 @@ With `--water`, batch-level final outputs are similarly suffixed:
 - `KUID_prefix2` (first 1 byte / 2 hex chars)
 - `KUID_prefix4` (first 2 bytes / 4 hex chars)
 - `KUID_prefix6` (first 3 bytes / 6 hex chars)
+- `f2_defined` (`1` when weighted D-H...A angle is defined, `0` when `f2` is undefined/NaN)
 
 `batch_knf.csv` stores `SCDI_variance` (the scalar retained for SCDI tracking) and does not include the optional legacy `SCDI` column.
 

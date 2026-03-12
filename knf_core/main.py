@@ -42,6 +42,7 @@ BATCH_METRIC_SPECS = list(knf_vector.METRIC_SPECS) + [
 
 def _metric_value_map_from_batch_entry(entry: dict) -> dict:
     knf_data = entry.get("knf") or {}
+    metadata = knf_data.get("metadata") if isinstance(knf_data, dict) else None
     vector = knf_data.get("KNF_vector") or []
     return {
         "SNCI": knf_data.get("SNCI"),
@@ -56,6 +57,7 @@ def _metric_value_map_from_batch_entry(entry: dict) -> dict:
         "f7": vector[6] if len(vector) > 6 else None,
         "f8": vector[7] if len(vector) > 7 else None,
         "f9": vector[8] if len(vector) > 8 else None,
+        "f2_defined": (metadata or {}).get("f2_defined"),
         "SNCI_Norm": entry.get("SNCI_Norm"),
         "SCDI_Norm": entry.get("SCDI_Norm"),
     }
@@ -1168,6 +1170,7 @@ def write_batch_aggregate_json(
         ["File"]
         + [f"f{i}" for i in range(1, 10)]
         + [
+            "f2_defined",
             "KUID_raw",
             "KUID",
             "KUID_Cluster",
@@ -1187,8 +1190,10 @@ def write_batch_aggregate_json(
         for entry in enriched_records:
             knf_data = entry.get("knf") or {}
             knf_vector = knf_data.get("KNF_vector") or []
+            metadata = knf_data.get("metadata") if isinstance(knf_data, dict) else None
             row = {
                 "File": entry.get("input_file_name", ""),
+                "f2_defined": (metadata or {}).get("f2_defined", ""),
                 "KUID_raw": entry.get("KUID_raw", ""),
                 "KUID": entry.get("KUID", ""),
                 "KUID_Cluster": entry.get("KUID_Cluster", ""),
