@@ -207,10 +207,20 @@ With `--water`, batch-level final outputs are similarly suffixed:
 - `KUID_raw` (18 hex chars; `00-FF` per feature in canonical order `f1..f9`)
 - `KUID` (18-char uppercase hex, no separators; same canonical order `f1..f9`)
 - `KUID_Cluster` (display format `f1f2f3-f4f5-f6f7-f8f9`)
+- `KUID_prefix2` (first 1 byte / 2 hex chars)
+- `KUID_prefix4` (first 2 bytes / 4 hex chars)
+- `KUID_prefix6` (first 3 bytes / 6 hex chars)
 
 `batch_knf.csv` stores `SCDI_variance` (the scalar retained for SCDI tracking) and does not include the optional legacy `SCDI` column.
 
 `knf.json` and `batch_knf.json` also include a dedicated `kuid` section when KUID is generated.
+
+Batch runs also emit KUID indexing/statistics artifacts:
+- `kuid_family_stats.json`
+- `kuid_family_stats.csv`
+- `kuid_prefix_index.json`
+
+Programmatic KUID distance/search helpers are available in `knf_core/kuid_index.py` (for example byte-level Hamming distance and nearest-neighbor ranking).
 
 KUID-only fast path:
 - When running on a directory, if `batch_knf.csv` already exists and `--force` is not used, KNF skips full molecular recomputation and refreshes only KUID outputs from existing batch KNF data.
