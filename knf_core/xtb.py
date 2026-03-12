@@ -104,6 +104,30 @@ def parse_max_wbo(wbo_path: str, xtb_log_path: str = None) -> float:
             max_wbo = max(max_wbo, float(parts[2]))
     return float(max_wbo)
 
+
+def parse_wbo_pair_map(wbo_path: str, xtb_log_path: str = None) -> dict[tuple[int, int], float]:
+    """
+    Parses xTB WBO pair values into a 0-based atom-pair lookup map.
+
+    Returns:
+      {(min_atom_idx, max_atom_idx): wbo_value}
+    """
+    resolved = resolve_wbo_path(wbo_path=wbo_path, xtb_log_path=xtb_log_path)
+    pair_map: dict[tuple[int, int], float] = {}
+    with open(resolved, "r", encoding="utf-8", errors="replace") as f:
+        for line in f:
+            parts = line.split()
+            if not _is_wbo_triplet(parts):
+                continue
+            i = int(parts[0]) - 1
+            j = int(parts[1]) - 1
+            wbo = float(parts[2])
+            key = (i, j) if i <= j else (j, i)
+            # Keep strongest occurrence if duplicates appear.
+            if key not in pair_map or wbo > pair_map[key]:
+                pair_map[key] = wbo
+    return pair_map
+
 def run_xtb_optimization(filepath: str, charge: int = 0, uhf: int = 0) -> str:
     """
     Runs xTB geometry optimization.

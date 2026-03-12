@@ -14,7 +14,7 @@ from .pipeline import KNFPipeline
 from . import utils
 from . import autoconfig
 from . import first_run
-from . import knf_vector, kuid
+from . import knf_vector, kuid, kuid_index
 import psutil
 from rich.console import Console, Group
 from rich.live import Live
@@ -42,6 +42,7 @@ BATCH_METRIC_SPECS = list(knf_vector.METRIC_SPECS) + [
 
 def _metric_value_map_from_batch_entry(entry: dict) -> dict:
     knf_data = entry.get("knf") or {}
+    metadata = knf_data.get("metadata") if isinstance(knf_data, dict) else None
     vector = knf_data.get("KNF_vector") or []
     return {
         "SNCI": knf_data.get("SNCI"),
@@ -56,6 +57,7 @@ def _metric_value_map_from_batch_entry(entry: dict) -> dict:
         "f7": vector[6] if len(vector) > 6 else None,
         "f8": vector[7] if len(vector) > 7 else None,
         "f9": vector[8] if len(vector) > 8 else None,
+        "f2_defined": (metadata or {}).get("f2_defined"),
         "SNCI_Norm": entry.get("SNCI_Norm"),
         "SCDI_Norm": entry.get("SCDI_Norm"),
     }
@@ -431,11 +433,84 @@ def _build_kuid_section(calibration: dict, encoded: dict) -> dict:
     }
 
 
+def _apply_kuid_prefix_fields(record: dict):
+    raw = (record.get("KUID") or record.get("KUID_raw") or "").strip()
+    record.update(kuid_index.kuid_prefix_fields(raw))
+
+
+def _write_kuid_index_outputs(rows: list[dict], results_root: str, water: bool = False) -> dict:
+    family_json_path = os.path.join(results_root, _final_output_name("kuid_family_stats.json", water))
+    family_csv_path = os.path.join(results_root, _final_output_name("kuid_family_stats.csv", water))
+    prefix_json_path = os.path.join(results_root, _final_output_name("kuid_prefix_index.json", water))
+
+    family_stats = kuid_index.build_family_stats(rows, code_field="KUID")
+    with open(family_json_path, "w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+                "code_field": "KUID",
+                "family_count": len(family_stats),
+                "families": family_stats,
+            },
+            f,
+            indent=2,
+        )
+
+    family_fieldnames = [
+        "kuid",
+        "KUID_prefix2",
+        "KUID_prefix4",
+        "KUID_prefix6",
+        "member_count",
+        "example_files",
+        "mean_SNCI",
+        "mean_SCDI",
+        "mean_SCDI_variance",
+        "mean_SNCI_Norm",
+        "mean_SCDI_Norm",
+    ] + [f"mean_f{i}" for i in range(1, 10)]
+    with open(family_csv_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=family_fieldnames, extrasaction="ignore")
+        writer.writeheader()
+        for family in family_stats:
+            row = dict(family)
+            row["example_files"] = "; ".join(family.get("example_files") or [])
+            writer.writerow(row)
+
+    prefix_index = kuid_index.build_prefix_index(rows, code_field="KUID")
+    with open(prefix_json_path, "w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+                "code_field": "KUID",
+                "index": prefix_index,
+            },
+            f,
+            indent=2,
+        )
+
+    return {
+        "family_stats_json": family_json_path,
+        "family_stats_csv": family_csv_path,
+        "prefix_index_json": prefix_json_path,
+        "family_count": len(family_stats),
+    }
+
+
 def _ensure_kuid_csv_field_order(fieldnames: list[str]) -> list[str]:
     base_fields = [
         name
         for name in (fieldnames or [])
-        if name not in {"KUID_raw", "KUID", "KUID_Cluster", "SCDI"}
+        if name
+        not in {
+            "KUID_raw",
+            "KUID",
+            "KUID_Cluster",
+            "KUID_prefix2",
+            "KUID_prefix4",
+            "KUID_prefix6",
+            "SCDI",
+        }
     ]
     if not base_fields:
         base_fields = (
@@ -447,7 +522,18 @@ def _ensure_kuid_csv_field_order(fieldnames: list[str]) -> list[str]:
         insert_idx = base_fields.index("f9") + 1
     else:
         insert_idx = len(base_fields)
-    return base_fields[:insert_idx] + ["KUID_raw", "KUID", "KUID_Cluster"] + base_fields[insert_idx:]
+    return (
+        base_fields[:insert_idx]
+        + [
+            "KUID_raw",
+            "KUID",
+            "KUID_Cluster",
+            "KUID_prefix2",
+            "KUID_prefix4",
+            "KUID_prefix6",
+        ]
+        + base_fields[insert_idx:]
+    )
 
 
 def _persist_entry_outputs_with_kuid(entry: dict, water: bool = False):
@@ -525,12 +611,14 @@ def _run_kuid_only_from_existing_batch(
             row["KUID_raw"] = ""
             row["KUID"] = ""
             row["KUID_Cluster"] = ""
+            _apply_kuid_prefix_fields(row)
             updated_rows.append(row)
             continue
         encoded = kuid.encode_knf_vector(vec, calibration)
         row["KUID_raw"] = encoded["raw"]
         row["KUID"] = encoded["raw"]
         row["KUID_Cluster"] = encoded.get("cluster_display", "")
+        _apply_kuid_prefix_fields(row)
         updated_rows.append(row)
         if file_name:
             encoded_by_file[file_name] = encoded
@@ -544,6 +632,7 @@ def _run_kuid_only_from_existing_batch(
 
     persist_errors = []
     json_updated = False
+    kuid_index_outputs = None
     if os.path.exists(aggregate_json_path):
         try:
             with open(aggregate_json_path, "r", encoding="utf-8") as f:
@@ -562,6 +651,7 @@ def _run_kuid_only_from_existing_batch(
                 entry["KUID_raw"] = encoded["raw"]
                 entry["KUID"] = encoded["raw"]
                 entry["KUID_Cluster"] = encoded.get("cluster_display", "")
+                _apply_kuid_prefix_fields(entry)
                 kuid_section = _build_kuid_section(calibration, encoded)
                 entry["kuid"] = kuid_section
 
@@ -603,11 +693,16 @@ def _run_kuid_only_from_existing_batch(
             }
             payload["generated_at_utc"] = datetime.now(timezone.utc).isoformat()
 
+            kuid_index_outputs = _write_kuid_index_outputs(updated_rows, results_root, water=water)
+            payload["kuid"].update(kuid_index_outputs)
             with open(aggregate_json_path, "w", encoding="utf-8") as f:
                 json.dump(payload, f, indent=2)
             json_updated = True
         except Exception as e:
             persist_errors.append({"file": aggregate_json_path, "error": str(e)})
+
+    if kuid_index_outputs is None:
+        kuid_index_outputs = _write_kuid_index_outputs(updated_rows, results_root, water=water)
 
     return {
         "ran": True,
@@ -616,6 +711,7 @@ def _run_kuid_only_from_existing_batch(
         "batch_csv": aggregate_csv_path,
         "batch_json": aggregate_json_path if json_updated else None,
         "calibration_file": calibration_path,
+        "kuid_index_outputs": kuid_index_outputs,
         "persist_errors": persist_errors,
     }
 
@@ -660,6 +756,7 @@ def _compute_kuid_payload(
         entry["KUID_raw"] = encoded["raw"]
         entry["KUID"] = encoded["raw"]
         entry["KUID_Cluster"] = encoded.get("cluster_display", "")
+        _apply_kuid_prefix_fields(entry)
 
         knf_data = entry.get("knf") or {}
         if isinstance(knf_data, dict):
@@ -1069,22 +1166,34 @@ def write_batch_aggregate_json(
         "knf_results": knf_results,
     }
 
-    with open(aggregate_path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=2)
-
     csv_fields = (
         ["File"]
         + [f"f{i}" for i in range(1, 10)]
-        + ["KUID_raw", "KUID", "KUID_Cluster", "SNCI", "SCDI_variance", "SNCI_Norm", "SCDI_Norm"]
+        + [
+            "f2_defined",
+            "KUID_raw",
+            "KUID",
+            "KUID_Cluster",
+            "KUID_prefix2",
+            "KUID_prefix4",
+            "KUID_prefix6",
+            "SNCI",
+            "SCDI_variance",
+            "SNCI_Norm",
+            "SCDI_Norm",
+        ]
     )
+    csv_rows = []
     with open(aggregate_csv_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=csv_fields)
         writer.writeheader()
         for entry in enriched_records:
             knf_data = entry.get("knf") or {}
             knf_vector = knf_data.get("KNF_vector") or []
+            metadata = knf_data.get("metadata") if isinstance(knf_data, dict) else None
             row = {
                 "File": entry.get("input_file_name", ""),
+                "f2_defined": (metadata or {}).get("f2_defined", ""),
                 "KUID_raw": entry.get("KUID_raw", ""),
                 "KUID": entry.get("KUID", ""),
                 "KUID_Cluster": entry.get("KUID_Cluster", ""),
@@ -1093,9 +1202,18 @@ def write_batch_aggregate_json(
                 "SNCI_Norm": entry.get("SNCI_Norm", ""),
                 "SCDI_Norm": entry.get("SCDI_Norm", ""),
             }
+            _apply_kuid_prefix_fields(row)
             for idx in range(9):
                 row[f"f{idx + 1}"] = knf_vector[idx] if idx < len(knf_vector) else ""
             writer.writerow(row)
+            csv_rows.append(row)
+
+    kuid_index_outputs = _write_kuid_index_outputs(csv_rows, results_root, water=water)
+    if isinstance(payload.get("kuid"), dict) and payload["kuid"].get("enabled"):
+        payload["kuid"].update(kuid_index_outputs)
+
+    with open(aggregate_path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
 
     if water:
         delta_json_path = os.path.join(results_root, _final_output_name("batch_delta.json", water))
@@ -1132,6 +1250,13 @@ def run_batch_directory(directory: str, args):
             if summary.get("batch_json"):
                 print(f"Batch JSON:       {summary.get('batch_json')}")
             print(f"Calibration JSON: {summary.get('calibration_file')}")
+            index_outputs = summary.get("kuid_index_outputs") or {}
+            if index_outputs.get("family_stats_json"):
+                print(f"KUID Family JSON: {index_outputs.get('family_stats_json')}")
+            if index_outputs.get("family_stats_csv"):
+                print(f"KUID Family CSV:  {index_outputs.get('family_stats_csv')}")
+            if index_outputs.get("prefix_index_json"):
+                print(f"KUID Prefix JSON: {index_outputs.get('prefix_index_json')}")
             persist_errors = summary.get("persist_errors") or []
             if persist_errors:
                 print(f"KUID-only refresh completed with {len(persist_errors)} persistence warnings.")
