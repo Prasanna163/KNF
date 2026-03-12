@@ -20,7 +20,7 @@ This `KNF-GPU` branch includes:
 - Robust filename/path artifact handling for mojibake/Unicode path variants.
 - xTB optimization capped to 50 cycles (`--cycles 50`) and pipeline continues if `xtbopt.xyz` exists.
 - Batch aggregate outputs: `batch_knf.json` and `batch_knf.csv` (or `*_water.*` when `--water` is used).
-- KUID-MVP output for batch runs: deterministic `KNF_vector (f1..f9) -> KUID` encoding with min-max calibration metadata.
+- KUID-MVP output by default (single + batch): deterministic `KNF_vector (f1..f9) -> KUID` encoding with min-max calibration metadata.
 - Optional graceful mid-run stop in batch mode (`--enable-stop-key`, press `q`).
 - Batch normalized/quadrant outputs: `SNCI_Norm`, `SCDI_Norm`, quadrant PNG + JSON.
 - Native Molden-based WBO is now the default (`--wbo-mode native`) for `f3`.
@@ -183,6 +183,9 @@ Final outputs:
 - `knf.json`
 - `output.txt`
 
+Single-file runs also emit:
+- `kuid_calibration.json` (in the `Results` root, alongside per-file result folders)
+
 With `--water`, final outputs are suffixed for easier comparison:
 - `knf_water.json`
 - `output_water.txt`
@@ -218,7 +221,7 @@ With `--water`, batch-level final outputs are similarly suffixed:
 
 `batch_knf.csv` stores `SCDI_variance` (the scalar retained for SCDI tracking) and does not include the optional legacy `SCDI` column.
 
-`knf.json` and `batch_knf.json` also include a dedicated `kuid` section when KUID is generated.
+`knf.json` and `batch_knf.json` include a dedicated `kuid` section by default (no additional KUID flags required).
 
 Batch runs also emit KUID indexing/statistics artifacts:
 - `kuid_family_stats.json`

@@ -559,6 +559,102 @@ def _persist_entry_outputs_with_kuid(entry: dict, water: bool = False):
             logging.warning("Could not remove stale summary file %s: %s", stale_summary_txt, e)
 
 
+def _run_kuid_for_single_result(
+    file_path: str,
+    results_root: str,
+    water: bool = False,
+) -> dict:
+    """Backfills KUID metadata/outputs for a completed single-file run."""
+    stem = os.path.splitext(os.path.basename(file_path))[0]
+    result_dir = os.path.join(results_root, stem)
+    knf_json_path = os.path.join(result_dir, _final_output_name("knf.json", water))
+    calibration_path = os.path.join(results_root, _final_output_name("kuid_calibration.json", water))
+
+    if not os.path.exists(knf_json_path):
+        return {
+            "ran": False,
+            "updated": False,
+            "reason": f"Missing {_final_output_name('knf.json', water)} output.",
+            "knf_json": knf_json_path,
+        }
+
+    with open(knf_json_path, "r", encoding="utf-8") as f:
+        knf_payload = json.load(f)
+
+    if not isinstance(knf_payload, dict):
+        return {
+            "ran": True,
+            "updated": False,
+            "reason": "Invalid knf.json payload structure.",
+            "knf_json": knf_json_path,
+        }
+
+    entry = {"knf": knf_payload, "result_dir": result_dir}
+    vector = _extract_knf_vector(entry)
+    if vector is None:
+        return {
+            "ran": True,
+            "updated": False,
+            "reason": "No valid KNF_vector (f1..f9) available for KUID encoding.",
+            "knf_json": knf_json_path,
+        }
+
+    calibration = None
+    calibration_source = "new"
+    if os.path.exists(calibration_path):
+        try:
+            with open(calibration_path, "r", encoding="utf-8") as f:
+                existing = json.load(f)
+            if isinstance(existing, dict):
+                calibration = existing
+                calibration_source = "existing"
+        except Exception:
+            calibration = None
+
+    if calibration is None:
+        calibration = kuid.build_calibration([vector])
+        calibration_payload = dict(calibration)
+        calibration_payload["generated_at_utc"] = datetime.now(timezone.utc).isoformat()
+        with open(calibration_path, "w", encoding="utf-8") as f:
+            json.dump(calibration_payload, f, indent=2)
+
+    try:
+        encoded = kuid.encode_knf_vector(vector, calibration)
+    except Exception:
+        calibration = kuid.build_calibration([vector])
+        calibration_payload = dict(calibration)
+        calibration_payload["generated_at_utc"] = datetime.now(timezone.utc).isoformat()
+        with open(calibration_path, "w", encoding="utf-8") as f:
+            json.dump(calibration_payload, f, indent=2)
+        calibration_source = "new"
+        encoded = kuid.encode_knf_vector(vector, calibration)
+    kuid_section = _build_kuid_section(calibration, encoded)
+
+    metadata = knf_payload.get("metadata")
+    if not isinstance(metadata, dict):
+        metadata = {}
+        knf_payload["metadata"] = metadata
+    metadata["kuid"] = kuid_section
+    knf_payload["kuid"] = kuid_section
+
+    entry["KUID_raw"] = encoded["raw"]
+    entry["KUID"] = encoded["raw"]
+    entry["KUID_Cluster"] = encoded.get("cluster_display", "")
+    _apply_kuid_prefix_fields(entry)
+
+    _persist_entry_outputs_with_kuid(entry, water=water)
+
+    return {
+        "ran": True,
+        "updated": True,
+        "knf_json": knf_json_path,
+        "calibration_file": calibration_path,
+        "calibration_source": calibration_source,
+        "kuid": encoded["raw"],
+        "kuid_cluster": encoded.get("cluster_display", ""),
+    }
+
+
 def _run_kuid_only_from_existing_batch(
     directory: str,
     results_root: str,
@@ -1021,6 +1117,7 @@ def run_single_file(file_path: str, args):
     success = False
     error = None
     elapsed = 0.0
+    kuid_summary = None
     with Live(render("running", "yellow"), console=console, refresh_per_second=5, transient=False) as live:
         with ThreadPoolExecutor(max_workers=1) as executor:
             future = executor.submit(process_file, file_path, args, results_root)
@@ -1031,6 +1128,16 @@ def run_single_file(file_path: str, args):
             success, error, elapsed = future.result()
             progress.advance(task_id, 1)
             live.update(render("completed" if success else "failed", "green" if success else "red"))
+
+    if success:
+        try:
+            kuid_summary = _run_kuid_for_single_result(
+                file_path=file_path,
+                results_root=results_root,
+                water=bool(getattr(args, "water", False)),
+            )
+        except Exception as e:
+            kuid_summary = {"ran": True, "updated": False, "error": str(e)}
 
     total_time = elapsed if elapsed > 0 else (time.perf_counter() - t0)
     throughput = ((1 / total_time) * 3600) if (success and total_time > 0) else 0.0
@@ -1046,6 +1153,19 @@ def run_single_file(file_path: str, args):
     summary.add_row("Throughput", f"{throughput:.1f} jobs/hour" if success else "n/a")
     summary.add_row("Peak CPU", f"{peak_cpu:.1f}%")
     summary.add_row("Peak RAM", f"{peak_ram:.1f} MB")
+    if success and isinstance(kuid_summary, dict):
+        if kuid_summary.get("updated"):
+            summary.add_row("KUID", str(kuid_summary.get("kuid", "")))
+            calibration_file = str(kuid_summary.get("calibration_file", ""))
+            calibration_source = str(kuid_summary.get("calibration_source", "")).strip()
+            if calibration_source:
+                summary.add_row("KUID Calibration", f"{calibration_file} ({calibration_source})")
+            else:
+                summary.add_row("KUID Calibration", calibration_file)
+        else:
+            kuid_issue = kuid_summary.get("error") or kuid_summary.get("reason")
+            if kuid_issue:
+                summary.add_row("KUID", f"not updated ({kuid_issue})")
     console.print(Panel(summary, title="Run Completed", border_style="green" if success else "red"))
 
     if not success:
