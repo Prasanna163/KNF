@@ -422,26 +422,32 @@ def _build_kuid_section(calibration: dict, encoded: dict) -> dict:
         "feature_order": calibration.get("feature_order"),
         "bins_per_feature": calibration.get("bins_per_feature"),
         "display_format": calibration.get("display_format"),
+        "cluster_display_format": calibration.get("cluster_display_format"),
         "raw": encoded["raw"],
         "display": encoded["display"],
+        "cluster_display": encoded.get("cluster_display", ""),
         "bins": encoded["bins"],
         "normalized": encoded["normalized"],
     }
 
 
 def _ensure_kuid_csv_field_order(fieldnames: list[str]) -> list[str]:
-    base_fields = [name for name in (fieldnames or []) if name not in {"KUID_raw", "KUID"}]
+    base_fields = [
+        name
+        for name in (fieldnames or [])
+        if name not in {"KUID_raw", "KUID", "KUID_Cluster", "SCDI"}
+    ]
     if not base_fields:
         base_fields = (
             ["File"]
             + [f"f{i}" for i in range(1, 10)]
-            + ["SNCI", "SCDI", "SCDI_variance", "SNCI_Norm", "SCDI_Norm"]
+            + ["SNCI", "SCDI_variance", "SNCI_Norm", "SCDI_Norm"]
         )
     if "f9" in base_fields:
         insert_idx = base_fields.index("f9") + 1
     else:
         insert_idx = len(base_fields)
-    return base_fields[:insert_idx] + ["KUID_raw", "KUID"] + base_fields[insert_idx:]
+    return base_fields[:insert_idx] + ["KUID_raw", "KUID", "KUID_Cluster"] + base_fields[insert_idx:]
 
 
 def _persist_entry_outputs_with_kuid(entry: dict, water: bool = False):
@@ -518,11 +524,13 @@ def _run_kuid_only_from_existing_batch(
         if vec is None:
             row["KUID_raw"] = ""
             row["KUID"] = ""
+            row["KUID_Cluster"] = ""
             updated_rows.append(row)
             continue
         encoded = kuid.encode_knf_vector(vec, calibration)
         row["KUID_raw"] = encoded["raw"]
-        row["KUID"] = encoded["display"]
+        row["KUID"] = encoded["raw"]
+        row["KUID_Cluster"] = encoded.get("cluster_display", "")
         updated_rows.append(row)
         if file_name:
             encoded_by_file[file_name] = encoded
@@ -552,7 +560,8 @@ def _run_kuid_only_from_existing_batch(
                     encoded = kuid.encode_knf_vector(vector, calibration)
 
                 entry["KUID_raw"] = encoded["raw"]
-                entry["KUID"] = encoded["display"]
+                entry["KUID"] = encoded["raw"]
+                entry["KUID_Cluster"] = encoded.get("cluster_display", "")
                 kuid_section = _build_kuid_section(calibration, encoded)
                 entry["kuid"] = kuid_section
 
@@ -580,6 +589,7 @@ def _run_kuid_only_from_existing_batch(
                 "bins_per_feature": calibration.get("bins_per_feature"),
                 "feature_order": calibration.get("feature_order"),
                 "display_format": calibration.get("display_format"),
+                "cluster_display_format": calibration.get("cluster_display_format"),
                 "feature_bounds": calibration.get("feature_bounds"),
                 "records_with_kuid": len(vectors),
                 "records_without_kuid": len(rows) - len(vectors),
@@ -648,7 +658,8 @@ def _compute_kuid_payload(
     for entry, vector in valid_rows:
         encoded = kuid.encode_knf_vector(vector, calibration)
         entry["KUID_raw"] = encoded["raw"]
-        entry["KUID"] = encoded["display"]
+        entry["KUID"] = encoded["raw"]
+        entry["KUID_Cluster"] = encoded.get("cluster_display", "")
 
         knf_data = entry.get("knf") or {}
         if isinstance(knf_data, dict):
@@ -676,6 +687,7 @@ def _compute_kuid_payload(
         "bins_per_feature": calibration.get("bins_per_feature"),
         "feature_order": calibration.get("feature_order"),
         "display_format": calibration.get("display_format"),
+        "cluster_display_format": calibration.get("cluster_display_format"),
         "feature_bounds": calibration.get("feature_bounds"),
         "records_with_kuid": len(valid_rows),
         "records_without_kuid": len(invalid_files),
@@ -1063,7 +1075,7 @@ def write_batch_aggregate_json(
     csv_fields = (
         ["File"]
         + [f"f{i}" for i in range(1, 10)]
-        + ["KUID_raw", "KUID", "SNCI", "SCDI", "SCDI_variance", "SNCI_Norm", "SCDI_Norm"]
+        + ["KUID_raw", "KUID", "KUID_Cluster", "SNCI", "SCDI_variance", "SNCI_Norm", "SCDI_Norm"]
     )
     with open(aggregate_csv_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=csv_fields)
@@ -1075,8 +1087,8 @@ def write_batch_aggregate_json(
                 "File": entry.get("input_file_name", ""),
                 "KUID_raw": entry.get("KUID_raw", ""),
                 "KUID": entry.get("KUID", ""),
+                "KUID_Cluster": entry.get("KUID_Cluster", ""),
                 "SNCI": knf_data.get("SNCI", ""),
-                "SCDI": knf_data.get("SCDI", ""),
                 "SCDI_variance": knf_data.get("SCDI_variance", ""),
                 "SNCI_Norm": entry.get("SNCI_Norm", ""),
                 "SCDI_Norm": entry.get("SCDI_Norm", ""),

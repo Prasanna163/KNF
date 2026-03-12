@@ -69,7 +69,9 @@ def write_output_txt(filepath: str, result: KNFResult):
             f.write(f"version:        {kuid_info.get('version', '')}\n")
             f.write(f"calibration_id: {kuid_info.get('calibration_id', '')}\n")
             f.write(f"KUID_raw:       {kuid_info.get('raw', '')}\n")
-            f.write(f"KUID:           {kuid_info.get('display', '')}\n")
+            f.write(f"KUID:           {kuid_info.get('raw', '')}\n")
+            cluster_display = kuid_info.get("cluster_display", "") or kuid_info.get("display", "")
+            f.write(f"KUID_Cluster:   {cluster_display}\n")
 
 def write_knf_json(filepath: str, result: KNFResult):
     """Writes machine-readable knf.json."""
@@ -83,8 +85,10 @@ def write_knf_json(filepath: str, result: KNFResult):
             "feature_order": kuid_info.get("feature_order"),
             "bins_per_feature": kuid_info.get("bins_per_feature"),
             "display_format": kuid_info.get("display_format"),
+            "cluster_display_format": kuid_info.get("cluster_display_format"),
             "raw": kuid_info.get("raw"),
             "display": kuid_info.get("display"),
+            "cluster_display": kuid_info.get("cluster_display"),
             "bins": kuid_info.get("bins"),
             "normalized": kuid_info.get("normalized"),
         }

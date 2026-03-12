@@ -205,7 +205,10 @@ With `--water`, batch-level final outputs are similarly suffixed:
 - `SNCI_Norm`
 - `SCDI_Norm`
 - `KUID_raw` (18 hex chars; `00-FF` per feature in canonical order `f1..f9`)
-- `KUID` (display format `XX-XX-XX-XX-XX-XX-XX-XX-XX`)
+- `KUID` (18-char uppercase hex, no separators; same canonical order `f1..f9`)
+- `KUID_Cluster` (display format `f1f2f3-f4f5-f6f7-f8f9`)
+
+`batch_knf.csv` stores `SCDI_variance` (the scalar retained for SCDI tracking) and does not include the optional legacy `SCDI` column.
 
 `knf.json` and `batch_knf.json` also include a dedicated `kuid` section when KUID is generated.
 
