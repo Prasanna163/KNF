@@ -7,6 +7,7 @@ import time
 import json
 import csv
 import statistics
+from copy import deepcopy
 from queue import Queue
 from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError, CancelledError
 from datetime import datetime, timezone
@@ -14,7 +15,7 @@ from .pipeline import KNFPipeline
 from . import utils
 from . import autoconfig
 from . import first_run
-from . import knf_vector, kuid, kuid_index
+from . import knf_vector, kuid, kuid_index, kuid_intensive
 import psutil
 from rich.console import Console, Group
 from rich.live import Live
@@ -25,6 +26,7 @@ from rich.table import Table
 CLI_TITLE = "KNF-Core v1.0.5"
 DISPLAY_NAME_LIMIT = 40
 STOP_KEY = "q"
+VALID_INPUT_EXTS = {".xyz", ".sdf", ".mol", ".pdb", ".mol2"}
 
 
 def _final_output_name(filename: str, water: bool) -> str:
@@ -32,6 +34,64 @@ def _final_output_name(filename: str, water: bool) -> str:
         return filename
     stem, ext = os.path.splitext(filename)
     return f"{stem}_water{ext}"
+
+
+_BATCH_PRIMARY_CSV_NAME = "batch_knf_unified_kuid_intensive.csv"
+_BATCH_LEGACY_CSV_NAMES = ("batch_knf.csv", "batch_knf_unified.csv")
+_BATCH_LEGACY_JSON_NAMES = ("batch_knf_unified_kuid_intensive.json",)
+
+
+def _batch_primary_csv_path(results_root: str, water: bool = False) -> str:
+    return os.path.join(results_root, _final_output_name(_BATCH_PRIMARY_CSV_NAME, water))
+
+
+def _batch_candidate_csv_paths(results_root: str, water: bool = False) -> list[str]:
+    names = [_BATCH_PRIMARY_CSV_NAME, *_BATCH_LEGACY_CSV_NAMES]
+    seen = set()
+    paths = []
+    for name in names:
+        path = os.path.join(results_root, _final_output_name(name, water))
+        norm = os.path.normcase(os.path.abspath(path))
+        if norm in seen:
+            continue
+        seen.add(norm)
+        paths.append(path)
+    return paths
+
+
+def _existing_batch_csv_path(results_root: str, water: bool = False) -> str:
+    for path in _batch_candidate_csv_paths(results_root, water=water):
+        if os.path.exists(path):
+            return path
+    return _batch_primary_csv_path(results_root, water=water)
+
+
+def _cleanup_redundant_batch_aliases(
+    results_root: str,
+    primary_csv_path: str,
+    primary_json_path: str = None,
+    water: bool = False,
+) -> list[str]:
+    protected = {os.path.normcase(os.path.abspath(primary_csv_path))}
+    if primary_json_path:
+        protected.add(os.path.normcase(os.path.abspath(primary_json_path)))
+
+    removed = []
+    alias_names = [*_BATCH_LEGACY_CSV_NAMES, *_BATCH_LEGACY_JSON_NAMES]
+    for name in alias_names:
+        alias_path = os.path.join(results_root, _final_output_name(name, water))
+        norm_alias = os.path.normcase(os.path.abspath(alias_path))
+        if norm_alias in protected:
+            continue
+        if not os.path.exists(alias_path):
+            continue
+        try:
+            os.remove(alias_path)
+            removed.append(alias_path)
+        except Exception as e:
+            logging.warning("Could not remove redundant batch alias %s: %s", alias_path, e)
+
+    return removed
 
 
 BATCH_METRIC_SPECS = list(knf_vector.METRIC_SPECS) + [
@@ -389,6 +449,71 @@ def _extract_knf_vector(entry: dict):
     return values
 
 
+_KUID_NON_F2_REQUIRED_INDEXES = (0, 2, 3, 4, 5, 6, 7, 8)
+
+
+def _extract_kuid_vector_from_values(values: list):
+    if len(values) < 9:
+        return None, False
+    parsed = [_safe_float(values[idx]) for idx in range(9)]
+    if any(parsed[idx] is None for idx in _KUID_NON_F2_REQUIRED_INDEXES):
+        return None, False
+    f2_surrogate_needed = parsed[1] is None
+    return parsed, f2_surrogate_needed
+
+
+def _extract_kuid_vector_from_entry(entry: dict):
+    knf_data = entry.get("knf") or {}
+    vector = knf_data.get("KNF_vector") or []
+    return _extract_kuid_vector_from_values(vector)
+
+
+def _extract_kuid_vector_from_csv_row(row: dict):
+    values = [row.get(f"f{i}") for i in range(1, 10)]
+    return _extract_kuid_vector_from_values(values)
+
+
+def _kuid_vector_for_calibration(vector: list[float], f2_surrogate_needed: bool):
+    out = list(vector)
+    if f2_surrogate_needed:
+        out[1] = 0.0
+    return out
+
+
+def _kuid_vector_for_encoding(vector: list[float], calibration: dict, f2_surrogate_needed: bool):
+    out = list(vector)
+    if f2_surrogate_needed:
+        bounds = calibration.get("feature_bounds") or {}
+        f2_bounds = bounds.get("f2") or {}
+        f2_max = _safe_float(f2_bounds.get("max"))
+        out[1] = 0.0 if f2_max is None else f2_max
+    return out
+
+
+_KUID_INTENSIVE_FEATURE_INDEX = (
+    ("f3", 2),
+    ("f4", 3),
+    ("f7", 6),
+    ("f8", 7),
+    ("f9", 8),
+)
+
+
+def _extract_kuid_intensive_feature_map(entry: dict):
+    knf_data = entry.get("knf") or {}
+    vector = knf_data.get("KNF_vector") or []
+    if len(vector) < 9:
+        return None
+
+    feature_map = {}
+    for feature, idx in _KUID_INTENSIVE_FEATURE_INDEX:
+        value = _safe_float(vector[idx])
+        if value is None:
+            return None
+        feature_map[feature] = value
+    return feature_map
+
+
 def _build_knf_result_from_entry(entry: dict):
     knf_data = entry.get("knf") or {}
     vector = _extract_knf_vector(entry)
@@ -420,6 +545,22 @@ def _build_knf_result_from_entry(entry: dict):
 def _build_kuid_section(calibration: dict, encoded: dict) -> dict:
     return {
         "version": calibration.get("kuid_version"),
+        "calibration_id": calibration.get("calibration_id"),
+        "feature_order": calibration.get("feature_order"),
+        "bins_per_feature": calibration.get("bins_per_feature"),
+        "display_format": calibration.get("display_format"),
+        "cluster_display_format": calibration.get("cluster_display_format"),
+        "raw": encoded["raw"],
+        "display": encoded["display"],
+        "cluster_display": encoded.get("cluster_display", ""),
+        "bins": encoded["bins"],
+        "normalized": encoded["normalized"],
+    }
+
+
+def _build_kuid_intensive_section(calibration: dict, encoded: dict) -> dict:
+    return {
+        "version": calibration.get("kuid_intensive_version"),
         "calibration_id": calibration.get("calibration_id"),
         "feature_order": calibration.get("feature_order"),
         "bins_per_feature": calibration.get("bins_per_feature"),
@@ -497,6 +638,140 @@ def _write_kuid_index_outputs(rows: list[dict], results_root: str, water: bool =
     }
 
 
+def _write_kuid_reverse_index_outputs(rows: list[dict], results_root: str, water: bool = False) -> dict:
+    reverse_json_path = os.path.join(results_root, _final_output_name("kuid_reverse_index.json", water))
+    reverse_csv_path = os.path.join(results_root, _final_output_name("kuid_reverse_index.csv", water))
+
+    reverse_index = {}
+    missing_rows = 0
+    for row in rows:
+        code = (row.get("KUID_Cluster") or row.get("KUID") or row.get("KUID_raw") or "").strip()
+        if not code:
+            missing_rows += 1
+            continue
+        file_name = (row.get("File") or "").strip()
+        source_batch = (row.get("source_batch") or "").strip()
+        item = {"file": file_name}
+        if source_batch:
+            item["source_batch"] = source_batch
+        reverse_index.setdefault(code, []).append(item)
+
+    sorted_index = {}
+    for code in sorted(reverse_index):
+        sorted_index[code] = sorted(
+            reverse_index[code],
+            key=lambda item: ((item.get("source_batch") or ""), (item.get("file") or "")),
+        )
+
+    with open(reverse_json_path, "w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+                "code_field": "KUID_Cluster",
+                "cluster_pattern": "f1f2f3-f4f5-f6f7-f8f9",
+                "total_kuid_clusters": len(sorted_index),
+                "missing_kuid_rows": missing_rows,
+                "index": sorted_index,
+            },
+            f,
+            indent=2,
+        )
+
+    with open(reverse_csv_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=["KUID_Cluster", "complex_count", "complexes"])
+        writer.writeheader()
+        for code, items in sorted_index.items():
+            labels = []
+            for item in items:
+                source_batch = (item.get("source_batch") or "").strip()
+                file_name = (item.get("file") or "").strip()
+                if source_batch and file_name:
+                    labels.append(f"{source_batch}::{file_name}")
+                elif file_name:
+                    labels.append(file_name)
+                elif source_batch:
+                    labels.append(source_batch)
+            writer.writerow(
+                {
+                    "KUID_Cluster": code,
+                    "complex_count": len(items),
+                    "complexes": "; ".join(labels),
+                }
+            )
+
+    return {
+        "reverse_index_json": reverse_json_path,
+        "reverse_index_csv": reverse_csv_path,
+        "total_kuid_clusters": len(sorted_index),
+        "missing_kuid_rows": missing_rows,
+    }
+
+
+def _write_kuid_intensive_distribution_outputs(
+    rows: list[dict], results_root: str, water: bool = False
+) -> dict:
+    distribution_csv_path = os.path.join(
+        results_root, _final_output_name("kuid_intensive_family_distribution.csv", water)
+    )
+    distribution_png_path = os.path.join(
+        results_root, _final_output_name("kuid_intensive_family_distribution.png", water)
+    )
+
+    clusters = {}
+    missing_rows = 0
+    for row in rows:
+        cluster = (row.get("KUID_Intensive_Cluster") or "").strip()
+        if not cluster:
+            missing_rows += 1
+            continue
+        clusters[cluster] = clusters.get(cluster, 0) + 1
+
+    size_distribution = {}
+    for member_count in clusters.values():
+        size_distribution[member_count] = size_distribution.get(member_count, 0) + 1
+    ordered_distribution = sorted(size_distribution.items(), key=lambda item: item[0])
+
+    with open(distribution_csv_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=["family_size", "number_of_families"])
+        writer.writeheader()
+        for family_size, number_of_families in ordered_distribution:
+            writer.writerow(
+                {
+                    "family_size": family_size,
+                    "number_of_families": number_of_families,
+                }
+            )
+
+    plot_path = None
+    plot_error = None
+    if ordered_distribution:
+        try:
+            import matplotlib.pyplot as plt
+
+            x_values = [size for size, _ in ordered_distribution]
+            y_values = [count for _, count in ordered_distribution]
+            fig, ax = plt.subplots(figsize=(10, 6), dpi=150)
+            ax.bar(x_values, y_values, color="#2f6690")
+            ax.set_xlabel("Family Size (members per KUID-Intensive cluster)")
+            ax.set_ylabel("Number of Families")
+            ax.set_title("KUID-Intensive Family Distribution")
+            ax.grid(True, axis="y", linestyle="--", alpha=0.35)
+            fig.tight_layout()
+            fig.savefig(distribution_png_path)
+            plt.close(fig)
+            plot_path = distribution_png_path
+        except Exception as e:
+            plot_error = str(e)
+
+    return {
+        "distribution_csv": distribution_csv_path,
+        "distribution_png": plot_path,
+        "plot_error": plot_error,
+        "total_kuid_intensive_clusters": len(clusters),
+        "missing_kuid_intensive_rows": missing_rows,
+    }
+
+
 def _ensure_kuid_csv_field_order(fieldnames: list[str]) -> list[str]:
     base_fields = [
         name
@@ -506,6 +781,9 @@ def _ensure_kuid_csv_field_order(fieldnames: list[str]) -> list[str]:
             "KUID_raw",
             "KUID",
             "KUID_Cluster",
+            "KUID_Intensive_raw",
+            "KUID_Intensive",
+            "KUID_Intensive_Cluster",
             "KUID_prefix2",
             "KUID_prefix4",
             "KUID_prefix6",
@@ -528,6 +806,9 @@ def _ensure_kuid_csv_field_order(fieldnames: list[str]) -> list[str]:
             "KUID_raw",
             "KUID",
             "KUID_Cluster",
+            "KUID_Intensive_raw",
+            "KUID_Intensive",
+            "KUID_Intensive_Cluster",
             "KUID_prefix2",
             "KUID_prefix4",
             "KUID_prefix6",
@@ -590,7 +871,7 @@ def _run_kuid_for_single_result(
         }
 
     entry = {"knf": knf_payload, "result_dir": result_dir}
-    vector = _extract_knf_vector(entry)
+    vector, f2_surrogate_needed = _extract_kuid_vector_from_entry(entry)
     if vector is None:
         return {
             "ran": True,
@@ -612,22 +893,32 @@ def _run_kuid_for_single_result(
             calibration = None
 
     if calibration is None:
-        calibration = kuid.build_calibration([vector])
+        calibration = kuid.build_calibration(
+            [_kuid_vector_for_calibration(vector, f2_surrogate_needed)]
+        )
         calibration_payload = dict(calibration)
         calibration_payload["generated_at_utc"] = datetime.now(timezone.utc).isoformat()
         with open(calibration_path, "w", encoding="utf-8") as f:
             json.dump(calibration_payload, f, indent=2)
 
+    vector_for_encoding = _kuid_vector_for_encoding(
+        vector, calibration, f2_surrogate_needed
+    )
     try:
-        encoded = kuid.encode_knf_vector(vector, calibration)
+        encoded = kuid.encode_knf_vector(vector_for_encoding, calibration)
     except Exception:
-        calibration = kuid.build_calibration([vector])
+        calibration = kuid.build_calibration(
+            [_kuid_vector_for_calibration(vector, f2_surrogate_needed)]
+        )
         calibration_payload = dict(calibration)
         calibration_payload["generated_at_utc"] = datetime.now(timezone.utc).isoformat()
         with open(calibration_path, "w", encoding="utf-8") as f:
             json.dump(calibration_payload, f, indent=2)
         calibration_source = "new"
-        encoded = kuid.encode_knf_vector(vector, calibration)
+        encoded = kuid.encode_knf_vector(
+            _kuid_vector_for_encoding(vector, calibration, f2_surrogate_needed),
+            calibration,
+        )
     kuid_section = _build_kuid_section(calibration, encoded)
 
     metadata = knf_payload.get("metadata")
@@ -660,29 +951,49 @@ def _run_kuid_only_from_existing_batch(
     results_root: str,
     water: bool = False,
 ):
-    aggregate_csv_path = os.path.join(results_root, _final_output_name("batch_knf.csv", water))
+    existing_csv_path = _existing_batch_csv_path(results_root, water=water)
+    aggregate_csv_path = _batch_primary_csv_path(results_root, water=water)
     aggregate_json_path = os.path.join(results_root, _final_output_name("batch_knf.json", water))
     calibration_path = os.path.join(results_root, _final_output_name("kuid_calibration.json", water))
 
-    if not os.path.exists(aggregate_csv_path):
-        return {"ran": False, "reason": "batch_knf.csv not found"}
+    if not os.path.exists(existing_csv_path):
+        return {
+            "ran": False,
+            "reason": (
+                f"{_final_output_name(_BATCH_PRIMARY_CSV_NAME, water)} "
+                f"or {_final_output_name(_BATCH_LEGACY_CSV_NAMES[0], water)} not found"
+            ),
+        }
 
-    with open(aggregate_csv_path, "r", newline="", encoding="utf-8") as f:
+    with open(existing_csv_path, "r", newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         rows = [dict(row) for row in reader]
         original_fieldnames = list(reader.fieldnames or [])
 
     parsed_rows = []
-    vectors = []
+    calibration_vectors = []
+    encodable_count = 0
+    surrogate_rows = 0
     for row in rows:
-        vec = [_safe_float(row.get(f"f{i}")) for i in range(1, 10)]
-        if any(v is None for v in vec):
-            parsed_rows.append((row, None))
+        vec, f2_surrogate_needed = _extract_kuid_vector_from_csv_row(row)
+        if vec is None:
+            parsed_rows.append((row, None, False))
             continue
-        parsed_rows.append((row, vec))
-        vectors.append(vec)
+        parsed_rows.append((row, vec, f2_surrogate_needed))
+        encodable_count += 1
+        if f2_surrogate_needed:
+            surrogate_rows += 1
+        else:
+            calibration_vectors.append(vec)
 
-    if not vectors:
+    if not calibration_vectors and encodable_count:
+        calibration_vectors = [
+            _kuid_vector_for_calibration(vec, f2_surrogate_needed)
+            for _, vec, f2_surrogate_needed in parsed_rows
+            if vec is not None
+        ]
+
+    if not calibration_vectors:
         return {
             "ran": True,
             "updated_rows": 0,
@@ -690,10 +1001,10 @@ def _run_kuid_only_from_existing_batch(
             "batch_csv": aggregate_csv_path,
             "batch_json": aggregate_json_path if os.path.exists(aggregate_json_path) else None,
             "calibration_file": None,
-            "reason": "No valid f1..f9 rows in batch_knf.csv",
+            "reason": "No valid KNF rows available for KUID encoding.",
         }
 
-    calibration = kuid.build_calibration(vectors)
+    calibration = kuid.build_calibration(calibration_vectors)
     calibration_payload = dict(calibration)
     calibration_payload["generated_at_utc"] = datetime.now(timezone.utc).isoformat()
     with open(calibration_path, "w", encoding="utf-8") as f:
@@ -701,7 +1012,7 @@ def _run_kuid_only_from_existing_batch(
 
     updated_rows = []
     encoded_by_file = {}
-    for row, vec in parsed_rows:
+    for row, vec, f2_surrogate_needed in parsed_rows:
         file_name = (row.get("File") or "").strip()
         if vec is None:
             row["KUID_raw"] = ""
@@ -710,7 +1021,10 @@ def _run_kuid_only_from_existing_batch(
             _apply_kuid_prefix_fields(row)
             updated_rows.append(row)
             continue
-        encoded = kuid.encode_knf_vector(vec, calibration)
+        vector_for_encoding = _kuid_vector_for_encoding(
+            vec, calibration, f2_surrogate_needed
+        )
+        encoded = kuid.encode_knf_vector(vector_for_encoding, calibration)
         row["KUID_raw"] = encoded["raw"]
         row["KUID"] = encoded["raw"]
         row["KUID_Cluster"] = encoded.get("cluster_display", "")
@@ -739,10 +1053,13 @@ def _run_kuid_only_from_existing_batch(
                 input_file_name = (entry.get("input_file_name") or "").strip()
                 encoded = encoded_by_file.get(input_file_name)
                 if not encoded:
-                    vector = _extract_knf_vector(entry)
+                    vector, f2_surrogate_needed = _extract_kuid_vector_from_entry(entry)
                     if vector is None:
                         continue
-                    encoded = kuid.encode_knf_vector(vector, calibration)
+                    vector_for_encoding = _kuid_vector_for_encoding(
+                        vector, calibration, f2_surrogate_needed
+                    )
+                    encoded = kuid.encode_knf_vector(vector_for_encoding, calibration)
 
                 entry["KUID_raw"] = encoded["raw"]
                 entry["KUID"] = encoded["raw"]
@@ -777,13 +1094,15 @@ def _run_kuid_only_from_existing_batch(
                 "display_format": calibration.get("display_format"),
                 "cluster_display_format": calibration.get("cluster_display_format"),
                 "feature_bounds": calibration.get("feature_bounds"),
-                "records_with_kuid": len(vectors),
-                "records_without_kuid": len(rows) - len(vectors),
+                "records_with_kuid": encodable_count,
+                "records_without_kuid": len(rows) - encodable_count,
                 "invalid_files": [
                     (row.get("File") or "unknown")
-                    for row, vec in parsed_rows
+                    for row, vec, _ in parsed_rows
                     if vec is None
                 ],
+                "f2_surrogate_strategy": "f2=max_bound_when_undefined",
+                "f2_surrogate_rows": surrogate_rows,
                 "calibration_file": calibration_path,
                 "persist_errors": persist_errors,
             }
@@ -800,9 +1119,16 @@ def _run_kuid_only_from_existing_batch(
     if kuid_index_outputs is None:
         kuid_index_outputs = _write_kuid_index_outputs(updated_rows, results_root, water=water)
 
+    _cleanup_redundant_batch_aliases(
+        results_root=results_root,
+        primary_csv_path=aggregate_csv_path,
+        primary_json_path=aggregate_json_path if os.path.exists(aggregate_json_path) else None,
+        water=water,
+    )
+
     return {
         "ran": True,
-        "updated_rows": len(vectors),
+        "updated_rows": encodable_count,
         "total_rows": len(rows),
         "batch_csv": aggregate_csv_path,
         "batch_json": aggregate_json_path if json_updated else None,
@@ -817,20 +1143,32 @@ def _compute_kuid_payload(
     results_root: str,
     water: bool = False,
 ):
-    valid_rows = []
+    encodable_rows = []
+    calibration_vectors = []
     invalid_files = []
     persist_errors = []
+    surrogate_rows = 0
 
     for entry in enriched_records:
         if entry.get("status") != "success":
             continue
-        vector = _extract_knf_vector(entry)
+        vector, f2_surrogate_needed = _extract_kuid_vector_from_entry(entry)
         if vector is None:
             invalid_files.append(entry.get("input_file_name") or entry.get("input_file") or "unknown")
             continue
-        valid_rows.append((entry, vector))
+        encodable_rows.append((entry, vector, f2_surrogate_needed))
+        if f2_surrogate_needed:
+            surrogate_rows += 1
+        else:
+            calibration_vectors.append(vector)
 
-    if not valid_rows:
+    if not calibration_vectors and encodable_rows:
+        calibration_vectors = [
+            _kuid_vector_for_calibration(vector, f2_surrogate_needed)
+            for _, vector, f2_surrogate_needed in encodable_rows
+        ]
+
+    if not encodable_rows:
         return {
             "enabled": False,
             "error": "No valid successful KNF rows were available for KUID encoding.",
@@ -840,15 +1178,18 @@ def _compute_kuid_payload(
             "calibration_file": None,
         }
 
-    calibration = kuid.build_calibration([vector for _, vector in valid_rows])
+    calibration = kuid.build_calibration(calibration_vectors)
     calibration_path = os.path.join(results_root, _final_output_name("kuid_calibration.json", water))
     calibration_payload = dict(calibration)
     calibration_payload["generated_at_utc"] = datetime.now(timezone.utc).isoformat()
     with open(calibration_path, "w", encoding="utf-8") as f:
         json.dump(calibration_payload, f, indent=2)
 
-    for entry, vector in valid_rows:
-        encoded = kuid.encode_knf_vector(vector, calibration)
+    for entry, vector, f2_surrogate_needed in encodable_rows:
+        vector_for_encoding = _kuid_vector_for_encoding(
+            vector, calibration, f2_surrogate_needed
+        )
+        encoded = kuid.encode_knf_vector(vector_for_encoding, calibration)
         entry["KUID_raw"] = encoded["raw"]
         entry["KUID"] = encoded["raw"]
         entry["KUID_Cluster"] = encoded.get("cluster_display", "")
@@ -882,8 +1223,91 @@ def _compute_kuid_payload(
         "display_format": calibration.get("display_format"),
         "cluster_display_format": calibration.get("cluster_display_format"),
         "feature_bounds": calibration.get("feature_bounds"),
-        "records_with_kuid": len(valid_rows),
+        "records_with_kuid": len(encodable_rows),
         "records_without_kuid": len(invalid_files),
+        "invalid_files": invalid_files,
+        "f2_surrogate_strategy": "f2=max_bound_when_undefined",
+        "f2_surrogate_rows": surrogate_rows,
+        "calibration_file": calibration_path,
+        "persist_errors": persist_errors,
+    }
+
+
+def _compute_kuid_intensive_payload(
+    enriched_records: list[dict],
+    results_root: str,
+    water: bool = False,
+):
+    valid_rows = []
+    invalid_files = []
+    persist_errors = []
+
+    for entry in enriched_records:
+        if entry.get("status") != "success":
+            continue
+        feature_map = _extract_kuid_intensive_feature_map(entry)
+        if feature_map is None:
+            invalid_files.append(entry.get("input_file_name") or entry.get("input_file") or "unknown")
+            continue
+        valid_rows.append((entry, feature_map))
+
+    if not valid_rows:
+        return {
+            "enabled": False,
+            "error": "No valid successful KNF rows were available for KUID-Intensive encoding.",
+            "records_with_kuid_intensive": 0,
+            "records_without_kuid_intensive": len(invalid_files),
+            "invalid_files": invalid_files,
+            "calibration_file": None,
+        }
+
+    calibration = kuid_intensive.build_calibration_from_feature_maps(
+        [feature_map for _, feature_map in valid_rows]
+    )
+    calibration_path = os.path.join(
+        results_root, _final_output_name("kuid_intensive_calibration.json", water)
+    )
+    calibration_payload = dict(calibration)
+    calibration_payload["generated_at_utc"] = datetime.now(timezone.utc).isoformat()
+    with open(calibration_path, "w", encoding="utf-8") as f:
+        json.dump(calibration_payload, f, indent=2)
+
+    for entry, feature_map in valid_rows:
+        encoded = kuid_intensive.encode_feature_map(feature_map, calibration)
+        entry["KUID_Intensive_raw"] = encoded["raw"]
+        entry["KUID_Intensive"] = encoded.get("display", "")
+        entry["KUID_Intensive_Cluster"] = encoded.get("cluster_display", "")
+
+        knf_data = entry.get("knf") or {}
+        if isinstance(knf_data, dict):
+            intensive_section = _build_kuid_intensive_section(calibration, encoded)
+            metadata = knf_data.setdefault("metadata", {})
+            metadata["kuid_intensive"] = intensive_section
+            knf_data["kuid_intensive"] = intensive_section
+            entry["kuid_intensive"] = intensive_section
+
+        try:
+            _persist_entry_outputs_with_kuid(entry, water=water)
+        except Exception as e:
+            persist_errors.append(
+                {
+                    "file": entry.get("input_file_name") or entry.get("input_file") or "unknown",
+                    "error": str(e),
+                }
+            )
+
+    return {
+        "enabled": True,
+        "kuid_intensive_version": calibration.get("kuid_intensive_version"),
+        "calibration_id": calibration.get("calibration_id"),
+        "normalization": calibration.get("normalization"),
+        "bins_per_feature": calibration.get("bins_per_feature"),
+        "feature_order": calibration.get("feature_order"),
+        "display_format": calibration.get("display_format"),
+        "cluster_display_format": calibration.get("cluster_display_format"),
+        "feature_bounds": calibration.get("feature_bounds"),
+        "records_with_kuid_intensive": len(valid_rows),
+        "records_without_kuid_intensive": len(invalid_files),
         "invalid_files": invalid_files,
         "calibration_file": calibration_path,
         "persist_errors": persist_errors,
@@ -1175,6 +1599,21 @@ def run_single_file(file_path: str, args):
         fail_table.add_row(os.path.basename(file_path), str(error))
         console.print(fail_table)
 
+
+def _discover_input_files(directory: str, valid_exts: set[str] = None) -> list[str]:
+    extensions = valid_exts or VALID_INPUT_EXTS
+    files = []
+    for entry in os.listdir(directory):
+        full_path = os.path.join(directory, entry)
+        if not os.path.isfile(full_path):
+            continue
+        ext = utils.normalized_extension(entry)
+        if ext in extensions:
+            files.append(full_path)
+    files.sort()
+    return files
+
+
 def resolve_results_root(input_path: str, output_dir: str = None) -> str:
     """Resolves the top-level Results directory."""
     if output_dir:
@@ -1184,6 +1623,693 @@ def resolve_results_root(input_path: str, output_dir: str = None) -> str:
         return os.path.join(os.path.abspath(input_path), "Results")
 
     return os.path.join(os.path.dirname(os.path.abspath(input_path)), "Results")
+
+
+def _normalize_batch_file_name(value) -> str:
+    if not isinstance(value, str):
+        return ""
+    cleaned = value.strip().strip('"').strip("'")
+    if not cleaned:
+        return ""
+    return os.path.normcase(os.path.basename(cleaned))
+
+
+def _record_file_name(record: dict) -> str:
+    if not isinstance(record, dict):
+        return ""
+    return _normalize_batch_file_name(
+        record.get("input_file_name") or record.get("input_file") or ""
+    )
+
+
+def _dedupe_batch_records(records: list[dict]) -> list[dict]:
+    deduped = {}
+    order = []
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        input_file = str(record.get("input_file") or "").strip()
+        input_file_name = str(record.get("input_file_name") or "").strip()
+        if not input_file and input_file_name:
+            input_file = os.path.abspath(input_file_name)
+        if not input_file:
+            continue
+
+        key = _normalize_batch_file_name(input_file_name or input_file)
+        if not key:
+            key = os.path.normcase(os.path.abspath(input_file))
+
+        elapsed = _safe_float(record.get("elapsed_seconds"))
+        normalized = {
+            "input_file": os.path.abspath(input_file),
+            "status": str(record.get("status") or "failed"),
+            "elapsed_seconds": float(elapsed) if elapsed is not None else 0.0,
+            "error": record.get("error"),
+        }
+        if key not in deduped:
+            order.append(key)
+        deduped[key] = normalized
+
+    return [deduped[key] for key in order]
+
+
+def _load_existing_batch_records(
+    directory: str,
+    results_root: str,
+    water: bool = False,
+) -> dict:
+    aggregate_csv_path = _existing_batch_csv_path(results_root, water=water)
+    aggregate_json_path = os.path.join(results_root, _final_output_name("batch_knf.json", water))
+
+    warnings = []
+    records = []
+    processed_names = set()
+    source = None
+
+    if os.path.exists(aggregate_json_path):
+        try:
+            with open(aggregate_json_path, "r", encoding="utf-8") as f:
+                payload = json.load(f)
+
+            for entry in (payload.get("records") or []):
+                if not isinstance(entry, dict):
+                    continue
+                input_file = str(entry.get("input_file") or "").strip()
+                input_file_name = str(entry.get("input_file_name") or "").strip()
+                if not input_file and input_file_name:
+                    input_file = os.path.abspath(
+                        os.path.join(directory, os.path.basename(input_file_name))
+                    )
+                if not input_file:
+                    continue
+                records.append(
+                    {
+                        "input_file": input_file,
+                        "status": entry.get("status"),
+                        "elapsed_seconds": entry.get("elapsed_seconds"),
+                        "error": entry.get("error"),
+                    }
+                )
+                normalized_name = _normalize_batch_file_name(input_file_name or input_file)
+                if normalized_name:
+                    processed_names.add(normalized_name)
+
+            if records:
+                source = "json"
+        except Exception as e:
+            warnings.append(
+                f"Could not read existing {_final_output_name('batch_knf.json', water)}: {e}"
+            )
+
+    if not records and os.path.exists(aggregate_csv_path):
+        try:
+            with open(aggregate_csv_path, "r", newline="", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    file_name = (row.get("File") or "").strip()
+                    normalized_name = _normalize_batch_file_name(file_name)
+                    if not normalized_name:
+                        continue
+                    processed_names.add(normalized_name)
+                    records.append(
+                        {
+                            "input_file": os.path.abspath(
+                                os.path.join(directory, os.path.basename(file_name))
+                            ),
+                            "status": "success",
+                            "elapsed_seconds": 0.0,
+                            "error": None,
+                        }
+                    )
+            if records:
+                source = "csv"
+        except Exception as e:
+            warnings.append(
+                f"Could not read existing {os.path.basename(aggregate_csv_path)}: {e}"
+            )
+
+    records = _dedupe_batch_records(records)
+    if not processed_names:
+        for record in records:
+            normalized_name = _record_file_name(record)
+            if normalized_name:
+                processed_names.add(normalized_name)
+
+    return {
+        "records": records,
+        "processed_names": processed_names,
+        "source": source,
+        "csv_path": aggregate_csv_path if source == "csv" else None,
+        "warnings": warnings,
+    }
+
+
+def _sum_elapsed_seconds(records: list[dict]) -> float:
+    total = 0.0
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        elapsed = _safe_float(record.get("elapsed_seconds"))
+        if elapsed is None:
+            continue
+        total += max(0.0, float(elapsed))
+    return total
+
+def _resolve_requested_batch_count(
+    requested_batches: int,
+    total_files: int,
+    workers_hint: int = None,
+) -> int:
+    if total_files <= 0:
+        return 0
+    if requested_batches is None:
+        return 1
+
+    if int(requested_batches) > 0:
+        return min(total_files, int(requested_batches))
+
+    # Auto mode (--batches without an explicit number)
+    if workers_hint and int(workers_hint) > 0:
+        base = int(workers_hint)
+    else:
+        base = psutil.cpu_count(logical=False) or (os.cpu_count() or 1)
+    return min(total_files, max(1, int(base)))
+
+
+def _split_evenly(items: list[str], num_parts: int) -> list[list[str]]:
+    if num_parts <= 0:
+        return []
+    if not items:
+        return [[] for _ in range(num_parts)]
+    q, r = divmod(len(items), num_parts)
+    out = []
+    start = 0
+    for idx in range(num_parts):
+        size = q + (1 if idx < r else 0)
+        out.append(items[start:start + size])
+        start += size
+    return out
+
+
+def _safe_source_label(seed: str, used: set[str]) -> str:
+    raw = (seed or "").strip()
+    if not raw:
+        raw = "source"
+    label = "".join(ch if (ch.isalnum() or ch in {"_", "-"}) else "_" for ch in raw).strip("_")
+    if not label:
+        label = "source"
+    candidate = label
+    suffix = 2
+    while candidate in used:
+        candidate = f"{label}_{suffix:02d}"
+        suffix += 1
+    used.add(candidate)
+    return candidate
+
+
+def _load_source_records_from_batch_json(source_batch: str, json_path: str) -> dict:
+    with open(json_path, "r", encoding="utf-8") as f:
+        payload = json.load(f)
+
+    records = []
+    for entry in (payload.get("records") or []):
+        if not isinstance(entry, dict):
+            continue
+        item = deepcopy(entry)
+        item["source_batch"] = source_batch
+        item["result_dir"] = ""
+        if not item.get("input_file_name"):
+            input_file = item.get("input_file")
+            if isinstance(input_file, str) and input_file.strip():
+                item["input_file_name"] = os.path.basename(input_file)
+        records.append(item)
+
+    knf_results = []
+    for item in (payload.get("knf_results") or []):
+        if not isinstance(item, dict):
+            continue
+        out = deepcopy(item)
+        out["source_batch"] = source_batch
+        out["result_dir"] = ""
+        knf_results.append(out)
+
+    summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+    return {
+        "records": records,
+        "knf_results": knf_results,
+        "summary": {
+            "total_files": int(summary.get("total_files") or len(records)),
+            "successful_files": int(summary.get("successful_files") or sum(1 for r in records if r.get("status") == "success")),
+            "failed_files": int(summary.get("failed_files") or sum(1 for r in records if r.get("status") == "failed")),
+            "stopped_files": int(summary.get("stopped_files") or sum(1 for r in records if r.get("status") == "stopped")),
+            "total_time_seconds": float(summary.get("total_time_seconds") or 0.0),
+        },
+        "source_path": json_path,
+        "source_type": "json",
+    }
+
+
+def _build_entry_from_csv_row(source_batch: str, csv_path: str, row: dict) -> tuple[dict, dict]:
+    file_name = str(row.get("File") or "").strip()
+    source_dir = os.path.dirname(csv_path)
+    if file_name:
+        input_file = os.path.abspath(os.path.join(source_dir, os.path.basename(file_name)))
+        input_file_name = os.path.basename(file_name)
+    else:
+        input_file = os.path.abspath(csv_path)
+        input_file_name = ""
+
+    raw_vector = [row.get(f"f{i}") for i in range(1, 10)]
+    vector_values = [_safe_float(value) for value in raw_vector]
+    parsed_kuid_vector, _ = _extract_kuid_vector_from_values(raw_vector)
+    status = "success" if parsed_kuid_vector is not None else "failed"
+
+    metadata = {}
+    f2_defined_raw = str(row.get("f2_defined") or "").strip()
+    if f2_defined_raw:
+        f2_defined_val = _safe_float(f2_defined_raw)
+        if f2_defined_val is not None:
+            metadata["f2_defined"] = int(f2_defined_val)
+        else:
+            metadata["f2_defined"] = f2_defined_raw
+
+    knf_payload = {
+        "SNCI": _safe_float(row.get("SNCI")),
+        "SCDI": _safe_float(row.get("SCDI")),
+        "SCDI_variance": _safe_float(row.get("SCDI_variance")),
+        "KNF_vector": vector_values,
+        "metadata": metadata,
+    }
+
+    entry = {
+        "input_file": input_file,
+        "input_file_name": input_file_name,
+        "result_dir": "",
+        "status": status,
+        "elapsed_seconds": 0.0,
+        "error": None if status == "success" else "Missing valid KNF feature values in source CSV row.",
+        "knf": knf_payload,
+        "source_batch": source_batch,
+        "SNCI_Norm": _safe_float(row.get("SNCI_Norm")),
+        "SCDI_Norm": _safe_float(row.get("SCDI_Norm")),
+    }
+
+    knf_result = {
+        "input_file": input_file,
+        "input_file_name": input_file_name,
+        "result_dir": "",
+        "knf": deepcopy(knf_payload),
+        "source_batch": source_batch,
+    }
+    return entry, knf_result
+
+
+def _load_source_records_from_batch_csv(source_batch: str, csv_path: str) -> dict:
+    records = []
+    knf_results = []
+    with open(csv_path, "r", newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            if not isinstance(row, dict):
+                continue
+            entry, knf_result = _build_entry_from_csv_row(source_batch, csv_path, row)
+            records.append(entry)
+            if entry.get("status") == "success":
+                knf_results.append(knf_result)
+
+    return {
+        "records": records,
+        "knf_results": knf_results,
+        "summary": {
+            "total_files": len(records),
+            "successful_files": sum(1 for r in records if r.get("status") == "success"),
+            "failed_files": sum(1 for r in records if r.get("status") == "failed"),
+            "stopped_files": sum(1 for r in records if r.get("status") == "stopped"),
+            "total_time_seconds": 0.0,
+        },
+        "source_path": csv_path,
+        "source_type": "csv",
+    }
+
+
+def _load_source_records(source_batch: str, source_path: str, source_type: str) -> dict:
+    if source_type == "json":
+        return _load_source_records_from_batch_json(source_batch, source_path)
+    return _load_source_records_from_batch_csv(source_batch, source_path)
+
+
+def _write_combined_batch_outputs(
+    source_directory: str,
+    output_root: str,
+    source_summaries: list[dict],
+    combined_records: list[dict],
+    combined_knf_results: list[dict],
+    total_time_seconds: float,
+    water: bool = False,
+    mode: str = "combined_from_existing_batches",
+) -> dict:
+    os.makedirs(output_root, exist_ok=True)
+
+    quadrant_payload = _compute_norm_and_quadrants(
+        enriched_records=combined_records,
+        results_root=output_root,
+        water=water,
+        interactive_plot=False,
+    )
+    kuid_payload = _compute_kuid_payload(
+        enriched_records=combined_records,
+        results_root=output_root,
+        water=water,
+    )
+    kuid_intensive_payload = _compute_kuid_intensive_payload(
+        enriched_records=combined_records,
+        results_root=output_root,
+        water=water,
+    )
+
+    summary = {
+        "total_files": len(combined_records),
+        "successful_files": sum(1 for r in combined_records if r.get("status") == "success"),
+        "failed_files": sum(1 for r in combined_records if r.get("status") == "failed"),
+        "stopped_files": sum(1 for r in combined_records if r.get("status") == "stopped"),
+        "total_time_seconds": round(float(total_time_seconds), 4),
+    }
+
+    payload = {
+        "schema_version": 1,
+        "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+        "input_directory": os.path.abspath(source_directory),
+        "results_root": os.path.abspath(output_root),
+        "mode": mode,
+        "workers": None,
+        "source_batches": source_summaries,
+        "summary": summary,
+        "normalization_and_quadrants": quadrant_payload,
+        "kuid": kuid_payload,
+        "kuid_intensive": kuid_intensive_payload,
+        "records": combined_records,
+        "knf_results": combined_knf_results,
+    }
+
+    aggregate_json_path = os.path.join(output_root, _final_output_name("batch_knf.json", water))
+    aggregate_csv_path = _batch_primary_csv_path(output_root, water=water)
+
+    csv_fields = [
+        "source_batch",
+        "File",
+        "f1",
+        "f2",
+        "f3",
+        "f4",
+        "f5",
+        "f6",
+        "f7",
+        "f8",
+        "f9",
+        "f2_defined",
+        "KUID_raw",
+        "KUID",
+        "KUID_Cluster",
+        "KUID_Intensive_raw",
+        "KUID_Intensive",
+        "KUID_Intensive_Cluster",
+        "KUID_prefix2",
+        "KUID_prefix4",
+        "KUID_prefix6",
+        "SNCI",
+        "SCDI_variance",
+        "SNCI_Norm",
+        "SCDI_Norm",
+    ]
+    csv_rows = []
+    with open(aggregate_csv_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=csv_fields)
+        writer.writeheader()
+        for entry in combined_records:
+            knf_data = entry.get("knf") or {}
+            knf_vector = knf_data.get("KNF_vector") or []
+            metadata = knf_data.get("metadata") if isinstance(knf_data, dict) else None
+            row = {
+                "source_batch": entry.get("source_batch", ""),
+                "File": entry.get("input_file_name", ""),
+                "f2_defined": (metadata or {}).get("f2_defined", ""),
+                "KUID_raw": entry.get("KUID_raw", ""),
+                "KUID": entry.get("KUID", ""),
+                "KUID_Cluster": entry.get("KUID_Cluster", ""),
+                "KUID_Intensive_raw": entry.get("KUID_Intensive_raw", ""),
+                "KUID_Intensive": entry.get("KUID_Intensive", ""),
+                "KUID_Intensive_Cluster": entry.get("KUID_Intensive_Cluster", ""),
+                "SNCI": knf_data.get("SNCI", ""),
+                "SCDI_variance": knf_data.get("SCDI_variance", ""),
+                "SNCI_Norm": entry.get("SNCI_Norm", ""),
+                "SCDI_Norm": entry.get("SCDI_Norm", ""),
+            }
+            _apply_kuid_prefix_fields(row)
+            for idx in range(9):
+                row[f"f{idx + 1}"] = knf_vector[idx] if idx < len(knf_vector) else ""
+            writer.writerow(row)
+            csv_rows.append(row)
+
+    kuid_index_outputs = _write_kuid_index_outputs(csv_rows, output_root, water=water)
+    kuid_reverse_index_outputs = _write_kuid_reverse_index_outputs(csv_rows, output_root, water=water)
+    kuid_intensive_distribution_outputs = _write_kuid_intensive_distribution_outputs(
+        csv_rows, output_root, water=water
+    )
+
+    if isinstance(payload.get("kuid"), dict) and payload["kuid"].get("enabled"):
+        payload["kuid"].update(kuid_index_outputs)
+        payload["kuid"].update(kuid_reverse_index_outputs)
+    if isinstance(payload.get("kuid_intensive"), dict) and payload["kuid_intensive"].get("enabled"):
+        payload["kuid_intensive"].update(kuid_intensive_distribution_outputs)
+    payload["kuid_reverse_index"] = kuid_reverse_index_outputs
+    payload["kuid_intensive_distribution"] = kuid_intensive_distribution_outputs
+
+    with open(aggregate_json_path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
+
+    removed_aliases = _cleanup_redundant_batch_aliases(
+        results_root=output_root,
+        primary_csv_path=aggregate_csv_path,
+        primary_json_path=aggregate_json_path,
+        water=water,
+    )
+
+    kuid_calibration = os.path.join(output_root, _final_output_name("kuid_calibration.json", water))
+    kuid_int_calibration = os.path.join(output_root, _final_output_name("kuid_intensive_calibration.json", water))
+    kuid_calibration_unified = os.path.join(
+        output_root, _final_output_name("kuid_calibration_unified.json", water)
+    )
+    kuid_int_calibration_unified = os.path.join(
+        output_root, _final_output_name("kuid_intensive_calibration_unified.json", water)
+    )
+    if os.path.exists(kuid_calibration):
+        try:
+            shutil.copyfile(kuid_calibration, kuid_calibration_unified)
+        except Exception as e:
+            logging.warning("Could not write KUID unified calibration alias %s: %s", kuid_calibration_unified, e)
+    if os.path.exists(kuid_int_calibration):
+        try:
+            shutil.copyfile(kuid_int_calibration, kuid_int_calibration_unified)
+        except Exception as e:
+            logging.warning(
+                "Could not write KUID-Intensive unified calibration alias %s: %s",
+                kuid_int_calibration_unified,
+                e,
+            )
+
+    return {
+        "output_root": output_root,
+        "batch_json": aggregate_json_path,
+        "batch_csv": aggregate_csv_path,
+        "removed_aliases": removed_aliases,
+    }
+
+
+def _combine_batch_sources(
+    source_directory: str,
+    source_specs: list[dict],
+    output_root: str,
+    water: bool = False,
+    mode: str = "combined_from_existing_batches",
+) -> dict:
+    combined_records = []
+    combined_knf_results = []
+    source_summaries = []
+    total_time_seconds = 0.0
+
+    for spec in source_specs:
+        source_batch = spec.get("source_batch")
+        source_path = spec.get("path")
+        source_type = spec.get("type")
+        if not source_batch or not source_path or not source_type:
+            continue
+        loaded = _load_source_records(source_batch, source_path, source_type)
+        combined_records.extend(loaded.get("records") or [])
+        combined_knf_results.extend(loaded.get("knf_results") or [])
+        summary = loaded.get("summary") or {}
+        total_time_seconds += float(summary.get("total_time_seconds") or 0.0)
+        source_summaries.append(
+            {
+                "source_batch": source_batch,
+                "source_path": loaded.get("source_path") or source_path,
+                "source_type": loaded.get("source_type") or source_type,
+                "total_files": int(summary.get("total_files") or 0),
+                "successful_files": int(summary.get("successful_files") or 0),
+                "failed_files": int(summary.get("failed_files") or 0),
+                "stopped_files": int(summary.get("stopped_files") or 0),
+                "total_time_seconds": float(summary.get("total_time_seconds") or 0.0),
+            }
+        )
+
+    if not combined_records:
+        raise ValueError("No records were loaded from batch sources for combined KUID recomputation.")
+
+    return _write_combined_batch_outputs(
+        source_directory=source_directory,
+        output_root=output_root,
+        source_summaries=source_summaries,
+        combined_records=combined_records,
+        combined_knf_results=combined_knf_results,
+        total_time_seconds=total_time_seconds,
+        water=water,
+        mode=mode,
+    )
+
+
+def _discover_universal_batch_sources(directory: str, water: bool = False) -> list[dict]:
+    json_name = _final_output_name("batch_knf.json", water)
+    csv_names = [
+        _final_output_name(_BATCH_PRIMARY_CSV_NAME, water),
+        _final_output_name(_BATCH_LEGACY_CSV_NAMES[0], water),
+    ]
+    used_labels = set()
+    specs = []
+
+    for root, dirs, files in os.walk(directory):
+        dirs[:] = [d for d in dirs if d.lower() not in {"combined results", "combined_results", "combined-results"}]
+        file_set = set(files)
+        if json_name in file_set:
+            label = _safe_source_label(os.path.basename(root), used_labels)
+            specs.append(
+                {
+                    "source_batch": label,
+                    "path": os.path.join(root, json_name),
+                    "type": "json",
+                }
+            )
+            continue
+        csv_name = next((name for name in csv_names if name in file_set), None)
+        if csv_name:
+            label = _safe_source_label(os.path.basename(root), used_labels)
+            specs.append(
+                {
+                    "source_batch": label,
+                    "path": os.path.join(root, csv_name),
+                    "type": "csv",
+                }
+            )
+
+    specs.sort(key=lambda item: item["source_batch"])
+    return specs
+
+
+def run_universal_kuid(directory: str, args):
+    water_mode = bool(getattr(args, "water", False))
+    output_base = resolve_results_root(directory, args.output_dir)
+    combined_output_root = os.path.join(output_base, "Combined Results")
+    source_specs = _discover_universal_batch_sources(directory, water=water_mode)
+
+    if not source_specs:
+        print(
+            f"No {_final_output_name('batch_knf.json', water_mode)} or "
+            f"{_final_output_name(_BATCH_PRIMARY_CSV_NAME, water_mode)} "
+            f"(legacy {_final_output_name(_BATCH_LEGACY_CSV_NAMES[0], water_mode)} also supported) "
+            f"files found under {directory}."
+        )
+        return
+
+    result = _combine_batch_sources(
+        source_directory=directory,
+        source_specs=source_specs,
+        output_root=combined_output_root,
+        water=water_mode,
+        mode="universal_kuid_recompute",
+    )
+
+    print(f"Universal KUID sources: {len(source_specs)}")
+    print(f"Combined results root: {result['output_root']}")
+    print(f"Combined Batch JSON:  {result['batch_json']}")
+    print(f"Combined Batch CSV:   {result['batch_csv']}")
+
+
+def run_batch_directory_batched(directory: str, args):
+    files = _discover_input_files(directory)
+    if not files:
+        print(f"No molecular files found in {directory}.")
+        return
+
+    batch_count = _resolve_requested_batch_count(
+        requested_batches=getattr(args, "batches", None),
+        total_files=len(files),
+        workers_hint=getattr(args, "workers", None),
+    )
+    partitions = [part for part in _split_evenly(files, batch_count) if part]
+    if not partitions:
+        print(f"No molecular files found in {directory}.")
+        return
+
+    water_mode = bool(getattr(args, "water", False))
+    output_base = resolve_results_root(directory, args.output_dir)
+    batches_output_root = os.path.join(output_base, "Batches")
+    combined_output_root = os.path.join(output_base, "Combined Results")
+    os.makedirs(batches_output_root, exist_ok=True)
+
+    print(f"Batching enabled: {len(files)} files across {len(partitions)} batch(es).")
+
+    source_specs = []
+    for idx, batch_files in enumerate(partitions, start=1):
+        source_batch = f"batch_{idx:02d}"
+        batch_results_root = os.path.join(batches_output_root, source_batch)
+        os.makedirs(batch_results_root, exist_ok=True)
+
+        print(f"\n[{source_batch}] processing {len(batch_files)} file(s) -> {batch_results_root}")
+        run_batch_directory(
+            directory=directory,
+            args=args,
+            file_paths=batch_files,
+            results_root_override=batch_results_root,
+        )
+
+        batch_json = os.path.join(batch_results_root, _final_output_name("batch_knf.json", water_mode))
+        batch_csv = _existing_batch_csv_path(batch_results_root, water=water_mode)
+        if os.path.exists(batch_json):
+            source_specs.append({"source_batch": source_batch, "path": batch_json, "type": "json"})
+        elif os.path.exists(batch_csv):
+            source_specs.append({"source_batch": source_batch, "path": batch_csv, "type": "csv"})
+        else:
+            logging.warning(
+                "Batch source outputs not found for %s (expected %s or %s/%s).",
+                source_batch,
+                batch_json,
+                os.path.join(batch_results_root, _final_output_name(_BATCH_PRIMARY_CSV_NAME, water_mode)),
+                os.path.join(batch_results_root, _final_output_name(_BATCH_LEGACY_CSV_NAMES[0], water_mode)),
+            )
+
+    if not source_specs:
+        print("No batch outputs were available to combine.")
+        return
+
+    result = _combine_batch_sources(
+        source_directory=directory,
+        source_specs=source_specs,
+        output_root=combined_output_root,
+        water=water_mode,
+        mode="combined_from_internal_batches",
+    )
+
+    print(f"\nCombined results root: {result['output_root']}")
+    print(f"Combined Batch JSON:  {result['batch_json']}")
+    print(f"Combined Batch CSV:   {result['batch_csv']}")
 
 
 def write_batch_aggregate_json(
@@ -1198,7 +2324,7 @@ def write_batch_aggregate_json(
 ):
     """Writes combined JSON and CSV payloads for batch outputs."""
     aggregate_path = os.path.join(results_root, _final_output_name("batch_knf.json", water))
-    aggregate_csv_path = os.path.join(results_root, _final_output_name("batch_knf.csv", water))
+    aggregate_csv_path = _batch_primary_csv_path(results_root, water=water)
     delta_json_path = None
     delta_txt_path = None
     os.makedirs(results_root, exist_ok=True)
@@ -1265,6 +2391,11 @@ def write_batch_aggregate_json(
         results_root=results_root,
         water=water,
     )
+    kuid_intensive_payload = _compute_kuid_intensive_payload(
+        enriched_records=enriched_records,
+        results_root=results_root,
+        water=water,
+    )
 
     payload = {
         "schema_version": 1,
@@ -1282,6 +2413,7 @@ def write_batch_aggregate_json(
         },
         "normalization_and_quadrants": quadrant_payload,
         "kuid": kuid_payload,
+        "kuid_intensive": kuid_intensive_payload,
         "records": enriched_records,
         "knf_results": knf_results,
     }
@@ -1294,6 +2426,9 @@ def write_batch_aggregate_json(
             "KUID_raw",
             "KUID",
             "KUID_Cluster",
+            "KUID_Intensive_raw",
+            "KUID_Intensive",
+            "KUID_Intensive_Cluster",
             "KUID_prefix2",
             "KUID_prefix4",
             "KUID_prefix6",
@@ -1317,6 +2452,9 @@ def write_batch_aggregate_json(
                 "KUID_raw": entry.get("KUID_raw", ""),
                 "KUID": entry.get("KUID", ""),
                 "KUID_Cluster": entry.get("KUID_Cluster", ""),
+                "KUID_Intensive_raw": entry.get("KUID_Intensive_raw", ""),
+                "KUID_Intensive": entry.get("KUID_Intensive", ""),
+                "KUID_Intensive_Cluster": entry.get("KUID_Intensive_Cluster", ""),
                 "SNCI": knf_data.get("SNCI", ""),
                 "SCDI_variance": knf_data.get("SCDI_variance", ""),
                 "SNCI_Norm": entry.get("SNCI_Norm", ""),
@@ -1329,11 +2467,27 @@ def write_batch_aggregate_json(
             csv_rows.append(row)
 
     kuid_index_outputs = _write_kuid_index_outputs(csv_rows, results_root, water=water)
+    kuid_reverse_index_outputs = _write_kuid_reverse_index_outputs(csv_rows, results_root, water=water)
+    kuid_intensive_distribution_outputs = _write_kuid_intensive_distribution_outputs(
+        csv_rows, results_root, water=water
+    )
     if isinstance(payload.get("kuid"), dict) and payload["kuid"].get("enabled"):
         payload["kuid"].update(kuid_index_outputs)
+        payload["kuid"].update(kuid_reverse_index_outputs)
+    if isinstance(payload.get("kuid_intensive"), dict) and payload["kuid_intensive"].get("enabled"):
+        payload["kuid_intensive"].update(kuid_intensive_distribution_outputs)
+    payload["kuid_reverse_index"] = kuid_reverse_index_outputs
+    payload["kuid_intensive_distribution"] = kuid_intensive_distribution_outputs
 
     with open(aggregate_path, "w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2)
+
+    _cleanup_redundant_batch_aliases(
+        results_root=results_root,
+        primary_csv_path=aggregate_csv_path,
+        primary_json_path=aggregate_path,
+        water=water,
+    )
 
     if water:
         delta_json_path = os.path.join(results_root, _final_output_name("batch_delta.json", water))
@@ -1348,53 +2502,108 @@ def write_batch_aggregate_json(
 
     return aggregate_path, aggregate_csv_path, quadrant_payload, delta_json_path, delta_txt_path
 
-def run_batch_directory(directory: str, args):
+def run_batch_directory(
+    directory: str,
+    args,
+    file_paths: list[str] = None,
+    results_root_override: str = None,
+):
     """Runs the pipeline for all valid files in a directory using a queue."""
-    valid_exts = {'.xyz', '.sdf', '.mol', '.pdb', '.mol2'}
-    results_root = resolve_results_root(directory, args.output_dir)
+    results_root = results_root_override or resolve_results_root(directory, args.output_dir)
     water_mode = bool(getattr(args, "water", False))
-    aggregate_csv_path = os.path.join(results_root, _final_output_name("batch_knf.csv", water_mode))
+    aggregate_csv_path = _batch_primary_csv_path(results_root, water=water_mode)
+    aggregate_json_path = os.path.join(results_root, _final_output_name("batch_knf.json", water_mode))
+    existing_resume_csv_path = _existing_batch_csv_path(results_root, water=water_mode)
 
-    if os.path.exists(aggregate_csv_path) and not bool(getattr(args, "force", False)):
-        summary = _run_kuid_only_from_existing_batch(
-            directory=directory,
-            results_root=results_root,
-            water=water_mode,
-        )
-        if summary.get("ran"):
-            print("Detected existing batch_knf.csv. Skipping KNF recomputation and running KUID-only refresh.")
-            print(
-                f"KUID updated for {summary.get('updated_rows', 0)} / {summary.get('total_rows', 0)} rows."
-            )
-            print(f"Batch CSV:        {summary.get('batch_csv')}")
-            if summary.get("batch_json"):
-                print(f"Batch JSON:       {summary.get('batch_json')}")
-            print(f"Calibration JSON: {summary.get('calibration_file')}")
-            index_outputs = summary.get("kuid_index_outputs") or {}
-            if index_outputs.get("family_stats_json"):
-                print(f"KUID Family JSON: {index_outputs.get('family_stats_json')}")
-            if index_outputs.get("family_stats_csv"):
-                print(f"KUID Family CSV:  {index_outputs.get('family_stats_csv')}")
-            if index_outputs.get("prefix_index_json"):
-                print(f"KUID Prefix JSON: {index_outputs.get('prefix_index_json')}")
-            persist_errors = summary.get("persist_errors") or []
-            if persist_errors:
-                print(f"KUID-only refresh completed with {len(persist_errors)} persistence warnings.")
-            return
-
-    files = []
-    for entry in os.listdir(directory):
-        full_path = os.path.join(directory, entry)
-        if not os.path.isfile(full_path):
-            continue
-        ext = utils.normalized_extension(entry)
-        if ext in valid_exts:
-            files.append(full_path)
-    files.sort()
+    if file_paths is None:
+        files = _discover_input_files(directory)
+    else:
+        files = []
+        for file_path in file_paths:
+            full_path = os.path.abspath(file_path)
+            if not os.path.isfile(full_path):
+                continue
+            ext = utils.normalized_extension(os.path.basename(full_path))
+            if ext in VALID_INPUT_EXTS:
+                files.append(full_path)
+        files.sort()
     
     if not files:
         print(f"No molecular files found in {directory}.")
         return
+
+    existing_batch_records = []
+    skipped_existing = 0
+    has_resume_outputs = os.path.exists(aggregate_json_path) or os.path.exists(existing_resume_csv_path)
+    if has_resume_outputs and not bool(getattr(args, "force", False)):
+        resume_state = _load_existing_batch_records(
+            directory=directory,
+            results_root=results_root,
+            water=water_mode,
+        )
+        existing_batch_records = resume_state.get("records") or []
+        processed_names = resume_state.get("processed_names") or set()
+        for warning in (resume_state.get("warnings") or []):
+            logging.warning(warning)
+
+        if processed_names:
+            pending_files = [
+                file_path
+                for file_path in files
+                if _normalize_batch_file_name(os.path.basename(file_path)) not in processed_names
+            ]
+            skipped_existing = len(files) - len(pending_files)
+            files = pending_files
+            if skipped_existing:
+                source = resume_state.get("source")
+                if source == "json":
+                    source_name = _final_output_name("batch_knf.json", water_mode)
+                else:
+                    source_name = os.path.basename(
+                        resume_state.get("csv_path") or existing_resume_csv_path
+                    )
+                print(
+                    f"Resume mode: skipping {skipped_existing} file(s) already listed in {source_name}."
+                )
+
+        if not files:
+            if existing_batch_records:
+                print(
+                    f"No new molecular files found in {directory}; refreshing aggregate outputs from existing batch records."
+                )
+                refresh_mode = args.processing.lower()
+                if refresh_mode == "auto":
+                    refresh_mode = "multi" if len(existing_batch_records) > 1 else "single"
+                refresh_workers = max(1, int(getattr(args, "workers", 1) or 1))
+                aggregate_total_time = _sum_elapsed_seconds(existing_batch_records)
+                (
+                    refreshed_json,
+                    refreshed_csv,
+                    _,
+                    refreshed_delta_json,
+                    refreshed_delta_txt,
+                ) = write_batch_aggregate_json(
+                    directory=directory,
+                    results_root=results_root,
+                    records=existing_batch_records,
+                    mode=refresh_mode,
+                    workers=refresh_workers,
+                    total_time=aggregate_total_time,
+                    water=water_mode,
+                    interactive_quadrant_plot=False,
+                )
+                print(f"Batch JSON: {refreshed_json}")
+                print(f"Batch CSV:  {refreshed_csv}")
+                if refreshed_delta_json:
+                    print(f"Batch Delta JSON: {refreshed_delta_json}")
+                if refreshed_delta_txt:
+                    print(f"Batch Delta TXT:  {refreshed_delta_txt}")
+            else:
+                print(
+                    f"No new molecular files found in {directory}; all detected files are already listed in {aggregate_csv_path}."
+                )
+            return
+
     mode = args.processing.lower()
     if mode == "auto":
         mode = "multi" if len(files) > 1 else "single"
@@ -1451,6 +2660,7 @@ def run_batch_directory(directory: str, args):
         )
 
     completed_rows = []
+    recent_job_durations = []
     total = len(files)
     completed = 0
     peak_cpu = 0.0
@@ -1479,6 +2689,10 @@ def run_batch_directory(directory: str, args):
         nonlocal completed, succeeded
         completed += 1
         succeeded += 1
+        if elapsed > 0:
+            recent_job_durations.append(float(elapsed))
+            if len(recent_job_durations) > 20:
+                del recent_job_durations[:-20]
         progress.advance(task_id, 1)
         batch_records.append(
             {
@@ -1493,6 +2707,10 @@ def run_batch_directory(directory: str, args):
     def add_failure(file_path: str, error: str, elapsed: float):
         nonlocal completed
         completed += 1
+        if elapsed > 0:
+            recent_job_durations.append(float(elapsed))
+            if len(recent_job_durations) > 20:
+                del recent_job_durations[:-20]
         progress.advance(task_id, 1)
         failures.append((file_path, error))
         batch_records.append(
@@ -1530,6 +2748,27 @@ def run_batch_directory(directory: str, args):
         peak_ram = max(peak_ram, ram_mb)
         rate = completed / max(elapsed, 1e-6)
         eta = (total - completed) / max(rate, 1e-6) if completed else 0.0
+        processed_count = max(0, completed - stopped_count)
+        compounds_per_hour = (processed_count / max(elapsed, 1e-6)) * 3600 if processed_count else 0.0
+        avg_sec_per_compound = (elapsed / processed_count) if processed_count else None
+        projected_total_runtime = (elapsed + eta) if completed else None
+
+        recent_window = recent_job_durations[-8:]
+        recent_avg_sec = (sum(recent_window) / len(recent_window)) if recent_window else None
+        throughput_trend = "warming up"
+        if (
+            avg_sec_per_compound
+            and recent_avg_sec
+            and processed_count >= 3
+            and len(recent_window) >= 3
+        ):
+            ratio = recent_avg_sec / max(avg_sec_per_compound, 1e-6)
+            if ratio <= 0.95:
+                throughput_trend = "faster than average"
+            elif ratio >= 1.05:
+                throughput_trend = "slower than average"
+            else:
+                throughput_trend = "near average"
 
         header = Table.grid(padding=(0, 2))
         header.add_column(style="bold")
@@ -1545,10 +2784,22 @@ def run_batch_directory(directory: str, args):
         else:
             header.add_row("Mode", "single")
         header.add_row("Files", str(total))
+        header.add_row("Completed", f"{completed}/{total}")
         header.add_row("Output", results_root)
         header.add_row("Active Workers", str(active_workers))
+        header.add_row("Batch Runtime", _fmt_elapsed(elapsed))
+        if projected_total_runtime is not None:
+            header.add_row("Projected Total", _fmt_elapsed(projected_total_runtime))
         header.add_row("Avg CPU", f"{avg_cpu:.1f}%")
         header.add_row("RAM", f"{ram_mb:.1f} MB")
+        if processed_count:
+            header.add_row("Throughput", f"{compounds_per_hour:.1f} compounds/hour")
+            header.add_row("Avg / Compound", f"{avg_sec_per_compound:.1f}s")
+        else:
+            header.add_row("Throughput", "n/a")
+            header.add_row("Avg / Compound", "n/a")
+        if recent_avg_sec is not None:
+            header.add_row("Recent (8) / Compound", f"{recent_avg_sec:.1f}s ({throughput_trend})")
         header.add_row("ETA", _fmt_elapsed(eta))
 
         jobs = Table(title="Completed Jobs", expand=True)
@@ -1725,13 +2976,15 @@ def run_batch_directory(directory: str, args):
     completed_non_stopped = max(0, total - stopped_count)
     throughput = (completed_non_stopped / total_time) * 3600 if total_time > 0 else 0.0
     avg_per_molecule = total_time / completed_non_stopped if completed_non_stopped else 0.0
+    merged_records = _dedupe_batch_records(existing_batch_records + batch_records)
+    aggregate_total_time = _sum_elapsed_seconds(merged_records)
     aggregate_json_path, aggregate_csv_path, quadrant_payload, batch_delta_json_path, batch_delta_txt_path = write_batch_aggregate_json(
         directory=directory,
         results_root=results_root,
-        records=batch_records,
+        records=merged_records,
         mode=mode,
         workers=workers,
-        total_time=total_time,
+        total_time=aggregate_total_time,
         water=bool(getattr(args, "water", False)),
         interactive_quadrant_plot=(interactive_quadrant_plot or stop_requested),
     )
@@ -1743,6 +2996,8 @@ def run_batch_directory(directory: str, args):
     summary.add_row("Success", str(succeeded))
     summary.add_row("Failed", str(len(failures)))
     summary.add_row("Stopped", str(stopped_count))
+    if skipped_existing:
+        summary.add_row("Skipped existing", str(skipped_existing))
     summary.add_row("Total time", _fmt_elapsed(total_time))
     summary.add_row("Avg per molecule", f"{avg_per_molecule:.1f}s" if completed_non_stopped else "n/a")
     summary.add_row("Throughput", f"{throughput:.1f} jobs/hour" if completed_non_stopped else "n/a")
@@ -1750,6 +3005,27 @@ def run_batch_directory(directory: str, args):
     summary.add_row("Peak RAM", f"{peak_ram:.1f} MB")
     summary.add_row("Batch JSON", aggregate_json_path)
     summary.add_row("Batch CSV", aggregate_csv_path)
+    reverse_json_path = os.path.join(results_root, _final_output_name("kuid_reverse_index.json", water_mode))
+    reverse_csv_path = os.path.join(results_root, _final_output_name("kuid_reverse_index.csv", water_mode))
+    intensive_dist_csv_path = os.path.join(
+        results_root, _final_output_name("kuid_intensive_family_distribution.csv", water_mode)
+    )
+    intensive_dist_png_path = os.path.join(
+        results_root, _final_output_name("kuid_intensive_family_distribution.png", water_mode)
+    )
+    intensive_calibration_path = os.path.join(
+        results_root, _final_output_name("kuid_intensive_calibration.json", water_mode)
+    )
+    if os.path.exists(intensive_calibration_path):
+        summary.add_row("KUID-Intensive Cal", intensive_calibration_path)
+    if os.path.exists(reverse_json_path):
+        summary.add_row("KUID Reverse JSON", reverse_json_path)
+    if os.path.exists(reverse_csv_path):
+        summary.add_row("KUID Reverse CSV", reverse_csv_path)
+    if os.path.exists(intensive_dist_csv_path):
+        summary.add_row("KUID-Intensive Dist CSV", intensive_dist_csv_path)
+    if os.path.exists(intensive_dist_png_path):
+        summary.add_row("KUID-Intensive Dist PNG", intensive_dist_png_path)
     if batch_delta_json_path:
         summary.add_row("Batch Delta JSON", batch_delta_json_path)
     if batch_delta_txt_path:
@@ -1911,6 +3187,25 @@ def main():
         help="Custom output directory. Default: <input>/Results"
     )
     parser.add_argument(
+        '--batches',
+        nargs='?',
+        type=int,
+        const=0,
+        default=None,
+        help=(
+            "Split directory inputs into evenly sized batches. "
+            "Use '--batches N' to force N batches, or '--batches' for auto batch count."
+        ),
+    )
+    parser.add_argument(
+        '--universal-kuid',
+        action='store_true',
+        help=(
+            "Recompute a universal KUID/KUID-Intensive calibration by combining existing "
+            "batch_knf outputs discovered under the input directory."
+        ),
+    )
+    parser.add_argument(
         '--ram-per-job',
         type=float,
         default=50.0,
@@ -2042,6 +3337,10 @@ def main():
         parser.error("Use only one of --multi or --single.")
     if args.gpu and args.multiwfn:
         parser.error("Use only one of --gpu or --multiwfn.")
+    if args.batches is not None and args.batches < 0:
+        parser.error("--batches must be a positive integer, or provided without a value for auto mode.")
+    if args.batches is not None and args.universal_kuid:
+        parser.error("Use either --batches or --universal-kuid, not both in the same command.")
 
     if args.multi:
         args.processing = "multi"
@@ -2066,22 +3365,32 @@ def main():
     else:
         logging.basicConfig(level=logging.WARNING, format='%(levelname)s - %(message)s')
 
-    first_ok = first_run.ensure_first_run_setup(
-        force=args.refresh_first_run,
-        multiwfn_path=args.multiwfn_path,
-        require_multiwfn=(args.nci_backend == "multiwfn"),
-    )
-    check_dependencies(multiwfn_path=args.multiwfn_path, nci_backend=args.nci_backend)
-    if not first_ok:
-        logging.error("First-time setup is incomplete. Install missing tools and retry.")
-        sys.exit(1)
+    if not args.universal_kuid:
+        first_ok = first_run.ensure_first_run_setup(
+            force=args.refresh_first_run,
+            multiwfn_path=args.multiwfn_path,
+            require_multiwfn=(args.nci_backend == "multiwfn"),
+        )
+        check_dependencies(multiwfn_path=args.multiwfn_path, nci_backend=args.nci_backend)
+        if not first_ok:
+            logging.error("First-time setup is incomplete. Install missing tools and retry.")
+            sys.exit(1)
     
     # If user provided flags, use them.
     # Default behavior for 'knf <file>' without flags is now determined by argparse defaults.
     
     if os.path.isdir(args.input_path):
-        run_batch_directory(args.input_path, args)
+        if args.universal_kuid:
+            run_universal_kuid(args.input_path, args)
+        elif args.batches is not None:
+            run_batch_directory_batched(args.input_path, args)
+        else:
+            run_batch_directory(args.input_path, args)
     else:
+        if args.universal_kuid:
+            parser.error("--universal-kuid requires a directory input path.")
+        if args.batches is not None:
+            parser.error("--batches requires a directory input path.")
         run_single_file(args.input_path, args)
 
 if __name__ == "__main__":

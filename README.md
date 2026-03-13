@@ -19,7 +19,7 @@ This `KNF-GPU` branch includes:
 - Storage-efficient default output behavior (intermediates removed by default, keep with `--full-files`).
 - Robust filename/path artifact handling for mojibake/Unicode path variants.
 - xTB optimization capped to 50 cycles (`--cycles 50`) and pipeline continues if `xtbopt.xyz` exists.
-- Batch aggregate outputs: `batch_knf.json` and `batch_knf.csv` (or `*_water.*` when `--water` is used).
+- Batch aggregate outputs: `batch_knf.json` and `batch_knf_unified_kuid_intensive.csv` (or `*_water.*` when `--water` is used).
 - KUID-MVP output by default (single + batch): deterministic `KNF_vector (f1..f9) -> KUID` encoding with min-max calibration metadata.
 - Optional graceful mid-run stop in batch mode (`--enable-stop-key`, press `q`).
 - Batch normalized/quadrant outputs: `SNCI_Norm`, `SCDI_Norm`, quadrant PNG + JSON.
@@ -120,6 +120,8 @@ knf input_molecule.sdf
 - `--multi` / `--single` (shortcuts)
 - `--workers <int>`
 - `--output-dir <path>`
+- `--batches [N]` (directory mode only; split inputs into even batches, run each batch separately, then create `Combined Results` with recomputed universal KUID)
+- `--universal-kuid` (directory mode only; discover existing batch outputs under the directory and recompute a universal combined KUID dataset)
 - `--ram-per-job <MB>`
 - `--refresh-autoconfig`
 - `--quiet-config`
@@ -164,6 +166,8 @@ knf ./molecules --processing multi --workers 4 --ram-per-job 200
 knf example.mol --nci-backend torch --nci-device cuda --nci-dtype float64
 knf example.mol --gpu
 knf example.mol --multiwfn
+knf ./molecules --batches 4
+knf ./existing_runs --universal-kuid
 ```
 
 ## Torch NCI Backend Notes
@@ -178,6 +182,14 @@ knf example.mol --multiwfn
 Default output root:
 - file input: `<input_parent>/Results/<input_stem>/`
 - directory input: `<input_dir>/Results/<file_stem>/`
+
+With `--batches` (directory mode):
+- per-batch outputs are written under `<results_root>/Batches/batch_XX/`
+- a merged universal recalculation is written under `<results_root>/Combined Results/`
+
+With `--universal-kuid` (directory mode):
+- KNF scans subfolders for existing `batch_knf.json` / `batch_knf_unified_kuid_intensive.csv` (legacy `batch_knf.csv` is still accepted)
+- writes a merged universal recalculation under `<results_root>/Combined Results/`
 
 Final outputs:
 - `knf.json`
@@ -194,44 +206,59 @@ With `--water`, final outputs are suffixed for easier comparison:
 
 Batch root outputs:
 - `batch_knf.json`
-- `batch_knf.csv`
+- `batch_knf_unified_kuid_intensive.csv`
 - `kuid_calibration.json`
+- `kuid_intensive_calibration.json`
+- `kuid_reverse_index.json`
+- `kuid_reverse_index.csv`
+- `kuid_intensive_family_distribution.csv`
+- `kuid_intensive_family_distribution.png`
 - `snci_scdi_quadrants.png`
 - `snci_scdi_quadrants.json`
 
 With `--water`, batch-level final outputs are similarly suffixed:
 - `batch_knf_water.json`
-- `batch_knf_water.csv`
+- `batch_knf_unified_kuid_intensive_water.csv`
 - `kuid_calibration_water.json`
 - `batch_delta_water.json`
 - `batch_delta_water.txt`
 - `snci_scdi_quadrants_water.png`
 - `snci_scdi_quadrants_water.json`
 
-`batch_knf.csv` includes normalized columns:
+`batch_knf_unified_kuid_intensive.csv` includes normalized columns:
 - `SNCI_Norm`
 - `SCDI_Norm`
 - `KUID_raw` (18 hex chars; `00-FF` per feature in canonical order `f1..f9`)
 - `KUID` (18-char uppercase hex, no separators; same canonical order `f1..f9`)
 - `KUID_Cluster` (display format `f1f2f3-f4f5-f6f7-f8f9`)
+- `KUID_Intensive_raw` (5 hex chars; one nibble each for `f3,f4,f7,f8,f9`)
+- `KUID_Intensive` (display format `X-X-X-X-X`)
+- `KUID_Intensive_Cluster` (display format `f3f4f7-f8f9`)
 - `KUID_prefix2` (first 1 byte / 2 hex chars)
 - `KUID_prefix4` (first 2 bytes / 4 hex chars)
 - `KUID_prefix6` (first 3 bytes / 6 hex chars)
 - `f2_defined` (`1` when weighted D-H...A angle is defined, `0` when `f2` is undefined/NaN)
 
-`batch_knf.csv` stores `SCDI_variance` (the scalar retained for SCDI tracking) and does not include the optional legacy `SCDI` column.
+When `f2` is undefined (`f2_defined = 0`), full 9D KUID still remains available: encoding uses an internal `f2` surrogate at the calibration upper bound (so the `f2` bin maps to `FF`) while preserving `f2_defined = 0`; `KUID-Intensive` remains available from `f3,f4,f7,f8,f9`.
+
+`batch_knf_unified_kuid_intensive.csv` stores `SCDI_variance` (the scalar retained for SCDI tracking) and does not include the optional legacy `SCDI` column.
 
 `knf.json` and `batch_knf.json` include a dedicated `kuid` section by default (no additional KUID flags required).
+`knf.json` and `batch_knf.json` also include a `kuid_intensive` section for `f3,f4,f7,f8,f9` nibble-encoded families.
 
 Batch runs also emit KUID indexing/statistics artifacts:
 - `kuid_family_stats.json`
 - `kuid_family_stats.csv`
 - `kuid_prefix_index.json`
+- `kuid_reverse_index.json`
+- `kuid_reverse_index.csv`
+- `kuid_intensive_family_distribution.csv`
+- `kuid_intensive_family_distribution.png`
 
 Programmatic KUID distance/search helpers are available in `knf_core/kuid_index.py` (for example byte-level Hamming distance and nearest-neighbor ranking).
 
-KUID-only fast path:
-- When running on a directory, if `batch_knf.csv` already exists and `--force` is not used, KNF skips full molecular recomputation and refreshes only KUID outputs from existing batch KNF data.
+Incremental batch resume:
+- When running on a directory, if `batch_knf_unified_kuid_intensive.csv` already exists (legacy `batch_knf.csv` also supported) and `--force` is not used, KNF matches filenames against the existing batch CSV and computes only newly added files (already-listed files are skipped).
 
 When `--full-files` is used, intermediate artifacts are retained (for example NCI grid artifacts and xTB/Multiwfn intermediates). Without it, storage-efficient cleanup runs automatically.
 
