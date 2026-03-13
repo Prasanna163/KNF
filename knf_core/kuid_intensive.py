@@ -58,10 +58,17 @@ def format_kuid_intensive_cluster(raw_hex: str) -> str:
 
 
 def _extract_from_knf_vector(knf_vector: Iterable[float]):
-    values = [_safe_float(v) for v in knf_vector]
-    if len(values) != 9 or any(v is None for v in values):
+    values = list(knf_vector)
+    if len(values) != 9:
         return None
-    return [values[_KNF_INDEX[f]] for f in FEATURE_ORDER]
+
+    selected = []
+    for feature in FEATURE_ORDER:
+        val = _safe_float(values[_KNF_INDEX[feature]])
+        if val is None:
+            return None
+        selected.append(val)
+    return selected
 
 
 def _extract_from_feature_map(feature_map: dict):
@@ -103,7 +110,7 @@ def build_calibration_from_feature_maps(
 def encode_knf_vector(knf_vector: Iterable[float], calibration: dict) -> dict:
     selected = _extract_from_knf_vector(knf_vector)
     if selected is None:
-        raise ValueError("KNF vector must contain 9 numeric features.")
+        raise ValueError("KNF vector must contain numeric f3,f4,f7,f8,f9 values.")
     return _encode_selected(selected, calibration)
 
 

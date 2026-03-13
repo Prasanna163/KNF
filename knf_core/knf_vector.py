@@ -44,10 +44,6 @@ def write_output_txt(filepath: str, result: KNFResult):
         f.write("KNF-Core Analysis Results\n")
         f.write("=========================\n\n")
         f.write(f"SNCI_raw:       {result.SNCI:.6f}\n")
-        if result.SCDI is None:
-            f.write("SCDI:           n/a (set fixed var_min/var_max for normalization)\n")
-        else:
-            f.write(f"SCDI:           {result.SCDI:.6f}\n")
         f.write(f"SCDI_variance:  {result.SCDI_variance:.6f}\n\n")
         
         metadata = result.metadata if isinstance(result.metadata, dict) else {}
@@ -72,13 +68,12 @@ def write_output_txt(filepath: str, result: KNFResult):
         metadata = result.metadata if isinstance(result.metadata, dict) else {}
         kuid_info = metadata.get("kuid") if isinstance(metadata, dict) else None
         if isinstance(kuid_info, dict):
-            f.write("\nKUID:\n")
-            f.write(f"version:        {kuid_info.get('version', '')}\n")
-            f.write(f"calibration_id: {kuid_info.get('calibration_id', '')}\n")
-            f.write(f"KUID_raw:       {kuid_info.get('raw', '')}\n")
-            f.write(f"KUID:           {kuid_info.get('raw', '')}\n")
-            cluster_display = kuid_info.get("cluster_display", "") or kuid_info.get("display", "")
-            f.write(f"KUID_Cluster:   {cluster_display}\n")
+            cluster_display = (
+                kuid_info.get("cluster_display", "")
+                or kuid_info.get("display", "")
+                or kuid_info.get("raw", "")
+            )
+            f.write(f"\nKUID:           {cluster_display}\n")
 
 def write_knf_json(filepath: str, result: KNFResult):
     """Writes machine-readable knf.json."""
