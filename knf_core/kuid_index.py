@@ -21,12 +21,27 @@ def normalize_kuid_raw(value) -> str:
     return raw
 
 
+def normalize_prefix_token(value) -> str:
+    if value is None:
+        return ""
+    return "".join(ch for ch in str(value).upper() if ch in _HEX)
+
+
 def kuid_prefix_fields(kuid_raw: str) -> dict[str, str]:
     raw = normalize_kuid_raw(kuid_raw)
     out = {}
     for name, nchars in _PREFIX_SPECS:
         out[name] = raw[:nchars] if len(raw) >= nchars else ""
     return out
+
+
+def kuid_intensive_progressive_prefix_fields(kuid_intensive_raw: str) -> dict[str, str]:
+    raw = normalize_prefix_token(kuid_intensive_raw)
+    return {
+        "KUID_prefix2": raw[:1] if len(raw) >= 1 else "",
+        "KUID_prefix4": raw[:2] if len(raw) >= 2 else "",
+        "KUID_prefix6": raw[:3] if len(raw) >= 3 else "",
+    }
 
 
 def byte_hamming_distance(kuid_a: str, kuid_b: str) -> int:
@@ -79,7 +94,21 @@ def _safe_float(value):
         return None
 
 
-def build_prefix_index(rows: list[dict], code_field: str = "KUID") -> dict:
+def build_prefix_index(
+    rows: list[dict],
+    code_field: str = "KUID",
+    *,
+    use_row_prefix_fields: bool = True,
+    prefix_specs: tuple[tuple[str, int], ...] | None = None,
+    code_normalizer=None,
+) -> dict:
+    specs = prefix_specs or (
+        ("prefix2", 2),
+        ("prefix4", 4),
+        ("prefix6", 6),
+    )
+    normalizer = code_normalizer or normalize_kuid_raw
+
     buckets = {
         "prefix2": defaultdict(list),
         "prefix4": defaultdict(list),
@@ -87,7 +116,7 @@ def build_prefix_index(rows: list[dict], code_field: str = "KUID") -> dict:
     }
     for row in rows:
         code = row.get(code_field) or row.get("KUID_raw")
-        raw = normalize_kuid_raw(code)
+        raw = normalizer(code)
         if not raw:
             continue
         file_name = (
@@ -102,12 +131,22 @@ def build_prefix_index(rows: list[dict], code_field: str = "KUID") -> dict:
         if source_batch:
             ref["source_batch"] = source_batch
 
-        if len(raw) >= 2:
-            buckets["prefix2"][raw[:2]].append(ref)
-        if len(raw) >= 4:
-            buckets["prefix4"][raw[:4]].append(ref)
-        if len(raw) >= 6:
-            buckets["prefix6"][raw[:6]].append(ref)
+        row_prefix_values = {}
+        if use_row_prefix_fields:
+            row_prefix_values = {
+                "prefix2": normalize_prefix_token(row.get("KUID_prefix2")),
+                "prefix4": normalize_prefix_token(row.get("KUID_prefix4")),
+                "prefix6": normalize_prefix_token(row.get("KUID_prefix6")),
+            }
+
+        for bucket_name, nchars in specs:
+            if bucket_name not in buckets:
+                continue
+            prefix = row_prefix_values.get(bucket_name, "")
+            if not prefix and len(raw) >= nchars:
+                prefix = raw[:nchars]
+            if prefix:
+                buckets[bucket_name][prefix].append(ref)
 
     out = {}
     for key, mapping in buckets.items():

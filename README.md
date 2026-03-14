@@ -209,8 +209,15 @@ Batch root outputs:
 - `batch_knf_unified_kuid_intensive.csv`
 - `kuid_calibration.json`
 - `kuid_intensive_calibration.json`
+- `kuid_prefix_index.json` (legacy-compatible alias of topology prefix index)
+- `kuid_topology_prefix_index.json`
+- `kuid_instance_prefix_index.json`
+- `kuid_full_topology_bridge.json`
+- `kuid_full_topology_bridge.csv`
 - `kuid_reverse_index.json`
 - `kuid_reverse_index.csv`
+- `kuid_topology_reverse_index.json`
+- `kuid_topology_reverse_index.csv`
 - `kuid_intensive_family_distribution.csv`
 - `kuid_intensive_family_distribution.png`
 - `snci_scdi_quadrants.png`
@@ -234,24 +241,67 @@ With `--water`, batch-level final outputs are similarly suffixed:
 - `KUID_Intensive_raw` (5 hex chars; one nibble each for `f3,f4,f7,f8,f9`)
 - `KUID_Intensive` (display format `X-X-X-X-X`)
 - `KUID_Intensive_Cluster` (display format `f3f4f7-f8f9`)
-- `KUID_prefix2` (first 1 byte / 2 hex chars)
-- `KUID_prefix4` (first 2 bytes / 4 hex chars)
-- `KUID_prefix6` (first 3 bytes / 6 hex chars)
+- `KUID_prefix2` (`f3` only; covalency/WBO character)
+- `KUID_prefix4` (`f3+f4`; adds dipole/electronic environment)
+- `KUID_prefix6` (`f3+f4+f7`; adds mean electron density at NCI surface)
 - `f2_defined` (`1` when weighted D-H...A angle is defined, `0` when `f2` is undefined/NaN)
 
 When `f2` is undefined (`f2_defined = 0`), full 9D KUID still remains available: encoding uses an internal `f2` surrogate at the calibration upper bound (so the `f2` bin maps to `FF`) while preserving `f2_defined = 0`; `KUID-Intensive` remains available from `f3,f4,f7,f8,f9`.
 
 `batch_knf_unified_kuid_intensive.csv` stores `SCDI_variance` (the scalar retained for SCDI tracking) and does not include the optional legacy `SCDI` column.
 
-`knf.json` and `batch_knf.json` include a dedicated `kuid` section by default (no additional KUID flags required).
-`knf.json` and `batch_knf.json` also include a `kuid_intensive` section for `f3,f4,f7,f8,f9` nibble-encoded families.
+`knf.json` and `batch_knf.json` include both KUID representations by default:
+- `kuid` (full KUID)
+- `kuid_intensive` (KUID-Intensive)
+
+## KUID Model
+
+KNF uses a two-layer identifier model to separate chemistry topology from geometry-specific identity.
+
+### 1) KUID-Intensive (Topology Passport)
+- Feature set: `f3,f4,f7,f8,f9`
+- Purpose: answer **"What kind of interaction is this?"**
+- Behavior:
+  - scale-robust and cross-dataset comparable
+  - no `f2` dependency (so no undefined-angle failure mode)
+  - stable for family-level grouping, atlas curation, and universal comparisons
+
+### 2) KUID Full (Instance Address)
+- Feature set: `f1..f9`
+- Purpose: answer **"Which specific interaction instance is this?"**
+- Behavior:
+  - includes geometric context (`f1` distance, `f2` angle, etc.)
+  - intentionally more specific and structure-dependent
+  - suitable for exact-instance addressing and fine-grained lookup
+
+### Why Both Exist
+- Some complexes (for example dispersion or pi-stacking dominated cases) do not define a donor-H-acceptor angle naturally.
+- In those rows, `f2_defined = 0`.
+- Full KUID still remains available: encoder uses an internal surrogate bin for undefined `f2` (upper-bound mapping, often `FF`) while preserving the explicit `f2_defined` flag.
+- KUID-Intensive remains NaN-free and directly comparable across all rows.
+
+### Prefix Semantics (Current)
+- `KUID_prefix2`: `f3` only
+- `KUID_prefix4`: `f3+f4`
+- `KUID_prefix6`: `f3+f4+f7`
+- Full topology passport remains `KUID_Intensive_raw = f3+f4+f7+f8+f9`
+
+### Recommended Use
+- Topology clustering/search: use KUID-Intensive indexes.
+- Instance-level retrieval: use full KUID indexes.
+- Mixed workflows: use the bridge map (`kuid_full_topology_bridge.*`) to move between full instance IDs and topology passports.
 
 Batch runs also emit KUID indexing/statistics artifacts:
 - `kuid_family_stats.json`
 - `kuid_family_stats.csv`
-- `kuid_prefix_index.json`
+- `kuid_prefix_index.json` (legacy-compatible alias of topology prefix index)
+- `kuid_topology_prefix_index.json` (topology passport index: `f3`, `f3+f4`, `f3+f4+f7`)
+- `kuid_instance_prefix_index.json` (instance address index from full KUID prefixes)
+- `kuid_full_topology_bridge.json` / `kuid_full_topology_bridge.csv` (maps full KUID -> topology passport)
 - `kuid_reverse_index.json`
 - `kuid_reverse_index.csv`
+- `kuid_topology_reverse_index.json`
+- `kuid_topology_reverse_index.csv`
 - `kuid_intensive_family_distribution.csv`
 - `kuid_intensive_family_distribution.png`
 

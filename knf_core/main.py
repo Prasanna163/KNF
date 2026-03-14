@@ -574,7 +574,15 @@ def _build_kuid_intensive_section(calibration: dict, encoded: dict) -> dict:
     }
 
 
+def _kuid_intensive_prefix_fields(kuid_intensive_raw: str) -> dict:
+    return kuid_index.kuid_intensive_progressive_prefix_fields(kuid_intensive_raw)
+
+
 def _apply_kuid_prefix_fields(record: dict):
+    intensive_raw = (record.get("KUID_Intensive_raw") or "").strip()
+    if intensive_raw:
+        record.update(_kuid_intensive_prefix_fields(intensive_raw))
+        return
     raw = (record.get("KUID") or record.get("KUID_raw") or "").strip()
     record.update(kuid_index.kuid_prefix_fields(raw))
 
@@ -582,7 +590,16 @@ def _apply_kuid_prefix_fields(record: dict):
 def _write_kuid_index_outputs(rows: list[dict], results_root: str, water: bool = False) -> dict:
     family_json_path = os.path.join(results_root, _final_output_name("kuid_family_stats.json", water))
     family_csv_path = os.path.join(results_root, _final_output_name("kuid_family_stats.csv", water))
+    bridge_json_path = os.path.join(results_root, _final_output_name("kuid_full_topology_bridge.json", water))
+    bridge_csv_path = os.path.join(results_root, _final_output_name("kuid_full_topology_bridge.csv", water))
+
     prefix_json_path = os.path.join(results_root, _final_output_name("kuid_prefix_index.json", water))
+    topology_prefix_json_path = os.path.join(
+        results_root, _final_output_name("kuid_topology_prefix_index.json", water)
+    )
+    instance_prefix_json_path = os.path.join(
+        results_root, _final_output_name("kuid_instance_prefix_index.json", water)
+    )
 
     family_stats = kuid_index.build_family_stats(rows, code_field="KUID")
     with open(family_json_path, "w", encoding="utf-8") as f:
@@ -618,60 +635,196 @@ def _write_kuid_index_outputs(rows: list[dict], results_root: str, water: bool =
             row["example_files"] = "; ".join(family.get("example_files") or [])
             writer.writerow(row)
 
-    prefix_index = kuid_index.build_prefix_index(rows, code_field="KUID")
+    topology_prefix_index = kuid_index.build_prefix_index(
+        rows,
+        code_field="KUID_Intensive_raw",
+        use_row_prefix_fields=False,
+        prefix_specs=(("prefix2", 1), ("prefix4", 2), ("prefix6", 3)),
+        code_normalizer=kuid_index.normalize_prefix_token,
+    )
+    topology_prefix_payload = {
+        "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+        "index_type": "topology_passport",
+        "code_field": "KUID_Intensive_raw",
+        "prefix_semantics": {
+            "prefix2": "f3",
+            "prefix4": "f3+f4",
+            "prefix6": "f3+f4+f7",
+            "full_kuid_intensive": "f3+f4+f7+f8+f9",
+        },
+        "index": topology_prefix_index,
+    }
+    with open(topology_prefix_json_path, "w", encoding="utf-8") as f:
+        json.dump(topology_prefix_payload, f, indent=2)
+
+    # Backward-compatible file name: keep this as topology passport index.
     with open(prefix_json_path, "w", encoding="utf-8") as f:
+        json.dump(topology_prefix_payload, f, indent=2)
+
+    instance_prefix_index = kuid_index.build_prefix_index(
+        rows,
+        code_field="KUID",
+        use_row_prefix_fields=False,
+        prefix_specs=(("prefix2", 2), ("prefix4", 4), ("prefix6", 6)),
+        code_normalizer=kuid_index.normalize_kuid_raw,
+    )
+    with open(instance_prefix_json_path, "w", encoding="utf-8") as f:
         json.dump(
             {
                 "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+                "index_type": "instance_address",
                 "code_field": "KUID",
-                "index": prefix_index,
+                "prefix_semantics": {
+                    "prefix2": "f1",
+                    "prefix4": "f1+f2",
+                    "prefix6": "f1+f2+f3",
+                    "full_kuid": "f1+f2+f3+f4+f5+f6+f7+f8+f9",
+                },
+                "index": instance_prefix_index,
             },
             f,
             indent=2,
         )
 
+    full_to_topology = {}
+    for row in rows:
+        full_code = kuid_index.normalize_kuid_raw(row.get("KUID") or row.get("KUID_raw"))
+        topology_code = kuid_index.normalize_prefix_token(row.get("KUID_Intensive_raw"))
+        if not full_code or not topology_code:
+            continue
+        entry = full_to_topology.setdefault(
+            full_code,
+            {
+                "topology_passports": set(),
+                "member_count": 0,
+                "example_files": [],
+            },
+        )
+        entry["topology_passports"].add(topology_code)
+        entry["member_count"] += 1
+        file_name = (
+            row.get("File")
+            or row.get("file")
+            or row.get("input_file_name")
+            or row.get("input_file")
+            or ""
+        )
+        if file_name and len(entry["example_files"]) < 5 and file_name not in entry["example_files"]:
+            entry["example_files"].append(file_name)
+
+    bridge_rows = []
+    for full_code in sorted(full_to_topology):
+        item = full_to_topology[full_code]
+        bridge_rows.append(
+            {
+                "kuid_full": full_code,
+                "topology_passports": sorted(item["topology_passports"]),
+                "topology_count": len(item["topology_passports"]),
+                "member_count": item["member_count"],
+                "example_files": item["example_files"],
+            }
+        )
+
+    with open(bridge_json_path, "w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+                "kuid_full_role": "instance_address",
+                "kuid_intensive_role": "topology_passport",
+                "entries": bridge_rows,
+            },
+            f,
+            indent=2,
+        )
+
+    with open(bridge_csv_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=[
+                "kuid_full",
+                "topology_count",
+                "topology_passports",
+                "member_count",
+                "example_files",
+            ],
+        )
+        writer.writeheader()
+        for item in bridge_rows:
+            writer.writerow(
+                {
+                    "kuid_full": item["kuid_full"],
+                    "topology_count": item["topology_count"],
+                    "topology_passports": "; ".join(item["topology_passports"]),
+                    "member_count": item["member_count"],
+                    "example_files": "; ".join(item["example_files"]),
+                }
+            )
+
     return {
         "family_stats_json": family_json_path,
         "family_stats_csv": family_csv_path,
         "prefix_index_json": prefix_json_path,
+        "topology_prefix_index_json": topology_prefix_json_path,
+        "instance_prefix_index_json": instance_prefix_json_path,
+        "full_topology_bridge_json": bridge_json_path,
+        "full_topology_bridge_csv": bridge_csv_path,
         "family_count": len(family_stats),
+        "bridge_entry_count": len(bridge_rows),
     }
 
 
 def _write_kuid_reverse_index_outputs(rows: list[dict], results_root: str, water: bool = False) -> dict:
     reverse_json_path = os.path.join(results_root, _final_output_name("kuid_reverse_index.json", water))
     reverse_csv_path = os.path.join(results_root, _final_output_name("kuid_reverse_index.csv", water))
+    topology_reverse_json_path = os.path.join(
+        results_root, _final_output_name("kuid_topology_reverse_index.json", water)
+    )
+    topology_reverse_csv_path = os.path.join(
+        results_root, _final_output_name("kuid_topology_reverse_index.csv", water)
+    )
 
-    reverse_index = {}
-    missing_rows = 0
-    for row in rows:
-        code = (row.get("KUID_Cluster") or row.get("KUID") or row.get("KUID_raw") or "").strip()
-        if not code:
-            missing_rows += 1
-            continue
-        file_name = (row.get("File") or "").strip()
-        source_batch = (row.get("source_batch") or "").strip()
-        item = {"file": file_name}
-        if source_batch:
-            item["source_batch"] = source_batch
-        reverse_index.setdefault(code, []).append(item)
+    def _build_reverse_index(code_fields: list[str]):
+        reverse_index = {}
+        missing_rows = 0
+        for row in rows:
+            code = ""
+            for field in code_fields:
+                code = (row.get(field) or "").strip()
+                if code:
+                    break
+            if not code:
+                missing_rows += 1
+                continue
+            file_name = (row.get("File") or "").strip()
+            source_batch = (row.get("source_batch") or "").strip()
+            item = {"file": file_name}
+            if source_batch:
+                item["source_batch"] = source_batch
+            reverse_index.setdefault(code, []).append(item)
 
-    sorted_index = {}
-    for code in sorted(reverse_index):
-        sorted_index[code] = sorted(
-            reverse_index[code],
-            key=lambda item: ((item.get("source_batch") or ""), (item.get("file") or "")),
-        )
+        sorted_index = {}
+        for code in sorted(reverse_index):
+            sorted_index[code] = sorted(
+                reverse_index[code],
+                key=lambda item: ((item.get("source_batch") or ""), (item.get("file") or "")),
+            )
+        return sorted_index, missing_rows
+
+    instance_index, missing_instance = _build_reverse_index(["KUID_Cluster", "KUID", "KUID_raw"])
+    topology_index, missing_topology = _build_reverse_index(
+        ["KUID_Intensive_Cluster", "KUID_Intensive", "KUID_Intensive_raw"]
+    )
 
     with open(reverse_json_path, "w", encoding="utf-8") as f:
         json.dump(
             {
                 "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+                "index_type": "instance_address",
                 "code_field": "KUID_Cluster",
                 "cluster_pattern": "f1f2f3-f4f5-f6f7-f8f9",
-                "total_kuid_clusters": len(sorted_index),
-                "missing_kuid_rows": missing_rows,
-                "index": sorted_index,
+                "total_kuid_clusters": len(instance_index),
+                "missing_kuid_rows": missing_instance,
+                "index": instance_index,
             },
             f,
             indent=2,
@@ -680,7 +833,7 @@ def _write_kuid_reverse_index_outputs(rows: list[dict], results_root: str, water
     with open(reverse_csv_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=["KUID_Cluster", "complex_count", "complexes"])
         writer.writeheader()
-        for code, items in sorted_index.items():
+        for code, items in instance_index.items():
             labels = []
             for item in items:
                 source_batch = (item.get("source_batch") or "").strip()
@@ -699,11 +852,54 @@ def _write_kuid_reverse_index_outputs(rows: list[dict], results_root: str, water
                 }
             )
 
+    with open(topology_reverse_json_path, "w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+                "index_type": "topology_passport",
+                "code_field": "KUID_Intensive_Cluster",
+                "cluster_pattern": "f3f4f7-f8f9",
+                "total_kuid_topology_clusters": len(topology_index),
+                "missing_kuid_topology_rows": missing_topology,
+                "index": topology_index,
+            },
+            f,
+            indent=2,
+        )
+
+    with open(topology_reverse_csv_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(
+            f, fieldnames=["KUID_Intensive_Cluster", "complex_count", "complexes"]
+        )
+        writer.writeheader()
+        for code, items in topology_index.items():
+            labels = []
+            for item in items:
+                source_batch = (item.get("source_batch") or "").strip()
+                file_name = (item.get("file") or "").strip()
+                if source_batch and file_name:
+                    labels.append(f"{source_batch}::{file_name}")
+                elif file_name:
+                    labels.append(file_name)
+                elif source_batch:
+                    labels.append(source_batch)
+            writer.writerow(
+                {
+                    "KUID_Intensive_Cluster": code,
+                    "complex_count": len(items),
+                    "complexes": "; ".join(labels),
+                }
+            )
+
     return {
         "reverse_index_json": reverse_json_path,
         "reverse_index_csv": reverse_csv_path,
-        "total_kuid_clusters": len(sorted_index),
-        "missing_kuid_rows": missing_rows,
+        "topology_reverse_index_json": topology_reverse_json_path,
+        "topology_reverse_index_csv": topology_reverse_csv_path,
+        "total_kuid_clusters": len(instance_index),
+        "total_kuid_topology_clusters": len(topology_index),
+        "missing_kuid_rows": missing_instance,
+        "missing_kuid_topology_rows": missing_topology,
     }
 
 
@@ -750,13 +946,54 @@ def _write_kuid_intensive_distribution_outputs(
 
             x_values = [size for size, _ in ordered_distribution]
             y_values = [count for _, count in ordered_distribution]
-            fig, ax = plt.subplots(figsize=(10, 6), dpi=150)
-            ax.bar(x_values, y_values, color="#2f6690")
-            ax.set_xlabel("Family Size (members per KUID-Intensive cluster)")
-            ax.set_ylabel("Number of Families")
-            ax.set_title("KUID-Intensive Family Distribution")
-            ax.grid(True, axis="y", linestyle="--", alpha=0.35)
-            fig.tight_layout()
+            total_families = float(sum(y_values))
+
+            # Build CCDF: P(Family Size >= x)
+            ccdf_pairs_desc = []
+            running_tail = 0
+            for size, count in reversed(ordered_distribution):
+                running_tail += int(count)
+                ccdf_pairs_desc.append((size, running_tail / total_families))
+            ccdf_pairs = list(reversed(ccdf_pairs_desc))
+            ccdf_x = [size for size, _ in ccdf_pairs]
+            ccdf_y = [prob for _, prob in ccdf_pairs]
+
+            fig, (ax_a, ax_b) = plt.subplots(1, 2, figsize=(13, 5.6), dpi=170)
+
+            ax_a.bar(
+                x_values,
+                y_values,
+                width=0.9,
+                color="#1f77b4",
+                alpha=0.9,
+                edgecolor="white",
+                linewidth=0.25,
+            )
+            ax_a.set_yscale("log")
+            ax_a.set_xlabel("Family Size")
+            ax_a.set_ylabel("Number of Families (log)")
+            ax_a.set_title("Panel A: Family Size Histogram")
+            ax_a.grid(True, axis="y", linestyle="--", alpha=0.35)
+
+            ax_b.step(
+                ccdf_x,
+                ccdf_y,
+                where="post",
+                color="#d94801",
+                linewidth=2.0,
+                label="CCDF",
+            )
+            ax_b.scatter(ccdf_x, ccdf_y, s=10, color="#d94801", alpha=0.75)
+            ax_b.set_xscale("log")
+            ax_b.set_yscale("log")
+            ax_b.set_xlabel("Family Size")
+            ax_b.set_ylabel("P(Size >= x)")
+            ax_b.set_title("Panel B: CCDF of Family Size")
+            ax_b.grid(True, which="both", linestyle="--", alpha=0.35)
+            ax_b.legend(loc="upper right")
+
+            fig.suptitle("KUID-Intensive Family Distribution", fontsize=14, y=0.99)
+            fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.96))
             fig.savefig(distribution_png_path)
             plt.close(fig)
             plot_path = distribution_png_path
@@ -1277,6 +1514,7 @@ def _compute_kuid_intensive_payload(
         entry["KUID_Intensive_raw"] = encoded["raw"]
         entry["KUID_Intensive"] = encoded.get("display", "")
         entry["KUID_Intensive_Cluster"] = encoded.get("cluster_display", "")
+        _apply_kuid_prefix_fields(entry)
 
         knf_data = entry.get("knf") or {}
         if isinstance(knf_data, dict):
@@ -1430,28 +1668,99 @@ def _compute_norm_and_quadrants(
     plot_error = None
     try:
         import matplotlib.pyplot as plt
+        from matplotlib.patches import Rectangle
 
-        fig, ax = plt.subplots(figsize=(10, 7), dpi=150)
-        ax.scatter(snci_norm_vals, scdi_norm_vals, s=45, alpha=0.75)
-        ax.axvline(median_x, color="crimson", linestyle="--", linewidth=1.8, label=f"Median X = {median_x:.4f}")
-        ax.axhline(median_y, color="darkgreen", linestyle="--", linewidth=1.8, label=f"Median Y = {median_y:.4f}")
+        fig, ax = plt.subplots(figsize=(11, 7), dpi=170)
+        quadrant_colors = {
+            "Q1": "#1d4ed8",  # blue
+            "Q2": "#ea580c",  # orange
+            "Q3": "#15803d",  # green
+            "Q4": "#be123c",  # red
+        }
+        quadrant_bg = {
+            "Q1": "#dbeafe",
+            "Q2": "#ffedd5",
+            "Q3": "#dcfce7",
+            "Q4": "#ffe4e6",
+        }
+
+        x_min = min(snci_norm_vals)
+        x_max = max(snci_norm_vals)
+        y_min = min(scdi_norm_vals)
+        y_max = max(scdi_norm_vals)
+        x_pad = max(0.03, (x_max - x_min) * 0.08) if x_max > x_min else 0.05
+        y_pad = max(0.03, (y_max - y_min) * 0.08) if y_max > y_min else 0.05
+        x_min = max(0.0, x_min - x_pad)
+        x_max = min(1.0, x_max + x_pad)
+        y_min = max(0.0, y_min - y_pad)
+        y_max = min(1.0, y_max + y_pad)
+        if x_max <= x_min:
+            x_min, x_max = 0.0, 1.0
+        if y_max <= y_min:
+            y_min, y_max = 0.0, 1.0
+
+        ax.set_xlim(x_min, x_max)
+        ax.set_ylim(y_min, y_max)
+        ax.set_facecolor("#f8fafc")
+
+        quadrant_rectangles = {
+            "Q2": (x_min, median_y, max(0.0, median_x - x_min), max(0.0, y_max - median_y)),
+            "Q1": (median_x, median_y, max(0.0, x_max - median_x), max(0.0, y_max - median_y)),
+            "Q3": (x_min, y_min, max(0.0, median_x - x_min), max(0.0, median_y - y_min)),
+            "Q4": (median_x, y_min, max(0.0, x_max - median_x), max(0.0, median_y - y_min)),
+        }
+        for quadrant, (x0, y0, w, h) in quadrant_rectangles.items():
+            if w > 0 and h > 0:
+                ax.add_patch(
+                    Rectangle(
+                        (x0, y0),
+                        w,
+                        h,
+                        facecolor=quadrant_bg[quadrant],
+                        edgecolor="none",
+                        alpha=0.35,
+                        zorder=0,
+                    )
+                )
+
+        for quadrant in ("Q1", "Q2", "Q3", "Q4"):
+            q_rows = [row for row in valid_plot_rows if row["entry"].get("quadrant") == quadrant]
+            if not q_rows:
+                continue
+            ax.scatter(
+                [row["snci_norm"] for row in q_rows],
+                [row["scdi_norm"] for row in q_rows],
+                s=12,
+                c=quadrant_colors[quadrant],
+                alpha=0.85,
+                edgecolors="white",
+                linewidths=0.25,
+                label=f"{quadrant} (n={quadrants[quadrant]['count']})",
+                zorder=3,
+            )
+
+        ax.axvline(
+            median_x,
+            color="#334155",
+            linestyle="--",
+            linewidth=1.6,
+            label=f"Median SNCI_Norm = {median_x:.4f}",
+            zorder=4,
+        )
+        ax.axhline(
+            median_y,
+            color="#0f766e",
+            linestyle="--",
+            linewidth=1.6,
+            label=f"Median SCDI_Norm = {median_y:.4f}",
+            zorder=4,
+        )
         ax.set_xlabel("SNCI_Norm")
         ax.set_ylabel("SCDI_Norm")
-        ax.set_title("SCDI_Norm vs SNCI_Norm with Median Quadrants")
-        ax.grid(True, linestyle="--", alpha=0.4)
+        ax.set_title("SNCI-SCDI Quadrant Map")
+        ax.grid(True, linestyle=":", linewidth=0.8, alpha=0.45, zorder=1)
 
-        x_min, x_max = ax.get_xlim()
-        y_min, y_max = ax.get_ylim()
-        x_left = x_min + 0.08 * (x_max - x_min)
-        x_right = x_min + 0.58 * (x_max - x_min)
-        y_top = y_min + 0.94 * (y_max - y_min)
-        y_bottom = y_min + 0.40 * (y_max - y_min)
-
-        ax.text(x_right, y_top, f"Q1\n(n={quadrants['Q1']['count']})", fontsize=13, fontweight="bold")
-        ax.text(x_left, y_top, f"Q2\n(n={quadrants['Q2']['count']})", fontsize=13, fontweight="bold")
-        ax.text(x_left, y_bottom, f"Q3\n(n={quadrants['Q3']['count']})", fontsize=13, fontweight="bold")
-        ax.text(x_right, y_bottom, f"Q4\n(n={quadrants['Q4']['count']})", fontsize=13, fontweight="bold")
-        ax.legend(loc="lower right")
+        ax.legend(loc="lower right", frameon=True, framealpha=0.9)
         fig.tight_layout()
         fig.savefig(plot_png_path)
         if interactive_plot:
@@ -1969,20 +2278,26 @@ def _write_combined_batch_outputs(
     mode: str = "combined_from_existing_batches",
 ) -> dict:
     os.makedirs(output_root, exist_ok=True)
+    successful_records = [
+        record for record in combined_records if record.get("status") == "success"
+    ]
+    successful_knf_results = [
+        result for result in combined_knf_results if isinstance(result, dict)
+    ]
 
     quadrant_payload = _compute_norm_and_quadrants(
-        enriched_records=combined_records,
+        enriched_records=successful_records,
         results_root=output_root,
         water=water,
         interactive_plot=False,
     )
     kuid_payload = _compute_kuid_payload(
-        enriched_records=combined_records,
+        enriched_records=successful_records,
         results_root=output_root,
         water=water,
     )
     kuid_intensive_payload = _compute_kuid_intensive_payload(
-        enriched_records=combined_records,
+        enriched_records=successful_records,
         results_root=output_root,
         water=water,
     )
@@ -2007,8 +2322,8 @@ def _write_combined_batch_outputs(
         "normalization_and_quadrants": quadrant_payload,
         "kuid": kuid_payload,
         "kuid_intensive": kuid_intensive_payload,
-        "records": combined_records,
-        "knf_results": combined_knf_results,
+        "records": successful_records,
+        "knf_results": successful_knf_results,
     }
 
     aggregate_json_path = os.path.join(output_root, _final_output_name("batch_knf.json", water))
@@ -2045,7 +2360,7 @@ def _write_combined_batch_outputs(
     with open(aggregate_csv_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=csv_fields)
         writer.writeheader()
-        for entry in combined_records:
+        for entry in successful_records:
             knf_data = entry.get("knf") or {}
             knf_vector = knf_data.get("KNF_vector") or []
             metadata = knf_data.get("metadata") if isinstance(knf_data, dict) else None
@@ -2380,19 +2695,23 @@ def write_batch_aggregate_json(
 
         enriched_records.append(entry)
 
+    successful_records = [
+        entry for entry in enriched_records if entry.get("status") == "success"
+    ]
+
     quadrant_payload = _compute_norm_and_quadrants(
-        enriched_records=enriched_records,
+        enriched_records=successful_records,
         results_root=results_root,
         water=water,
         interactive_plot=interactive_quadrant_plot,
     )
     kuid_payload = _compute_kuid_payload(
-        enriched_records=enriched_records,
+        enriched_records=successful_records,
         results_root=results_root,
         water=water,
     )
     kuid_intensive_payload = _compute_kuid_intensive_payload(
-        enriched_records=enriched_records,
+        enriched_records=successful_records,
         results_root=results_root,
         water=water,
     )
@@ -2414,7 +2733,7 @@ def write_batch_aggregate_json(
         "normalization_and_quadrants": quadrant_payload,
         "kuid": kuid_payload,
         "kuid_intensive": kuid_intensive_payload,
-        "records": enriched_records,
+        "records": successful_records,
         "knf_results": knf_results,
     }
 
@@ -2442,7 +2761,7 @@ def write_batch_aggregate_json(
     with open(aggregate_csv_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=csv_fields)
         writer.writeheader()
-        for entry in enriched_records:
+        for entry in successful_records:
             knf_data = entry.get("knf") or {}
             knf_vector = knf_data.get("KNF_vector") or []
             metadata = knf_data.get("metadata") if isinstance(knf_data, dict) else None
