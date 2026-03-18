@@ -2,6 +2,10 @@
 
 This branch is focused on KUID generation, calibration, and indexing workflows.
 
+## What Is KNF
+
+KNF (Kulkarni–NCI Fingerprint) is a physics-informed descriptor framework that encodes non-covalent interactions into a structured, high-dimensional representation derived from electronic structure and NCI analysis.
+
 Current package version in this branch: `1.0.5`
 
 ## Scope
