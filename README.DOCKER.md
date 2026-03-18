@@ -1,123 +1,121 @@
-# KNF-CORE Docker Guide
+# KUID Docker Guide
 
-This guide covers containerized KNF CLI usage.
+This guide covers containerized KUID workflows for this branch.
 
-## What The Image Contains
+## Image Contents
 
 The Docker image installs:
+
 - Python 3.11
-- KNF package (`knf`)
-- PyTorch (CPU build; Torch NCI backend ready out-of-box)
-- xTB (from conda-forge)
+- Project package and CLI (`kuid`)
+- PyTorch (CPU build)
+- xTB (conda-forge)
 - Open Babel (`obabel`)
 - RDKit
-- Matplotlib (headless PNG generation)
+- Matplotlib (headless mode)
 - Multiwfn (Linux no-GUI binary)
 
-Runtime environment exported in image/entrypoint:
+Runtime environment includes:
+
 - `PATH=/opt/conda/bin:/opt/conda/condabin:/opt/Multiwfn:$PATH`
-- `KNF_MULTIWFN_PATH=/opt/Multiwfn/Multiwfn`
+- `KUID_MULTIWFN_PATH=/opt/Multiwfn/Multiwfn`
 - `XTBHOME=/opt/conda`
-- `MPLBACKEND=Agg` (headless plotting inside container)
+- `MPLBACKEND=Agg`
 - `OMP_NUM_THREADS`, `OPENBLAS_NUM_THREADS`, `MKL_NUM_THREADS` (default `4`)
 
 ## Files
 
-- `Dockerfile`: image build definition
-- `docker-compose.yml`: ready-to-run CLI service
-- `scripts/docker-entrypoint.sh`: entrypoint wrapper for `knf`
+- `Dockerfile`: build definition
+- `docker-compose.yml`: ready-to-run KUID service
+- `scripts/docker-entrypoint.sh`: entrypoint wrapper
 - `.dockerignore`: build-context exclusions
 
 ## Build
 
 ```bash
-docker build -t knf-core:1.0.5 -t knf-core:latest .
+docker build -t kuid-core:1.0.5 -t kuid-core:latest .
 ```
 
-Build includes:
-- `xtb` install via `micromamba install -c conda-forge xtb`
-- PyTorch CPU wheel install (Torch backend enabled by default)
-
-## Run: CLI
+## Run
 
 Single molecule:
 
 ```bash
-docker run --rm -v "$(pwd):/work" -w /work knf-core:1.0.5 example.mol --charge 0 --force
+docker run --rm -v "$(pwd):/work" -w /work kuid-core:1.0.5 example.mol --charge 0 --force
 ```
 
 Directory batch:
 
 ```bash
-docker run --rm -v "$(pwd):/work" -w /work knf-core:1.0.5 molecules --processing multi --force
+docker run --rm -v "$(pwd):/work" -w /work kuid-core:1.0.5 molecules --processing multi --force
+```
+
+Universal KUID recompute:
+
+```bash
+docker run --rm -v "$(pwd):/work" -w /work kuid-core:1.0.5 existing_runs --universal-kuid
 ```
 
 Interactive shell:
 
 ```bash
-docker run --rm -it -v "$(pwd):/work" -w /work knf-core:1.0.5 bash
+docker run --rm -it -v "$(pwd):/work" -w /work kuid-core:1.0.5 bash
 ```
 
 ## Docker Compose
-
-Run default compose service:
 
 ```bash
 docker compose up --build
 ```
 
-`docker-compose.yml` runs:
+Default compose command:
 
 ```text
 example.mol --charge 0 --force
 ```
 
-Edit `command` to run your own inputs/options.
+Update `command` in `docker-compose.yml` for your own workload.
 
-Compose also provides default environment wiring for Multiwfn/xTB:
-- `KNF_MULTIWFN_PATH=/opt/Multiwfn/Multiwfn`
-- `XTBHOME=/opt/conda`
-- `MPLBACKEND=Agg`
-- thread env vars for BLAS/OMP
-- `stdin_open: true` and `tty: true` for interactive CLI input
-
-## Output Behavior
+## Outputs
 
 With `-v "$(pwd):/work"`:
+
 - inputs are read from your host folder
-- results are written back to host `Results/...`
+- result artifacts are written back under `Results/...`
 
-Common outputs:
-- `knf.json`
-- `output.txt`
-- `xtbopt.xyz`
-- `batch_knf.json` / `batch_knf.csv` (batch mode)
-- `snci_scdi_quadrants.png` / `snci_scdi_quadrants.json` (batch normalization + quadrant report)
+KUID-focused outputs include:
 
-## Health/Tool Checks
+- `knf.json` (contains `kuid` + `kuid_intensive`)
+- `batch_knf.json`
+- `batch_knf_unified_kuid_intensive.csv`
+- `kuid_calibration.json`
+- `kuid_intensive_calibration.json`
+- `kuid_*index*.json` / `kuid_*index*.csv`
+
+## Health Checks
 
 Inside container:
 
 ```bash
-knf --help
+kuid --help
 xtb --version
 obabel -V
 command -v Multiwfn
-echo "$KNF_MULTIWFN_PATH"
+echo "$KUID_MULTIWFN_PATH"
 echo "$XTBHOME"
 ```
 
-## Windows PowerShell Notes
+## Windows PowerShell
 
 Use `${PWD}` in mount expressions:
 
 ```powershell
-docker run --rm -v "${PWD}:/work" -w /work knf-core:1.0.5 example.mol --charge 0 --force
+docker run --rm -v "${PWD}:/work" -w /work kuid-core:1.0.5 example.mol --charge 0 --force
 ```
 
 ## Troubleshooting
 
 - Build issues after dependency changes:
-  - `docker build --no-cache -t knf-core:1.0.5 -t knf-core:latest .`
+  - `docker build --no-cache -t kuid-core:1.0.5 -t kuid-core:latest .`
 - No output files:
   - verify mounted path and input path inside `/work`

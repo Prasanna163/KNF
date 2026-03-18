@@ -1,17 +1,18 @@
 services:
-  knf:
+  kuid:
     build:
       context: .
       dockerfile: Dockerfile
-    image: knf-core:1.0.5
-    container_name: knf-core
+    image: kuid-core:1.0.5
+    container_name: kuid-core
     working_dir: /work
     stdin_open: true
     tty: true
     volumes:
       - ./:/work
-      - knf-cache:/home/mambauser/.knf
+      - kuid-cache:/home/mambauser/.knf
     environment:
+      KUID_MULTIWFN_PATH: /opt/Multiwfn/Multiwfn
       KNF_MULTIWFN_PATH: /opt/Multiwfn/Multiwfn
       XTBHOME: /opt/conda
       MPLBACKEND: Agg
@@ -21,4 +22,4 @@ services:
     command: ["example.mol", "--charge", "0", "--force"]
 
 volumes:
-  knf-cache:
+  kuid-cache:

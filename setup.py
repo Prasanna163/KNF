@@ -17,6 +17,7 @@ setup(
     packages=find_packages(),
     entry_points={
         'console_scripts': [
+            'kuid=knf_core.main:main',
             'knf=knf_core.main:main',
         ],
     },
