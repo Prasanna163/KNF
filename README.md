@@ -6,6 +6,10 @@ KNF-CORE is an automated computational chemistry pipeline that generates:
 - SCDI variance (raw VarA)
 - 9D KNF vector (`f1` to `f9`)
 
+## What Is KNF
+
+KNF (Kulkarni–NCI Fingerprint) is a physics-informed descriptor framework that encodes non-covalent interactions into a structured, high-dimensional representation derived from electronic structure and NCI analysis.
+
 from molecular structure files using xTB + NCI backend + KNF post-processing.
 
 Current package version in this branch: `1.0.4`
