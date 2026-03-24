@@ -34,3 +34,8 @@ build/
 results/
 *.zip
 *.tar.gz
+apitoken
+.tmp/
+tools/
+xtb/
+test-4/

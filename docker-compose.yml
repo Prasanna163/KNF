@@ -3,7 +3,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: kuid-core:1.0.5
+    image: kuid-core:1.0.6
     container_name: kuid-core
     working_dir: /work
     stdin_open: true

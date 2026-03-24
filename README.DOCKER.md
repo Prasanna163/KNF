@@ -33,7 +33,7 @@ Runtime environment includes:
 ## Build
 
 ```bash
-docker build -t kuid-core:1.0.5 -t kuid-core:latest .
+docker build -t kuid-core:1.0.6 -t kuid-core:latest .
 ```
 
 ## Run
@@ -41,25 +41,25 @@ docker build -t kuid-core:1.0.5 -t kuid-core:latest .
 Single molecule:
 
 ```bash
-docker run --rm -v "$(pwd):/work" -w /work kuid-core:1.0.5 example.mol --charge 0 --force
+docker run --rm -v "$(pwd):/work" -w /work kuid-core:1.0.6 example.mol --charge 0 --force
 ```
 
 Directory batch:
 
 ```bash
-docker run --rm -v "$(pwd):/work" -w /work kuid-core:1.0.5 molecules --processing multi --force
+docker run --rm -v "$(pwd):/work" -w /work kuid-core:1.0.6 molecules --processing multi --force
 ```
 
 Universal KUID recompute:
 
 ```bash
-docker run --rm -v "$(pwd):/work" -w /work kuid-core:1.0.5 existing_runs --universal-kuid
+docker run --rm -v "$(pwd):/work" -w /work kuid-core:1.0.6 existing_runs --universal-kuid
 ```
 
 Interactive shell:
 
 ```bash
-docker run --rm -it -v "$(pwd):/work" -w /work kuid-core:1.0.5 bash
+docker run --rm -it -v "$(pwd):/work" -w /work kuid-core:1.0.6 bash
 ```
 
 ## Docker Compose
@@ -110,12 +110,12 @@ echo "$XTBHOME"
 Use `${PWD}` in mount expressions:
 
 ```powershell
-docker run --rm -v "${PWD}:/work" -w /work kuid-core:1.0.5 example.mol --charge 0 --force
+docker run --rm -v "${PWD}:/work" -w /work kuid-core:1.0.6 example.mol --charge 0 --force
 ```
 
 ## Troubleshooting
 
 - Build issues after dependency changes:
-  - `docker build --no-cache -t kuid-core:1.0.5 -t kuid-core:latest .`
+  - `docker build --no-cache -t kuid-core:1.0.6 -t kuid-core:latest .`
 - No output files:
   - verify mounted path and input path inside `/work`

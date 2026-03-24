@@ -2,7 +2,7 @@
 
 ## 1) Update version
 
-Update all version references for the release (example `1.0.5`):
+Update all version references for the release (example `1.0.6`):
 
 - `setup.py` (`version=...`)
 - `knf_core/main.py` (`CLI_TITLE`)
@@ -45,7 +45,7 @@ python -m pip index versions KNF
 
 Naming convention used in this repo:
 
-- Tag: `v<version>-knf-gpu` (example: `v1.0.5-knf-gpu`)
+- Tag: `v<version>-knf-gpu` (example: `v1.0.6-knf-gpu`)
 - Release title: `KNF-Core v<version> (KNF-GPU)`
 
 Commands:

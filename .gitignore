@@ -103,4 +103,8 @@ test_results/
 *.molden
 uploads/
 api token
+apitoken
+.tmp/
+tools/
+xtb/
 ignr/

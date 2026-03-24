@@ -23,7 +23,7 @@ from rich.panel import Panel
 from rich.progress import BarColumn, Progress, TaskProgressColumn, TextColumn, TimeRemainingColumn, TimeElapsedColumn
 from rich.table import Table
 
-CLI_TITLE = "KNF-Core v1.0.5"
+CLI_TITLE = "KNF-Core v1.0.6"
 DISPLAY_NAME_LIMIT = 40
 STOP_KEY = "q"
 VALID_INPUT_EXTS = {".xyz", ".sdf", ".mol", ".pdb", ".mol2"}
@@ -298,7 +298,7 @@ def _build_pipeline(file_path: str, args, output_root: str = None) -> KNFPipelin
         input_file=file_path,
         charge=args.charge,
         spin=args.spin,
-        water=args.water,
+        water=bool(getattr(args, "water", False)),
         force=args.force,
         clean=args.clean,
         debug=args.debug,
@@ -1833,7 +1833,7 @@ def run_single_file(file_path: str, args):
         header = Table.grid(padding=(0, 2))
         header.add_column(style="bold")
         header.add_column()
-        header.add_row("KNF-Core", "v1.0.5")
+        header.add_row("KNF-Core", "v1.0.6")
         header.add_row("Detected", f"{physical}C / {logical}T")
         header.add_row("Mode", "single")
         header.add_row("File", _display_name(file_path))
@@ -3092,7 +3092,7 @@ def run_batch_directory(
         header = Table.grid(padding=(0, 2))
         header.add_column(style="bold")
         header.add_column()
-        header.add_row("KNF-Core", "v1.0.5")
+        header.add_row("KNF-Core", "v1.0.6")
         header.add_row("Detected", f"{physical}C / {logical}T")
         if mode == "multi":
             if use_gpu_overlap:
@@ -3403,6 +3403,7 @@ def main():
         class Args:
             charge = 0
             spin = 1
+            water = False
             force = True # "Just do this" implies run it.
             clean = True # "Just do this" often implies fresh run.
             debug = True # Helpful for user to see what's happening.

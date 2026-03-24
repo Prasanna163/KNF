@@ -1,6 +1,8 @@
-﻿# KNF-Core v1.0.5 (KNF-GPU)
+﻿# KNF-Core v1.0.6 (KNF-GPU)
 
 ## Highlights
+- Fixed interactive-mode crash: 'Args' object has no attribute 'water'.
+- Added `rdkit` to required install dependencies in package metadata.
 - Native Molden-based WBO is now the default path for `f3` (`--wbo-mode native`).
 - Added optional `--wbo-mode xtb` fallback to parse xTB `wbo` files.
 - Added H-bond interaction seeding for two-fragment systems before UFF/xTB stages.
