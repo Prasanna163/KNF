@@ -1,0 +1,14 @@
+{
+  "submission_schema_version": "1.0",
+  "knf_version": "1.0.6",
+  "backend": "torch",
+  "method": "GFN2-xTB",
+  "grid_spacing": 0.2,
+  "grid_padding": 3.0,
+  "dtype": "float32",
+  "row_count": 3315,
+  "created_at": "2026-04-03T18:11:47Z",
+  "csv_sha256": "85680101cfb4d6945da51278a303a894b80da4135604de287257fc381b6fb192",
+  "source_file": "test-4\\batch_knf_unified_kuid_intensive.csv",
+  "skipped_invalid_rows": 5
+}

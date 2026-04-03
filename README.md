@@ -101,6 +101,12 @@ Recompute universal KUID from existing batch outputs:
 kuid ./existing_runs --universal-kuid
 ```
 
+Generate canonical atlas submission bundle:
+
+```bash
+kuid ./molecules --atlas-bundle
+```
+
 ## KUID Files Emitted
 
 Single-run outputs include:
@@ -111,7 +117,7 @@ Single-run outputs include:
 Batch root outputs include:
 
 - `batch_knf.json`
-- `batch_knf_unified_kuid_intensive.csv`
+- `atlas_submission.csv`
 - `kuid_calibration.json`
 - `kuid_intensive_calibration.json`
 - `kuid_prefix_index.json`
@@ -130,9 +136,18 @@ Batch root outputs include:
 
 With `--water`, water-suffixed variants are emitted (for example `*_water.json`, `*_water.csv`).
 
+## Atlas Submission Bundle
+
+When `--atlas-bundle` is supplied, KNF writes a deterministic bundle under the relevant results root:
+
+- `submission_bundle/batch_knf_unified_kuid_intensive.csv`
+- `submission_bundle/manifest.json`
+
+If prior batch outputs already exist, running `--atlas-bundle` will parse those existing CSV outputs and generate the bundle without recomputing KNF.
+
 ## Key CSV Columns
 
-`batch_knf_unified_kuid_intensive.csv` includes:
+`atlas_submission.csv` includes:
 
 - `KUID_raw`
 - `KUID`
@@ -147,7 +162,7 @@ With `--water`, water-suffixed variants are emitted (for example `*_water.json`,
 
 ## Incremental Resume
 
-When `batch_knf_unified_kuid_intensive.csv` already exists and `--force` is not set, existing rows are reused and only new files are processed.
+When `atlas_submission.csv` already exists (legacy names are also supported) and `--force` is not set, existing rows are reused and only new files are processed.
 
 ## Docker
 

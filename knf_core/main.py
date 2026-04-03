@@ -7,6 +7,8 @@ import time
 import json
 import csv
 import statistics
+import math
+import hashlib
 from copy import deepcopy
 from queue import Queue
 from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError, CancelledError
@@ -36,9 +38,289 @@ def _final_output_name(filename: str, water: bool) -> str:
     return f"{stem}_water{ext}"
 
 
-_BATCH_PRIMARY_CSV_NAME = "batch_knf_unified_kuid_intensive.csv"
-_BATCH_LEGACY_CSV_NAMES = ("batch_knf.csv", "batch_knf_unified.csv")
+_BATCH_PRIMARY_CSV_NAME = "atlas_submission.csv"
+_BATCH_LEGACY_CSV_NAMES = (
+    "batch_knf_unified_kuid_intensive.csv",
+    "batch_knf.csv",
+    "batch_knf_unified.csv",
+)
 _BATCH_LEGACY_JSON_NAMES = ("batch_knf_unified_kuid_intensive.json",)
+
+ATLAS_REQUIRED_COLUMNS = [
+    "source_name",
+    "f1",
+    "f2",
+    "f3",
+    "f4",
+    "f5",
+    "f6",
+    "f7",
+    "f8",
+    "f9",
+    "SNCI",
+    "KUIDINT",
+    "knf_version",
+    "backend",
+    "method",
+    "grid_spacing",
+    "grid_padding",
+    "dtype",
+    "type_design",
+]
+ATLAS_OPTIONAL_COLUMNS = ["SCDI", "KUID_full", "f2_defined", "source_batch"]
+ATLAS_NUMERIC_FIELDS = ["f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "SNCI", "grid_spacing", "grid_padding"]
+ATLAS_REQUIRED_STRING_FIELDS = ["source_name", "KUIDINT", "knf_version", "backend", "method", "dtype", "type_design"]
+ATLAS_BUNDLE_DIRNAME = "submission_bundle"
+ATLAS_BUNDLE_CSV_NAME = "batch_knf_unified_kuid_intensive.csv"
+ATLAS_BUNDLE_MANIFEST_NAME = "manifest.json"
+ATLAS_SCHEMA_VERSION = "1.0"
+ATLAS_DEFAULT_METHOD = "GFN2-xTB"
+ATLAS_DEFAULT_TYPE_DESIGN = "UNKNOWN"
+
+
+def _utc_now_iso_z() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _hash_file_sha256(path: str) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _knf_version_from_title() -> str:
+    marker = "v"
+    idx = CLI_TITLE.rfind(marker)
+    if idx >= 0 and idx + 1 < len(CLI_TITLE):
+        return CLI_TITLE[idx + 1 :].strip()
+    return CLI_TITLE.strip()
+
+
+def _first_nonempty(*values):
+    for value in values:
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text != "":
+            return text
+    return ""
+
+
+def _finite_float(value, field: str, row_number: int) -> float:
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"Row {row_number}: {field} must be numeric.")
+    if not math.isfinite(out):
+        raise ValueError(f"Row {row_number}: {field} must be finite (no NaN/inf).")
+    return out
+
+
+def _map_to_atlas_row(source_row: dict, args) -> dict:
+    atlas_row = {
+        "source_name": _first_nonempty(source_row.get("source_name"), source_row.get("File")),
+        "SNCI": _first_nonempty(source_row.get("SNCI"), source_row.get("snci")),
+        "KUIDINT": _first_nonempty(
+            source_row.get("KUIDINT"),
+            source_row.get("KUID_Intensive"),
+            source_row.get("KUID_Intensive_raw"),
+        ),
+        "knf_version": _first_nonempty(source_row.get("knf_version"), _knf_version_from_title()),
+        "backend": _first_nonempty(source_row.get("backend"), getattr(args, "nci_backend", "torch")),
+        "method": _first_nonempty(source_row.get("method"), ATLAS_DEFAULT_METHOD),
+        "grid_spacing": _first_nonempty(source_row.get("grid_spacing"), getattr(args, "nci_grid_spacing", 0.2)),
+        "grid_padding": _first_nonempty(source_row.get("grid_padding"), getattr(args, "nci_grid_padding", 3.0)),
+        "dtype": _first_nonempty(source_row.get("dtype"), getattr(args, "nci_dtype", "float32")),
+        "type_design": _first_nonempty(source_row.get("type_design"), ATLAS_DEFAULT_TYPE_DESIGN),
+        "SCDI": _first_nonempty(source_row.get("SCDI"), source_row.get("scdi")),
+        "KUID_full": _first_nonempty(
+            source_row.get("KUID_full"),
+            source_row.get("KUID"),
+            source_row.get("KUID_raw"),
+        ),
+        "f2_defined": _first_nonempty(source_row.get("f2_defined")),
+        "source_batch": _first_nonempty(source_row.get("source_batch")),
+    }
+    for idx in range(1, 10):
+        atlas_row[f"f{idx}"] = _first_nonempty(source_row.get(f"f{idx}"))
+    return atlas_row
+
+
+def _validate_atlas_rows(rows: list[dict]):
+    if not rows:
+        raise ValueError("Atlas bundle requires at least one valid row.")
+
+    for row_idx, row in enumerate(rows, start=2):
+        missing = [col for col in ATLAS_REQUIRED_COLUMNS if col not in row]
+        if missing:
+            raise ValueError(f"Row {row_idx}: missing required columns: {', '.join(missing)}")
+
+        for field in ATLAS_REQUIRED_STRING_FIELDS:
+            if not _first_nonempty(row.get(field)):
+                raise ValueError(f"Row {row_idx}: {field} must be a non-empty string.")
+
+        for field in ATLAS_NUMERIC_FIELDS:
+            row[field] = _finite_float(row.get(field), field, row_idx)
+
+        if _first_nonempty(row.get("f2_defined")):
+            f2_defined = int(_finite_float(row.get("f2_defined"), "f2_defined", row_idx))
+            if f2_defined not in (0, 1):
+                raise ValueError(f"Row {row_idx}: f2_defined must be 0 or 1 when present.")
+            row["f2_defined"] = f2_defined
+
+        if _first_nonempty(row.get("SCDI")):
+            row["SCDI"] = _finite_float(row.get("SCDI"), "SCDI", row_idx)
+
+
+def _write_atlas_bundle(rows: list[dict], results_root: str, args) -> dict:
+    _validate_atlas_rows(rows)
+    bundle_dir = os.path.join(results_root, ATLAS_BUNDLE_DIRNAME)
+    os.makedirs(bundle_dir, exist_ok=True)
+
+    csv_path = os.path.join(bundle_dir, ATLAS_BUNDLE_CSV_NAME)
+    manifest_path = os.path.join(bundle_dir, ATLAS_BUNDLE_MANIFEST_NAME)
+    fieldnames = [*ATLAS_REQUIRED_COLUMNS, *ATLAS_OPTIONAL_COLUMNS]
+
+    with open(csv_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in rows:
+            out = {name: row.get(name, "") for name in fieldnames}
+            writer.writerow(out)
+
+    manifest = {
+        "submission_schema_version": ATLAS_SCHEMA_VERSION,
+        "knf_version": _knf_version_from_title(),
+        "backend": str(getattr(args, "nci_backend", "torch")),
+        "method": ATLAS_DEFAULT_METHOD,
+        "grid_spacing": float(getattr(args, "nci_grid_spacing", 0.2)),
+        "grid_padding": float(getattr(args, "nci_grid_padding", 3.0)),
+        "dtype": str(getattr(args, "nci_dtype", "float32")),
+        "row_count": len(rows),
+        "created_at": _utc_now_iso_z(),
+        "csv_sha256": _hash_file_sha256(csv_path),
+    }
+    with open(manifest_path, "w", encoding="utf-8") as f:
+        json.dump(manifest, f, indent=2)
+
+    return {"bundle_dir": bundle_dir, "csv_path": csv_path, "manifest_path": manifest_path}
+
+
+def _build_atlas_rows_from_batch_csv(csv_path: str, args) -> list[dict]:
+    rows = []
+    with open(csv_path, "r", newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for source_row in reader:
+            mapped = _map_to_atlas_row(source_row, args)
+            rows.append(mapped)
+    return rows
+
+
+def _build_atlas_rows_from_single_result(file_path: str, args, results_root: str, water: bool) -> list[dict]:
+    stem = os.path.splitext(os.path.basename(file_path))[0]
+    result_dir = os.path.join(results_root, stem)
+    knf_json_path = os.path.join(result_dir, _final_output_name("knf.json", water))
+    if not os.path.exists(knf_json_path):
+        raise FileNotFoundError(f"Missing KNF output for atlas bundle: {knf_json_path}")
+
+    with open(knf_json_path, "r", encoding="utf-8") as f:
+        knf_payload = json.load(f)
+
+    entry = {
+        "status": "success",
+        "input_file": os.path.abspath(file_path),
+        "input_file_name": os.path.basename(file_path),
+        "result_dir": result_dir,
+        "knf": knf_payload,
+    }
+
+    kuid_info = knf_payload.get("kuid") if isinstance(knf_payload, dict) else None
+    if isinstance(kuid_info, dict):
+        entry["KUID"] = _first_nonempty(kuid_info.get("display"), kuid_info.get("raw"))
+        entry["KUID_raw"] = _first_nonempty(kuid_info.get("raw"))
+
+    _compute_kuid_intensive_payload([entry], results_root=results_root, water=water)
+
+    vector = knf_payload.get("KNF_vector") if isinstance(knf_payload, dict) else None
+    vector = vector if isinstance(vector, list) else []
+    metadata = knf_payload.get("metadata") if isinstance(knf_payload, dict) else {}
+    metadata = metadata if isinstance(metadata, dict) else {}
+
+    source_row = {
+        "File": os.path.basename(file_path),
+        "SNCI": knf_payload.get("SNCI"),
+        "SCDI": knf_payload.get("SCDI"),
+        "KUID": entry.get("KUID", ""),
+        "KUID_raw": entry.get("KUID_raw", ""),
+        "KUID_Intensive": entry.get("KUID_Intensive", ""),
+        "KUID_Intensive_raw": entry.get("KUID_Intensive_raw", ""),
+        "f2_defined": metadata.get("f2_defined", ""),
+    }
+    for idx in range(9):
+        source_row[f"f{idx + 1}"] = vector[idx] if idx < len(vector) else ""
+
+    return [_map_to_atlas_row(source_row, args)]
+
+
+def maybe_write_atlas_bundle(args):
+    if not bool(getattr(args, "atlas_bundle", False)):
+        return None
+
+    water_mode = bool(getattr(args, "water", False))
+    input_path = args.input_path
+
+    if os.path.isdir(input_path):
+        if getattr(args, "batches", None) is not None or bool(getattr(args, "universal_kuid", False)):
+            results_root = os.path.join(resolve_results_root(input_path, args.output_dir), "Combined Results")
+        else:
+            results_root = resolve_results_root(input_path, args.output_dir)
+        source_csv_path = _existing_batch_csv_path(results_root, water=water_mode)
+        if not os.path.exists(source_csv_path):
+            raise FileNotFoundError(f"Could not find batch CSV for atlas bundle: {source_csv_path}")
+        rows = _build_atlas_rows_from_batch_csv(source_csv_path, args)
+    else:
+        results_root = resolve_results_root(input_path, args.output_dir)
+        rows = _build_atlas_rows_from_single_result(
+            file_path=input_path,
+            args=args,
+            results_root=results_root,
+            water=water_mode,
+        )
+
+    return _write_atlas_bundle(rows=rows, results_root=results_root, args=args)
+
+
+def try_write_atlas_bundle_from_existing_outputs(args):
+    """
+    Upgrade path: if prior batch outputs already exist, create atlas bundle directly
+    without re-running KNF computations.
+    """
+    if not bool(getattr(args, "atlas_bundle", False)):
+        return None
+    if not os.path.isdir(args.input_path):
+        return None
+    if bool(getattr(args, "force", False)):
+        return None
+    if getattr(args, "batches", None) is not None or bool(getattr(args, "universal_kuid", False)):
+        return None
+
+    water_mode = bool(getattr(args, "water", False))
+    base_root = resolve_results_root(args.input_path, args.output_dir)
+    candidate_roots = [base_root, os.path.join(base_root, "Combined Results")]
+
+    for root in candidate_roots:
+        csv_path = _existing_batch_csv_path(root, water=water_mode)
+        if not os.path.exists(csv_path):
+            continue
+        rows = _build_atlas_rows_from_batch_csv(csv_path, args)
+        bundle = _write_atlas_bundle(rows=rows, results_root=root, args=args)
+        bundle["source_csv"] = csv_path
+        bundle["source_results_root"] = root
+        return bundle
+
+    return None
 
 
 def _batch_primary_csv_path(results_root: str, water: bool = False) -> str:
@@ -3560,6 +3842,14 @@ def main():
         help="Open an interactive SNCI_Norm vs SCDI_Norm quadrant plot window after batch aggregation.",
     )
     parser.add_argument(
+        '--atlas-bundle',
+        action='store_true',
+        help=(
+            "Generate a canonical atlas submission bundle after KNF execution "
+            "(submission_bundle/batch_knf_unified_kuid_intensive.csv + manifest.json)."
+        ),
+    )
+    parser.add_argument(
         '--gpu',
         action='store_true',
         help="Shortcut: use torch NCI backend on CUDA"
@@ -3685,6 +3975,15 @@ def main():
     else:
         logging.basicConfig(level=logging.WARNING, format='%(levelname)s - %(message)s')
 
+    atlas_from_existing = try_write_atlas_bundle_from_existing_outputs(args)
+    if atlas_from_existing:
+        print("\nAtlas bundle created from existing batch outputs (no recomputation).")
+        print(f"Source CSV: {atlas_from_existing['source_csv']}")
+        print(f"Bundle dir: {atlas_from_existing['bundle_dir']}")
+        print(f"CSV:        {atlas_from_existing['csv_path']}")
+        print(f"Manifest:   {atlas_from_existing['manifest_path']}")
+        return
+
     if not args.universal_kuid:
         first_ok = first_run.ensure_first_run_setup(
             force=args.refresh_first_run,
@@ -3712,6 +4011,13 @@ def main():
         if args.batches is not None:
             parser.error("--batches requires a directory input path.")
         run_single_file(args.input_path, args)
+
+    bundle_info = maybe_write_atlas_bundle(args)
+    if bundle_info:
+        print("\nAtlas bundle created")
+        print(f"Bundle dir: {bundle_info['bundle_dir']}")
+        print(f"CSV:        {bundle_info['csv_path']}")
+        print(f"Manifest:   {bundle_info['manifest_path']}")
 
 if __name__ == "__main__":
     main()
