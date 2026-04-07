@@ -9,6 +9,8 @@ import csv
 import statistics
 import math
 import hashlib
+import subprocess
+from pathlib import Path
 from copy import deepcopy
 from queue import Queue
 from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError, CancelledError
@@ -25,10 +27,15 @@ from rich.panel import Panel
 from rich.progress import BarColumn, Progress, TaskProgressColumn, TextColumn, TimeRemainingColumn, TimeElapsedColumn
 from rich.table import Table
 
-CLI_TITLE = "KNF-Core v1.0.6"
+CLI_NAME = "NCIForge"
+CLI_VERSION = "v1.0.6"
+CLI_TITLE = f"{CLI_NAME} {CLI_VERSION}"
 DISPLAY_NAME_LIMIT = 40
+OUTPUT_PATH_DISPLAY_LIMIT = 72
 STOP_KEY = "q"
 VALID_INPUT_EXTS = {".xyz", ".sdf", ".mol", ".pdb", ".mol2"}
+GPU_SETUP_STATE_FILE = os.path.join(os.path.expanduser("~"), ".knf_gpu_setup_state.json")
+PYTORCH_CUDA_INDEX_URL = "https://download.pytorch.org/whl/cu128"
 
 
 def _final_output_name(filename: str, water: bool) -> str:
@@ -38,16 +45,296 @@ def _final_output_name(filename: str, water: bool) -> str:
     return f"{stem}_water{ext}"
 
 
-_BATCH_PRIMARY_CSV_NAME = "atlas_submission.csv"
+def _gpu_state_key() -> str:
+    try:
+        return os.path.normcase(os.path.abspath(sys.executable))
+    except Exception:
+        return str(sys.executable)
+
+
+def _load_gpu_setup_state() -> dict:
+    try:
+        if not os.path.exists(GPU_SETUP_STATE_FILE):
+            return {}
+        with open(GPU_SETUP_STATE_FILE, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+        return payload if isinstance(payload, dict) else {}
+    except Exception:
+        return {}
+
+
+def _save_gpu_setup_state(state: dict) -> None:
+    try:
+        parent = os.path.dirname(GPU_SETUP_STATE_FILE)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        with open(GPU_SETUP_STATE_FILE, "w", encoding="utf-8") as f:
+            json.dump(state, f, indent=2)
+    except Exception as e:
+        logging.debug("Could not persist GPU setup state: %s", e)
+
+
+def _nvidia_gpu_probe() -> dict:
+    smi = shutil.which("nvidia-smi")
+    if not smi:
+        return {"has_gpu": False, "reason": "nvidia-smi not found in PATH."}
+
+    try:
+        proc = subprocess.run(
+            [smi, "--query-gpu=name", "--format=csv,noheader"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except Exception as e:
+        return {"has_gpu": False, "reason": f"nvidia-smi check failed: {e}"}
+
+    stdout = (proc.stdout or "").strip()
+    stderr = (proc.stderr or "").strip()
+
+    if proc.returncode != 0:
+        msg = stderr or stdout or f"exit code {proc.returncode}"
+        return {"has_gpu": False, "reason": f"nvidia-smi returned an error: {msg}"}
+
+    if not stdout or "no devices were found" in stdout.lower():
+        return {"has_gpu": False, "reason": "No CUDA-capable NVIDIA GPU detected."}
+
+    names = [line.strip() for line in stdout.splitlines() if line.strip()]
+    return {
+        "has_gpu": bool(names),
+        "reason": "" if names else "No CUDA-capable NVIDIA GPU detected.",
+        "gpu_names": names,
+    }
+
+
+def _probe_torch_cuda_runtime() -> dict:
+    probe_code = (
+        "import json\n"
+        "out = {}\n"
+        "try:\n"
+        "    import torch\n"
+        "    out['torch_import_ok'] = True\n"
+        "    out['torch_version'] = getattr(torch, '__version__', '')\n"
+        "    out['torch_cuda_version'] = getattr(getattr(torch, 'version', None), 'cuda', None)\n"
+        "    out['cuda_available'] = bool(torch.cuda.is_available())\n"
+        "    out['cuda_device_count'] = int(torch.cuda.device_count()) if out['cuda_available'] else 0\n"
+        "    out['cuda_device_name'] = torch.cuda.get_device_name(0) if out['cuda_available'] else ''\n"
+        "except Exception as e:\n"
+        "    out = {\n"
+        "        'torch_import_ok': False,\n"
+        "        'torch_version': '',\n"
+        "        'torch_cuda_version': None,\n"
+        "        'cuda_available': False,\n"
+        "        'cuda_device_count': 0,\n"
+        "        'cuda_device_name': '',\n"
+        "        'error': str(e),\n"
+        "    }\n"
+        "print(json.dumps(out))\n"
+    )
+
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-c", probe_code],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except Exception as e:
+        return {
+            "torch_import_ok": False,
+            "torch_version": "",
+            "torch_cuda_version": None,
+            "cuda_available": False,
+            "cuda_device_count": 0,
+            "cuda_device_name": "",
+            "error": str(e),
+        }
+
+    if proc.returncode != 0:
+        return {
+            "torch_import_ok": False,
+            "torch_version": "",
+            "torch_cuda_version": None,
+            "cuda_available": False,
+            "cuda_device_count": 0,
+            "cuda_device_name": "",
+            "error": (proc.stderr or proc.stdout or f"probe exit code {proc.returncode}").strip(),
+        }
+
+    try:
+        payload = json.loads((proc.stdout or "").strip() or "{}")
+    except Exception:
+        payload = {
+            "torch_import_ok": False,
+            "torch_version": "",
+            "torch_cuda_version": None,
+            "cuda_available": False,
+            "cuda_device_count": 0,
+            "cuda_device_name": "",
+            "error": "Unable to parse torch probe output.",
+        }
+    if not isinstance(payload, dict):
+        payload = {
+            "torch_import_ok": False,
+            "torch_version": "",
+            "torch_cuda_version": None,
+            "cuda_available": False,
+            "cuda_device_count": 0,
+            "cuda_device_name": "",
+            "error": "Unexpected torch probe payload type.",
+        }
+    return payload
+
+
+def _prompt_yes_no(question: str, default: str = "n"):
+    default = (default or "n").strip().lower()
+    if default not in {"y", "n"}:
+        default = "n"
+
+    if not sys.stdin or not sys.stdin.isatty():
+        return None
+
+    suffix = "[Y/n]" if default == "y" else "[y/N]"
+    while True:
+        answer = input(f"{question} {suffix}: ").strip().lower()
+        if not answer:
+            return default == "y"
+        if answer in {"y", "yes"}:
+            return True
+        if answer in {"n", "no"}:
+            return False
+        print("Please enter 'y' or 'n'.")
+
+
+def _install_cuda_torch() -> tuple[bool, str]:
+    cmd = [
+        sys.executable,
+        "-m",
+        "pip",
+        "install",
+        "--upgrade",
+        "torch",
+        "torchvision",
+        "torchaudio",
+        "--index-url",
+        PYTORCH_CUDA_INDEX_URL,
+    ]
+    try:
+        proc = subprocess.run(cmd, check=False)
+    except Exception as e:
+        return False, str(e)
+    if proc.returncode != 0:
+        return False, f"pip install exited with code {proc.returncode}"
+    return True, ""
+
+
+def _ensure_cuda_runtime_for_gpu_mode(allow_prompt: bool = True) -> None:
+    nvidia = _nvidia_gpu_probe()
+    has_gpu = bool(nvidia.get("has_gpu"))
+    if not has_gpu:
+        raise RuntimeError(
+            "GPU mode requested, but no CUDA-capable NVIDIA GPU was detected. "
+            f"Details: {nvidia.get('reason', 'unknown')}"
+        )
+
+    state = _load_gpu_setup_state()
+    py_key = _gpu_state_key()
+    per_python = state.get("by_python")
+    if not isinstance(per_python, dict):
+        per_python = {}
+    entry = per_python.get(py_key)
+    if not isinstance(entry, dict):
+        entry = {}
+
+    first_gpu_check = not bool(entry.get("gpu_checked"))
+    torch_info = _probe_torch_cuda_runtime()
+    torch_has_cuda_build = bool(torch_info.get("torch_cuda_version"))
+    cuda_available = bool(torch_info.get("cuda_available"))
+
+    entry.update(
+        {
+            "gpu_checked": True,
+            "last_checked_at": _utc_now_iso_z(),
+            "gpu_names": nvidia.get("gpu_names", []),
+            "torch_version": torch_info.get("torch_version", ""),
+            "torch_cuda_version": torch_info.get("torch_cuda_version"),
+            "cuda_available": cuda_available,
+        }
+    )
+
+    if not torch_has_cuda_build:
+        can_prompt = bool(allow_prompt and first_gpu_check)
+        install_choice = None
+
+        if can_prompt:
+            print(
+                "\nGPU detected, but the current PyTorch build does not include CUDA support.\n"
+                f"Python: {sys.executable}\n"
+                "A CUDA-enabled PyTorch build is required for --gpu."
+            )
+            yn = _prompt_yes_no("Install CUDA-enabled PyTorch now?", default="n")
+            if yn is None:
+                print(
+                    "Cannot prompt for installation in this session (non-interactive stdin). "
+                    "Please install CUDA-enabled PyTorch manually."
+                )
+                install_choice = "no_prompt_available"
+            elif yn:
+                install_choice = "yes"
+                print("Installing CUDA-enabled PyTorch...")
+                ok, err = _install_cuda_torch()
+                if not ok:
+                    entry["install_attempt"] = "failed"
+                    entry["install_error"] = err
+                    per_python[py_key] = entry
+                    state["by_python"] = per_python
+                    _save_gpu_setup_state(state)
+                    raise RuntimeError(
+                        "CUDA PyTorch installation failed. "
+                        f"Reason: {err}. "
+                        f"Try manually: {sys.executable} -m pip install --upgrade "
+                        f"torch torchvision torchaudio --index-url {PYTORCH_CUDA_INDEX_URL}"
+                    )
+                torch_info = _probe_torch_cuda_runtime()
+                torch_has_cuda_build = bool(torch_info.get("torch_cuda_version"))
+                cuda_available = bool(torch_info.get("cuda_available"))
+                entry["install_attempt"] = "succeeded"
+            else:
+                install_choice = "no"
+
+        if install_choice:
+            entry["first_prompt_choice"] = install_choice
+
+    per_python[py_key] = entry
+    state["by_python"] = per_python
+    _save_gpu_setup_state(state)
+
+    if not bool(torch_info.get("torch_cuda_version")):
+        raise RuntimeError(
+            "GPU mode requested and NVIDIA GPU detected, but PyTorch CUDA build is not available. "
+            f"Install with: {sys.executable} -m pip install --upgrade torch torchvision torchaudio "
+            f"--index-url {PYTORCH_CUDA_INDEX_URL}"
+        )
+
+    if not bool(torch_info.get("cuda_available")):
+        raise RuntimeError(
+            "GPU mode requested and CUDA PyTorch appears installed, but torch.cuda.is_available() is False. "
+            "Please verify NVIDIA driver/CUDA runtime compatibility."
+        )
+
+
+_BATCH_PRIMARY_CSV_NAME = "batch_knf_unified.csv"
 _BATCH_LEGACY_CSV_NAMES = (
+    "atlas_submission.csv",
     "batch_knf_unified_kuid_intensive.csv",
     "batch_knf.csv",
-    "batch_knf_unified.csv",
 )
 _BATCH_LEGACY_JSON_NAMES = ("batch_knf_unified_kuid_intensive.json",)
 
 ATLAS_REQUIRED_COLUMNS = [
-    "source_name",
+    "molecule_name",
+    "charge",
+    "spin",
     "f1",
     "f2",
     "f3",
@@ -58,24 +345,60 @@ ATLAS_REQUIRED_COLUMNS = [
     "f8",
     "f9",
     "SNCI",
-    "KUIDINT",
-    "knf_version",
+    "SCDI",
+    "SCDI_variance",
     "backend",
-    "method",
-    "grid_spacing",
-    "grid_padding",
-    "dtype",
-    "type_design",
+    "device",
+    "xtb_version",
+    "knf_core_version",
+    "nci_grid_spacing",
+    "nci_grid_padding",
+    "water_mode",
+    "KUID_raw",
+    "KUID_Cluster",
+    "KUID_Intensive_raw",
+    "KUID_Intensive_Cluster",
+    "instance_hash",
 ]
-ATLAS_OPTIONAL_COLUMNS = ["SCDI", "KUID_full", "f2_defined", "source_batch"]
-ATLAS_NUMERIC_FIELDS = ["f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "SNCI", "grid_spacing", "grid_padding"]
-ATLAS_REQUIRED_STRING_FIELDS = ["source_name", "KUIDINT", "knf_version", "backend", "method", "dtype", "type_design"]
+ATLAS_OPTIONAL_COLUMNS = ["source_batch"]
+ATLAS_NUMERIC_FIELDS = [
+    "f1",
+    "f2",
+    "f3",
+    "f4",
+    "f5",
+    "f6",
+    "f7",
+    "f8",
+    "f9",
+    "SNCI",
+    "SCDI_variance",
+    "nci_grid_spacing",
+    "nci_grid_padding",
+]
+ATLAS_OPTIONAL_NUMERIC_FIELDS = ["SCDI"]
+ATLAS_INTEGER_FIELDS = ["charge", "spin"]
+ATLAS_REQUIRED_STRING_FIELDS = [
+    "molecule_name",
+    "backend",
+    "device",
+    "xtb_version",
+    "knf_core_version",
+    "KUID_raw",
+    "KUID_Cluster",
+    "KUID_Intensive_raw",
+    "KUID_Intensive_Cluster",
+]
 ATLAS_BUNDLE_DIRNAME = "submission_bundle"
-ATLAS_BUNDLE_CSV_NAME = "batch_knf_unified_kuid_intensive.csv"
+ATLAS_BUNDLE_CSV_NAME = "atlas_submission.csv"
 ATLAS_BUNDLE_MANIFEST_NAME = "manifest.json"
-ATLAS_SCHEMA_VERSION = "1.0"
-ATLAS_DEFAULT_METHOD = "GFN2-xTB"
-ATLAS_DEFAULT_TYPE_DESIGN = "UNKNOWN"
+ATLAS_SCHEMA_VERSION = "2.0"
+ATLAS_DEFAULT_XTB_VERSION = "unknown"
+ATLAS_INSTANCE_HASH_FEATURE_PRECISION = 6
+ATLAS_INSTANCE_HASH_GRID_PRECISION = 3
+ATLAS_INSTANCE_HASH_BASIS = (
+    "sha256(f1..f9,charge,spin,xtb_version,nci_grid_spacing,nci_grid_padding)"
+)
 
 
 def _utc_now_iso_z() -> str:
@@ -118,29 +441,161 @@ def _finite_float(value, field: str, row_number: int) -> float:
     return out
 
 
+def _strict_int(value, field: str, row_number: int) -> int:
+    out = _finite_float(value, field, row_number)
+    rounded = int(round(out))
+    if abs(out - rounded) > 1e-9:
+        raise ValueError(f"Row {row_number}: {field} must be an integer value.")
+    return rounded
+
+
+def _coerce_bool_int(value, field: str, row_number: int) -> int:
+    if isinstance(value, bool):
+        return int(value)
+
+    if isinstance(value, (int, float)) and math.isfinite(float(value)):
+        num = int(round(float(value)))
+        if num in (0, 1):
+            return num
+        raise ValueError(f"Row {row_number}: {field} must be boolean-like (0/1 or true/false).")
+
+    text = str(value).strip().lower()
+    if text in ("1", "true", "yes", "y", "on"):
+        return 1
+    if text in ("0", "false", "no", "n", "off", ""):
+        return 0
+    raise ValueError(f"Row {row_number}: {field} must be boolean-like (0/1 or true/false).")
+
+
+def _safe_float_or_none(value):
+    try:
+        if value is None:
+            return None
+        out = float(value)
+        if not math.isfinite(out):
+            return None
+        return out
+    except (TypeError, ValueError):
+        return None
+
+
+def _fallback_kuid_intensive_raw_from_features(source_row: dict) -> str:
+    feature_map = {}
+    for feature in ("f3", "f4", "f7", "f8", "f9"):
+        value = _safe_float_or_none(source_row.get(feature))
+        if value is None:
+            return ""
+        feature_map[feature] = value
+
+    try:
+        calibration = kuid_intensive.build_calibration_from_feature_maps([feature_map])
+        encoded = kuid_intensive.encode_feature_map(feature_map, calibration)
+        return str(encoded.get("raw") or "")
+    except Exception:
+        return ""
+
+
+def _derive_kuid_cluster(raw_hex: str, provided_cluster: str) -> str:
+    raw = kuid_index.normalize_kuid_raw(raw_hex)
+    if len(raw) == 18:
+        try:
+            return kuid.format_kuid_cluster(raw)
+        except Exception:
+            pass
+    return _first_nonempty(provided_cluster)
+
+
+def _derive_kuid_intensive_cluster(raw_hex: str, provided_cluster: str) -> str:
+    raw = kuid_index.normalize_prefix_token(raw_hex)
+    if len(raw) == 5:
+        try:
+            return kuid_intensive.format_kuid_intensive_cluster(raw)
+        except Exception:
+            pass
+    return _first_nonempty(provided_cluster)
+
+
+def _compute_atlas_instance_hash(row: dict) -> str:
+    payload = {
+        "f1": round(float(row["f1"]), ATLAS_INSTANCE_HASH_FEATURE_PRECISION),
+        "f2": round(float(row["f2"]), ATLAS_INSTANCE_HASH_FEATURE_PRECISION),
+        "f3": round(float(row["f3"]), ATLAS_INSTANCE_HASH_FEATURE_PRECISION),
+        "f4": round(float(row["f4"]), ATLAS_INSTANCE_HASH_FEATURE_PRECISION),
+        "f5": round(float(row["f5"]), ATLAS_INSTANCE_HASH_FEATURE_PRECISION),
+        "f6": round(float(row["f6"]), ATLAS_INSTANCE_HASH_FEATURE_PRECISION),
+        "f7": round(float(row["f7"]), ATLAS_INSTANCE_HASH_FEATURE_PRECISION),
+        "f8": round(float(row["f8"]), ATLAS_INSTANCE_HASH_FEATURE_PRECISION),
+        "f9": round(float(row["f9"]), ATLAS_INSTANCE_HASH_FEATURE_PRECISION),
+        "charge": int(row["charge"]),
+        "spin": int(row["spin"]),
+        "xtb": str(row["xtb_version"]).strip(),
+        "spacing": round(float(row["nci_grid_spacing"]), ATLAS_INSTANCE_HASH_GRID_PRECISION),
+        "padding": round(float(row["nci_grid_padding"]), ATLAS_INSTANCE_HASH_GRID_PRECISION),
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()[:8]
+
+
 def _map_to_atlas_row(source_row: dict, args) -> dict:
-    atlas_row = {
-        "source_name": _first_nonempty(source_row.get("source_name"), source_row.get("File")),
-        "SNCI": _first_nonempty(source_row.get("SNCI"), source_row.get("snci")),
-        "KUIDINT": _first_nonempty(
-            source_row.get("KUIDINT"),
-            source_row.get("KUID_Intensive"),
-            source_row.get("KUID_Intensive_raw"),
-        ),
-        "knf_version": _first_nonempty(source_row.get("knf_version"), _knf_version_from_title()),
-        "backend": _first_nonempty(source_row.get("backend"), getattr(args, "nci_backend", "torch")),
-        "method": _first_nonempty(source_row.get("method"), ATLAS_DEFAULT_METHOD),
-        "grid_spacing": _first_nonempty(source_row.get("grid_spacing"), getattr(args, "nci_grid_spacing", 0.2)),
-        "grid_padding": _first_nonempty(source_row.get("grid_padding"), getattr(args, "nci_grid_padding", 3.0)),
-        "dtype": _first_nonempty(source_row.get("dtype"), getattr(args, "nci_dtype", "float32")),
-        "type_design": _first_nonempty(source_row.get("type_design"), ATLAS_DEFAULT_TYPE_DESIGN),
-        "SCDI": _first_nonempty(source_row.get("SCDI"), source_row.get("scdi")),
-        "KUID_full": _first_nonempty(
-            source_row.get("KUID_full"),
-            source_row.get("KUID"),
+    kuid_raw = kuid_index.normalize_kuid_raw(
+        _first_nonempty(
             source_row.get("KUID_raw"),
+            source_row.get("KUID"),
+            source_row.get("KUID_full"),
+        )
+    )
+    kuid_int_raw = kuid_index.normalize_prefix_token(
+        _first_nonempty(
+            source_row.get("KUID_Intensive_raw"),
+            source_row.get("KUID_Intensive"),
+            source_row.get("KUIDINT"),
+        )
+    )
+    if not kuid_int_raw:
+        kuid_int_raw = kuid_index.normalize_prefix_token(
+            _fallback_kuid_intensive_raw_from_features(source_row)
+        )
+    atlas_row = {
+        "molecule_name": _first_nonempty(
+            source_row.get("molecule_name"),
+            source_row.get("source_name"),
+            source_row.get("File"),
         ),
-        "f2_defined": _first_nonempty(source_row.get("f2_defined")),
+        "charge": _first_nonempty(source_row.get("charge"), getattr(args, "charge", 0)),
+        "spin": _first_nonempty(source_row.get("spin"), getattr(args, "spin", 1)),
+        "SNCI": _first_nonempty(source_row.get("SNCI"), source_row.get("snci")),
+        "SCDI": _first_nonempty(source_row.get("SCDI"), source_row.get("scdi")),
+        "SCDI_variance": _first_nonempty(source_row.get("SCDI_variance")),
+        "backend": _first_nonempty(source_row.get("backend"), getattr(args, "nci_backend", "torch")),
+        "device": _first_nonempty(source_row.get("device"), getattr(args, "nci_device", "cpu")),
+        "xtb_version": _first_nonempty(source_row.get("xtb_version"), ATLAS_DEFAULT_XTB_VERSION),
+        "knf_core_version": _first_nonempty(
+            source_row.get("knf_core_version"),
+            source_row.get("knf_version"),
+            _knf_version_from_title(),
+        ),
+        "nci_grid_spacing": _first_nonempty(
+            source_row.get("nci_grid_spacing"),
+            source_row.get("grid_spacing"),
+            getattr(args, "nci_grid_spacing", 0.2),
+        ),
+        "nci_grid_padding": _first_nonempty(
+            source_row.get("nci_grid_padding"),
+            source_row.get("grid_padding"),
+            getattr(args, "nci_grid_padding", 3.0),
+        ),
+        "water_mode": _first_nonempty(
+            source_row.get("water_mode"),
+            source_row.get("xtb_water"),
+            1 if bool(getattr(args, "water", False)) else 0,
+        ),
+        "KUID_raw": kuid_raw,
+        "KUID_Cluster": _derive_kuid_cluster(kuid_raw, _first_nonempty(source_row.get("KUID_Cluster"))),
+        "KUID_Intensive_raw": kuid_int_raw,
+        "KUID_Intensive_Cluster": _derive_kuid_intensive_cluster(
+            kuid_int_raw, _first_nonempty(source_row.get("KUID_Intensive_Cluster"))
+        ),
+        "instance_hash": _first_nonempty(source_row.get("instance_hash")),
         "source_batch": _first_nonempty(source_row.get("source_batch")),
     }
     for idx in range(1, 10):
@@ -162,16 +617,45 @@ def _validate_atlas_rows(rows: list[dict]):
                 raise ValueError(f"Row {row_idx}: {field} must be a non-empty string.")
 
         for field in ATLAS_NUMERIC_FIELDS:
-            row[field] = _finite_float(row.get(field), field, row_idx)
+            try:
+                row[field] = _finite_float(row.get(field), field, row_idx)
+            except ValueError:
+                # f2 can be undefined for some systems; preserve submission flow with a stable surrogate.
+                if field == "f2":
+                    row[field] = 180.0
+                    logging.warning(
+                        "Row %s: f2 was non-finite; using surrogate 180.0 for atlas submission export.",
+                        row_idx,
+                    )
+                    continue
+                raise
 
-        if _first_nonempty(row.get("f2_defined")):
-            f2_defined = int(_finite_float(row.get("f2_defined"), "f2_defined", row_idx))
-            if f2_defined not in (0, 1):
-                raise ValueError(f"Row {row_idx}: f2_defined must be 0 or 1 when present.")
-            row["f2_defined"] = f2_defined
+        for field in ATLAS_OPTIONAL_NUMERIC_FIELDS:
+            if _first_nonempty(row.get(field)):
+                row[field] = _finite_float(row.get(field), field, row_idx)
+            else:
+                row[field] = ""
 
-        if _first_nonempty(row.get("SCDI")):
-            row["SCDI"] = _finite_float(row.get("SCDI"), "SCDI", row_idx)
+        for field in ATLAS_INTEGER_FIELDS:
+            row[field] = _strict_int(row.get(field), field, row_idx)
+
+        row["water_mode"] = _coerce_bool_int(row.get("water_mode"), "water_mode", row_idx)
+
+        kuid_raw = kuid_index.normalize_kuid_raw(row.get("KUID_raw"))
+        if len(kuid_raw) != 18:
+            raise ValueError(f"Row {row_idx}: KUID_raw must contain 18 hex chars (f1..f9 bytes).")
+        row["KUID_raw"] = kuid_raw
+        row["KUID_Cluster"] = _derive_kuid_cluster(kuid_raw, row.get("KUID_Cluster"))
+
+        kuid_int_raw = kuid_index.normalize_prefix_token(row.get("KUID_Intensive_raw"))
+        if len(kuid_int_raw) != 5:
+            raise ValueError(f"Row {row_idx}: KUID_Intensive_raw must contain 5 hex chars.")
+        row["KUID_Intensive_raw"] = kuid_int_raw
+        row["KUID_Intensive_Cluster"] = _derive_kuid_intensive_cluster(
+            kuid_int_raw, row.get("KUID_Intensive_Cluster")
+        )
+
+        row["instance_hash"] = _compute_atlas_instance_hash(row)
 
 
 def _write_atlas_bundle(rows: list[dict], results_root: str, args) -> dict:
@@ -192,12 +676,13 @@ def _write_atlas_bundle(rows: list[dict], results_root: str, args) -> dict:
 
     manifest = {
         "submission_schema_version": ATLAS_SCHEMA_VERSION,
-        "knf_version": _knf_version_from_title(),
-        "backend": str(getattr(args, "nci_backend", "torch")),
-        "method": ATLAS_DEFAULT_METHOD,
-        "grid_spacing": float(getattr(args, "nci_grid_spacing", 0.2)),
-        "grid_padding": float(getattr(args, "nci_grid_padding", 3.0)),
-        "dtype": str(getattr(args, "nci_dtype", "float32")),
+        "knf_core_version": _knf_version_from_title(),
+        "kuid_intensive_mode": "physics_fixed_bounds_v1",
+        "instance_hash_basis": ATLAS_INSTANCE_HASH_BASIS,
+        "hash_precision": {
+            "features_decimals": ATLAS_INSTANCE_HASH_FEATURE_PRECISION,
+            "grid_decimals": ATLAS_INSTANCE_HASH_GRID_PRECISION,
+        },
         "row_count": len(rows),
         "created_at": _utc_now_iso_z(),
         "csv_sha256": _hash_file_sha256(csv_path),
@@ -210,11 +695,34 @@ def _write_atlas_bundle(rows: list[dict], results_root: str, args) -> dict:
 
 def _build_atlas_rows_from_batch_csv(csv_path: str, args) -> list[dict]:
     rows = []
+    skipped = []
+    minimal_required = [*[f"f{i}" for i in range(1, 10)], "SNCI", "KUID_raw"]
     with open(csv_path, "r", newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
-        for source_row in reader:
+        for row_idx, source_row in enumerate(reader, start=2):
             mapped = _map_to_atlas_row(source_row, args)
+            missing = [field for field in minimal_required if not _first_nonempty(mapped.get(field))]
+            if missing:
+                skipped.append(
+                    {
+                        "row": row_idx,
+                        "molecule_name": _first_nonempty(mapped.get("molecule_name"), "<unknown>"),
+                        "missing": missing,
+                    }
+                )
+                continue
             rows.append(mapped)
+    if skipped:
+        preview = ", ".join(
+            f"row {item['row']} ({item['molecule_name']})"
+            for item in skipped[:5]
+        )
+        logging.warning(
+            "Skipped %d row(s) while preparing atlas bundle from %s due to missing required fields. Examples: %s",
+            len(skipped),
+            csv_path,
+            preview,
+        )
     return rows
 
 
@@ -247,16 +755,33 @@ def _build_atlas_rows_from_single_result(file_path: str, args, results_root: str
     vector = vector if isinstance(vector, list) else []
     metadata = knf_payload.get("metadata") if isinstance(knf_payload, dict) else {}
     metadata = metadata if isinstance(metadata, dict) else {}
+    nci_engine_meta = metadata.get("nci_engine_metadata")
+    nci_engine_meta = nci_engine_meta if isinstance(nci_engine_meta, dict) else {}
 
     source_row = {
-        "File": os.path.basename(file_path),
+        "molecule_name": os.path.basename(file_path),
         "SNCI": knf_payload.get("SNCI"),
         "SCDI": knf_payload.get("SCDI"),
+        "SCDI_variance": knf_payload.get("SCDI_variance"),
+        "charge": metadata.get("charge", getattr(args, "charge", 0)),
+        "spin": metadata.get("spin", getattr(args, "spin", 1)),
+        "backend": metadata.get("nci_backend", getattr(args, "nci_backend", "torch")),
+        "device": _first_nonempty(
+            nci_engine_meta.get("device_resolved"),
+            nci_engine_meta.get("device"),
+            getattr(args, "nci_device", "cpu"),
+        ),
+        "xtb_version": metadata.get("xtb_version", ATLAS_DEFAULT_XTB_VERSION),
+        "knf_core_version": _knf_version_from_title(),
+        "nci_grid_spacing": getattr(args, "nci_grid_spacing", 0.2),
+        "nci_grid_padding": getattr(args, "nci_grid_padding", 3.0),
+        "water_mode": metadata.get("xtb_water", 1 if water else 0),
         "KUID": entry.get("KUID", ""),
         "KUID_raw": entry.get("KUID_raw", ""),
+        "KUID_Cluster": entry.get("KUID_Cluster", ""),
         "KUID_Intensive": entry.get("KUID_Intensive", ""),
         "KUID_Intensive_raw": entry.get("KUID_Intensive_raw", ""),
-        "f2_defined": metadata.get("f2_defined", ""),
+        "KUID_Intensive_Cluster": entry.get("KUID_Intensive_Cluster", ""),
     }
     for idx in range(9):
         source_row[f"f{idx + 1}"] = vector[idx] if idx < len(vector) else ""
@@ -309,16 +834,38 @@ def try_write_atlas_bundle_from_existing_outputs(args):
     water_mode = bool(getattr(args, "water", False))
     base_root = resolve_results_root(args.input_path, args.output_dir)
     candidate_roots = [base_root, os.path.join(base_root, "Combined Results")]
+    last_error = None
 
     for root in candidate_roots:
         csv_path = _existing_batch_csv_path(root, water=water_mode)
         if not os.path.exists(csv_path):
             continue
-        rows = _build_atlas_rows_from_batch_csv(csv_path, args)
-        bundle = _write_atlas_bundle(rows=rows, results_root=root, args=args)
-        bundle["source_csv"] = csv_path
-        bundle["source_results_root"] = root
-        return bundle
+        try:
+            rows = _build_atlas_rows_from_batch_csv(csv_path, args)
+            if not rows:
+                logging.warning(
+                    "Existing batch CSV found at %s but no valid rows were available for atlas bundle reuse; continuing with normal computation.",
+                    csv_path,
+                )
+                continue
+            bundle = _write_atlas_bundle(rows=rows, results_root=root, args=args)
+            bundle["source_csv"] = csv_path
+            bundle["source_results_root"] = root
+            return bundle
+        except ValueError as e:
+            last_error = str(e)
+            logging.warning(
+                "Could not reuse existing outputs from %s for atlas bundle (%s). Falling back to normal computation.",
+                csv_path,
+                e,
+            )
+            continue
+
+    if last_error:
+        logging.info(
+            "Atlas bundle reuse from existing outputs was skipped due to validation issues: %s",
+            last_error,
+        )
 
     return None
 
@@ -373,6 +920,44 @@ def _cleanup_redundant_batch_aliases(
         except Exception as e:
             logging.warning("Could not remove redundant batch alias %s: %s", alias_path, e)
 
+    return removed
+
+
+def _cleanup_submission_auxiliary_outputs(results_root: str, water: bool = False) -> list[str]:
+    """Remove non-submission artifacts to keep atlas-bundle workflows lean."""
+    removable_names = [
+        "batch_knf.json",
+        "kuid_calibration.json",
+        "kuid_calibration_unified.json",
+        "kuid_family_stats.json",
+        "kuid_family_stats.csv",
+        "kuid_full_topology_bridge.json",
+        "kuid_full_topology_bridge.csv",
+        "kuid_instance_prefix_index.json",
+        "kuid_intensive_calibration.json",
+        "kuid_intensive_calibration_unified.json",
+        "kuid_intensive_family_distribution.csv",
+        "kuid_intensive_family_distribution.png",
+        "kuid_prefix_index.json",
+        "kuid_reverse_index.json",
+        "kuid_reverse_index.csv",
+        "kuid_topology_prefix_index.json",
+        "kuid_topology_reverse_index.json",
+        "kuid_topology_reverse_index.csv",
+        "snci_scdi_quadrants.json",
+        "snci_scdi_quadrants.png",
+    ]
+
+    removed = []
+    for name in removable_names:
+        path = os.path.join(results_root, _final_output_name(name, water))
+        if not os.path.exists(path):
+            continue
+        try:
+            os.remove(path)
+            removed.append(path)
+        except Exception as e:
+            logging.warning("Could not remove auxiliary submission artifact %s: %s", path, e)
     return removed
 
 
@@ -508,7 +1093,7 @@ def write_batch_water_delta_outputs(
         json.dump(payload, f, indent=2)
 
     with open(delta_txt_path, "w", encoding="utf-8") as f:
-        f.write("KNF-Core Batch Water Delta Results\n")
+        f.write(f"{CLI_NAME} Batch Water Delta Results\n")
         f.write("=================================\n\n")
         f.write("Comparison: water - reference\n")
         f.write(f"Reference batch file: {reference_aggregate_path}\n")
@@ -664,6 +1249,25 @@ def _display_name(file_path: str) -> str:
     if len(label) > DISPLAY_NAME_LIMIT:
         return label[: DISPLAY_NAME_LIMIT - 3] + "..."
     return label
+
+
+def _truncate_middle(text: str, max_len: int) -> str:
+    text = str(text)
+    if max_len <= 0 or len(text) <= max_len:
+        return text
+    if max_len <= 3:
+        return text[:max_len]
+    left = max(1, (max_len - 3) // 2)
+    right = max(1, max_len - 3 - left)
+    return f"{text[:left]}...{text[-right:]}"
+
+
+def _display_path(path: str, max_len: int = OUTPUT_PATH_DISPLAY_LIMIT) -> str:
+    try:
+        normalized = os.path.normpath(str(path))
+    except Exception:
+        normalized = str(path)
+    return _truncate_middle(normalized, max_len)
 
 
 def _active_tool_ram_mb() -> float:
@@ -2115,17 +2719,17 @@ def run_single_file(file_path: str, args):
         header = Table.grid(padding=(0, 2))
         header.add_column(style="bold")
         header.add_column()
-        header.add_row("KNF-Core", "v1.0.6")
+        header.add_row(CLI_NAME, CLI_VERSION)
         header.add_row("Detected", f"{physical}C / {logical}T")
         header.add_row("Mode", "single")
         header.add_row("File", _display_name(file_path))
-        header.add_row("Output", results_root)
+        header.add_row("Output", _display_path(results_root))
         header.add_row("Avg CPU", f"{avg_cpu:.1f}%")
         header.add_row("RAM", f"{ram_mb:.1f} MB")
         header.add_row("Status", f"[{status_style}]{status_text}[/{status_style}]")
 
         return Group(
-            Panel(header, title="KNF-Core Single Run", border_style="cyan"),
+            Panel(header, title=f"{CLI_NAME} Single Run", border_style="cyan"),
             progress,
         )
 
@@ -2231,6 +2835,13 @@ def _record_file_name(record: dict) -> str:
     return _normalize_batch_file_name(
         record.get("input_file_name") or record.get("input_file") or ""
     )
+
+
+def _has_reusable_compound_outputs(file_path: str, results_root: str, water: bool = False) -> bool:
+    stem = Path(file_path).stem
+    result_dir = os.path.join(results_root, stem)
+    knf_json_path = os.path.join(result_dir, _final_output_name("knf.json", water))
+    return os.path.exists(knf_json_path)
 
 
 def _dedupe_batch_records(records: list[dict]) -> list[dict]:
@@ -3148,11 +3759,16 @@ def run_batch_directory(
             logging.warning(warning)
 
         if processed_names:
-            pending_files = [
-                file_path
-                for file_path in files
-                if _normalize_batch_file_name(os.path.basename(file_path)) not in processed_names
-            ]
+            pending_files = []
+            recovered_missing_outputs = 0
+            for file_path in files:
+                key = _normalize_batch_file_name(os.path.basename(file_path))
+                if key in processed_names:
+                    if _has_reusable_compound_outputs(file_path, results_root, water=water_mode):
+                        continue
+                    recovered_missing_outputs += 1
+                pending_files.append(file_path)
+
             skipped_existing = len(files) - len(pending_files)
             files = pending_files
             if skipped_existing:
@@ -3165,6 +3781,10 @@ def run_batch_directory(
                     )
                 print(
                     f"Resume mode: skipping {skipped_existing} file(s) already listed in {source_name}."
+                )
+            if recovered_missing_outputs:
+                print(
+                    f"Resume check: re-queueing {recovered_missing_outputs} file(s) because compound outputs are missing in Results."
                 )
 
         if not files:
@@ -3374,7 +3994,7 @@ def run_batch_directory(
         header = Table.grid(padding=(0, 2))
         header.add_column(style="bold")
         header.add_column()
-        header.add_row("KNF-Core", "v1.0.6")
+        header.add_row(CLI_NAME, CLI_VERSION)
         header.add_row("Detected", f"{physical}C / {logical}T")
         if mode == "multi":
             if use_gpu_overlap:
@@ -3386,8 +4006,15 @@ def run_batch_directory(
             header.add_row("Mode", "single")
         header.add_row("Files", str(total))
         header.add_row("Completed", f"{completed}/{total}")
-        header.add_row("Output", results_root)
+        header.add_row("Output", _display_path(results_root))
         header.add_row("Active Workers", str(active_workers))
+        failed_count = len(failures)
+        running_count = max(0, min(active_workers, total - completed))
+        jobs_per_min = (processed_count / max(elapsed, 1e-6)) * 60 if processed_count else 0.0
+        header.add_row(
+            "Status",
+            f"Done {succeeded} | Failed {failed_count} | Running {running_count} | {jobs_per_min:.1f} jobs/min",
+        )
         header.add_row("Batch Runtime", _fmt_elapsed(elapsed))
         if projected_total_runtime is not None:
             header.add_row("Projected Total", _fmt_elapsed(projected_total_runtime))
@@ -3413,7 +4040,7 @@ def run_batch_directory(
             jobs.add_row("-", "-", "running")
 
         return Group(
-            Panel(header, title="KNF-Core Batch Summary", border_style="cyan"),
+            Panel(header, title=f"{CLI_NAME} Batch Summary", border_style="cyan"),
             progress,
             jobs,
         )
@@ -3658,7 +4285,7 @@ def main():
             datefmt='%H:%M:%S'
         )
         print("\n------------------------------------------------------------")
-        print("      KNF-Core Interactive Mode")
+        print(f"      {CLI_NAME} Interactive Mode")
         print("------------------------------------------------------------\n")
         
         while True:
@@ -3724,6 +4351,12 @@ def main():
             require_multiwfn=(args.nci_backend == "multiwfn"),
         )
         check_dependencies(nci_backend=args.nci_backend)
+        if (args.nci_backend or "").strip().lower() == "torch" and (args.nci_device or "").strip().lower() == "cuda":
+            try:
+                _ensure_cuda_runtime_for_gpu_mode(allow_prompt=True)
+            except RuntimeError as e:
+                print(f"GPU setup check failed: {e}")
+                sys.exit(1)
         if not first_ok:
             print("First-time setup is incomplete. Please install missing tools and run again.")
             sys.exit(1)
@@ -3747,7 +4380,7 @@ def main():
     if len(sys.argv) > 1 and sys.argv[1] == 'full':
         sys.argv.pop(1)
         
-    parser = argparse.ArgumentParser(description="KNF-Core Execution")
+    parser = argparse.ArgumentParser(description=f"{CLI_NAME} Execution")
     parser.add_argument('input_path', help="Path to input molecular file or directory")
     parser.add_argument('--charge', type=int, default=0, help="Total system charge")
     parser.add_argument('--spin', type=int, default=1, help="Total system spin multiplicity")
@@ -3846,7 +4479,7 @@ def main():
         action='store_true',
         help=(
             "Generate a canonical atlas submission bundle after KNF execution "
-            "(submission_bundle/batch_knf_unified_kuid_intensive.csv + manifest.json)."
+            "(submission_bundle/atlas_submission.csv + manifest.json)."
         ),
     )
     parser.add_argument(
@@ -3977,6 +4610,17 @@ def main():
 
     atlas_from_existing = try_write_atlas_bundle_from_existing_outputs(args)
     if atlas_from_existing:
+        if bool(getattr(args, "atlas_bundle", False)):
+            cleanup_root = atlas_from_existing.get("source_results_root") or os.path.dirname(
+                atlas_from_existing.get("bundle_dir", "")
+            )
+            if cleanup_root:
+                removed = _cleanup_submission_auxiliary_outputs(
+                    cleanup_root,
+                    water=bool(getattr(args, "water", False)),
+                )
+                if removed:
+                    print(f"Removed {len(removed)} auxiliary file(s) from {cleanup_root}.")
         print("\nAtlas bundle created from existing batch outputs (no recomputation).")
         print(f"Source CSV: {atlas_from_existing['source_csv']}")
         print(f"Bundle dir: {atlas_from_existing['bundle_dir']}")
@@ -3991,6 +4635,12 @@ def main():
             require_multiwfn=(args.nci_backend == "multiwfn"),
         )
         check_dependencies(multiwfn_path=args.multiwfn_path, nci_backend=args.nci_backend)
+        if (args.nci_backend or "").strip().lower() == "torch" and (args.nci_device or "").strip().lower() == "cuda":
+            try:
+                _ensure_cuda_runtime_for_gpu_mode(allow_prompt=True)
+            except RuntimeError as e:
+                logging.error("GPU setup check failed: %s", e)
+                sys.exit(1)
         if not first_ok:
             logging.error("First-time setup is incomplete. Install missing tools and retry.")
             sys.exit(1)
@@ -4014,6 +4664,15 @@ def main():
 
     bundle_info = maybe_write_atlas_bundle(args)
     if bundle_info:
+        if bool(getattr(args, "atlas_bundle", False)):
+            cleanup_root = os.path.dirname(bundle_info.get("bundle_dir", ""))
+            if cleanup_root:
+                removed = _cleanup_submission_auxiliary_outputs(
+                    cleanup_root,
+                    water=bool(getattr(args, "water", False)),
+                )
+                if removed:
+                    print(f"Removed {len(removed)} auxiliary file(s) from {cleanup_root}.")
         print("\nAtlas bundle created")
         print(f"Bundle dir: {bundle_info['bundle_dir']}")
         print(f"CSV:        {bundle_info['csv_path']}")
