@@ -4,16 +4,18 @@ USER root
 
 ARG DEBIAN_FRONTEND=noninteractive
 ARG MULTIWFN_URL=http://sobereva.com/multiwfn/misc/Multiwfn_3.8_dev_bin_Linux_noGUI.zip
-ARG KUID_VERSION=1.0.6
+ARG NCIFORGE_VERSION=v1
 
-LABEL org.opencontainers.image.title="KUID-Core" \
-      org.opencontainers.image.version="${KUID_VERSION}"
+LABEL org.opencontainers.image.title="NCIForge" \
+      org.opencontainers.image.version="${NCIFORGE_VERSION}"
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
+    NCIFORGE_IN_DOCKER=1 \
     KUID_IN_DOCKER=1 \
     KNF_IN_DOCKER=1 \
     MULTIWFN_HOME=/opt/Multiwfn \
+    NCIFORGE_MULTIWFN_PATH=/opt/Multiwfn/Multiwfn \
     KUID_MULTIWFN_PATH=/opt/Multiwfn/Multiwfn \
     KNF_MULTIWFN_PATH=/opt/Multiwfn/Multiwfn \
     MAMBA_ROOT_PREFIX=/opt/conda \
@@ -64,7 +66,8 @@ RUN sed -i 's/\r$//' /app/scripts/docker-entrypoint.sh \
 USER mambauser
 
 HEALTHCHECK --interval=60s --timeout=10s --start-period=30s --retries=3 \
-  CMD bash -lc "command -v kuid && command -v xtb && command -v obabel && command -v Multiwfn && python -c 'import torch, matplotlib'"
+  CMD bash -lc "command -v nciforge && command -v knf && command -v xtb && command -v obabel && command -v Multiwfn && python -c 'import torch, matplotlib'"
 
 ENTRYPOINT ["/usr/bin/tini", "--", "/app/scripts/docker-entrypoint.sh"]
 CMD ["--help"]
+

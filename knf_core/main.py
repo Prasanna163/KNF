@@ -28,7 +28,7 @@ from rich.progress import BarColumn, Progress, TaskProgressColumn, TextColumn, T
 from rich.table import Table
 
 CLI_NAME = "NCIForge"
-CLI_VERSION = "v1.0.6"
+CLI_VERSION = "v1"
 CLI_TITLE = f"{CLI_NAME} {CLI_VERSION}"
 DISPLAY_NAME_LIMIT = 40
 OUTPUT_PATH_DISPLAY_LIMIT = 72
@@ -4680,3 +4680,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

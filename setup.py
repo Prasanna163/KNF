@@ -6,9 +6,9 @@ with open(os.path.join(this_directory, 'README.md'), encoding='utf-8') as f:
     long_description = f.read()
 
 setup(
-    name='KNF',
-    version='1.0.6',
-    description='Automated Descriptor Engine for SNCI, SCDI, and 9D KNF',
+    name='nciforge',
+    version='1.0.0',
+    description='NCIForge: Automated descriptor engine for SNCI, SCDI, and 9D KNF',
     long_description=long_description,
     long_description_content_type='text/markdown',
     author='Prasanna Kulkarni',
@@ -44,3 +44,4 @@ setup(
     ],
     python_requires='>=3.8',
 )
+

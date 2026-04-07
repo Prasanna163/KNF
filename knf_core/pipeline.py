@@ -132,6 +132,13 @@ class KNFPipeline:
     def _stage(self, index: int, name: str):
         if self.debug:
             logging.info(f"[{index}/5] {name}")
+
+    def _xtb_artifacts_ready(self) -> tuple[bool, list[str]]:
+        required = ["xtbopt.xyz", "wbo", "molden.input", "xtb.log"]
+        missing = [
+            name for name in required if not os.path.exists(os.path.join(self.results_dir, name))
+        ]
+        return len(missing) == 0, missing
         
     def setup_directories(self):
         """Creates directory structure."""
@@ -222,6 +229,14 @@ class KNFPipeline:
             # Persist potentially re-oriented fragment geometry for downstream UFF/xTB.
             geometry.write_xyz(mol, work_xyz)
 
+        xtb_ready, xtb_missing = self._xtb_artifacts_ready()
+        if xtb_ready and not self.force:
+            logging.info(
+                "Reusing existing xTB artifacts for %s (skipping UFF/xTB): %s",
+                self.base_name,
+                self.results_dir,
+            )
+
         if not os.path.exists(optimized_xyz) or self.force:
             uhf = self.spin - 1
             # ---- UFF pre-optimisation --------------------------------
@@ -234,10 +249,22 @@ class KNFPipeline:
 
         wbo_file = os.path.join(self.results_dir, 'wbo')
         molden_file = os.path.join(self.results_dir, 'molden.input')
-        if not os.path.exists(wbo_file) or not os.path.exists(molden_file) or self.force:
+        xtb_log = os.path.join(self.results_dir, 'xtb.log')
+        if (
+            not os.path.exists(wbo_file)
+            or not os.path.exists(molden_file)
+            or not os.path.exists(xtb_log)
+            or self.force
+        ):
             uhf = self.spin - 1
             self._stage(4, "xTB SP")
             wrapper.run_xtb_sp(optimized_xyz, self.charge, uhf, use_water=self.water)
+        elif not xtb_ready:
+            logging.info(
+                "xTB artifacts incomplete for %s; missing=%s. Reused available optimized geometry and completed missing stages.",
+                self.base_name,
+                ", ".join(xtb_missing),
+            )
 
         cosmo_files = sorted(f for f in os.listdir(self.results_dir) if f.endswith('.cosmo'))
         cosmo_file = None
@@ -251,7 +278,6 @@ class KNFPipeline:
                 self.base_name,
             )
 
-        xtb_log = os.path.join(self.results_dir, 'xtb.log')
         try:
             xtb_data = xtb.parse_xtb_log(xtb_log)
             f4 = xtb_data.get('f4', 0.0)

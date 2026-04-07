@@ -1,14 +1,20 @@
 import math
-from datetime import datetime, timezone
 from typing import Iterable
 
-KUID_INTENSIVE_VERSION = "KUID-Intensive-1.0"
-NORMALIZATION = "minmax"
+KUID_INTENSIVE_VERSION = "KUID-Intensive-Physics-1.0"
+NORMALIZATION = "fixed_bounds"
 BINS_PER_FEATURE = 16
 FEATURE_ORDER = ["f3", "f4", "f7", "f8", "f9"]
 DISPLAY_FORMAT = "X-X-X-X-X"
 CLUSTER_DISPLAY_FORMAT = "f3f4f7-f8f9"
 HEX_ALPHABET = "0123456789ABCDEF"
+_PHYSICS_FIXED_BOUNDS = {
+    "f3": (0.0, 1.0),
+    "f4": (0.0, 30.0),
+    "f7": (-0.10, -0.001),
+    "f8": (0.0, 0.05),
+    "f9": (-5.0, 5.0),
+}
 
 _KNF_INDEX = {
     "f1": 0,
@@ -174,17 +180,16 @@ def _build_calibration_from_selected_vectors(
         raise ValueError("Cannot build KUID-Intensive calibration: no valid feature rows provided.")
 
     bounds = {}
-    for idx, feature_name in enumerate(FEATURE_ORDER):
-        vals = [row[idx] for row in selected_vectors]
+    for feature_name in FEATURE_ORDER:
+        lo, hi = _PHYSICS_FIXED_BOUNDS[feature_name]
         bounds[feature_name] = {
-            "min": float(min(vals)),
-            "max": float(max(vals)),
+            "min": float(lo),
+            "max": float(hi),
         }
 
     calibration_value = calibration_id
     if not calibration_value:
-        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        calibration_value = f"{KUID_INTENSIVE_VERSION}-{ts}"
+        calibration_value = f"{KUID_INTENSIVE_VERSION}-fixed"
 
     return {
         "kuid_intensive_version": KUID_INTENSIVE_VERSION,

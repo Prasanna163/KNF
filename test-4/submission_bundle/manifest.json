@@ -1,6 +1,6 @@
 {
   "submission_schema_version": "1.0",
-  "knf_version": "1.0.6",
+  "knf_version": "v1",
   "backend": "torch",
   "method": "GFN2-xTB",
   "grid_spacing": 0.2,

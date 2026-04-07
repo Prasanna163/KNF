@@ -1,14 +1,16 @@
-﻿# KNF-Core v1.0.6 (KNF-GPU)
+# NCIForge v1
 
 ## Highlights
-- Fixed interactive-mode crash: 'Args' object has no attribute 'water'.
-- Added `rdkit` to required install dependencies in package metadata.
-- Native Molden-based WBO is now the default path for `f3` (`--wbo-mode native`).
-- Added optional `--wbo-mode xtb` fallback to parse xTB `wbo` files.
-- Added H-bond interaction seeding for two-fragment systems before UFF/xTB stages.
-- Added WBO diagnostics in output metadata (`wbo_max_global`, inter-pair diagnostics, overlap model).
-- Updated Docker/version naming references and release checklist.
+- Rebranded CLI and runtime surfaces to `NCIForge`.
+- Added `nciforge` as primary command while keeping `knf` as compatibility alias.
+- Removed `kuid` as a callable CLI entry point.
+- Updated live CLI headers and status panels to reflect new branding.
+- Added compact batch status line with done/failed/running/jobs-per-minute.
+- Updated output path rendering in live UI to avoid long-path overflow.
+- Updated Docker image/service naming and entrypoint defaults to `nciforge`.
+- Updated documentation and release workflow to align with the new naming.
 
 ## Compatibility
-- Default behavior is now `--wbo-mode native`.
-- Existing xTB-WBO behavior is available via `--wbo-mode xtb`.
+- Existing command `knf` remains valid.
+- KUID/KUID-Intensive output artifacts and schema remain supported.
+

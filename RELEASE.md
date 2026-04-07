@@ -1,16 +1,16 @@
-# KNF Release Checklist
+# NCIForge Release Checklist
 
 ## 1) Update version
 
-Update all version references for the release (example `1.0.6`):
+Update all version references for the release (example `1.0.7`):
 
 - `setup.py` (`version=...`)
-- `knf_core/main.py` (`CLI_TITLE`)
+- `knf_core/main.py` (`CLI_VERSION`)
 - `README.md` version line
 - Docker tag references in:
-  - `README.md`
   - `README.DOCKER.md`
   - `docker-compose.yml`
+  - `Dockerfile` (`NCIFORGE_VERSION`)
 
 ## 2) Build package artifacts
 
@@ -20,43 +20,43 @@ python -m build
 
 Expected artifacts:
 
-- `dist/knf-<version>.tar.gz`
-- `dist/knf-<version>-py3-none-any.whl`
+- `dist/nciforge-<version>.tar.gz`
+- `dist/nciforge-<version>-py3-none-any.whl`
 
 ## 3) Validate package metadata
 
 ```bash
-python -m twine check dist/knf-<version>*
+python -m twine check dist/nciforge-<version>*
 ```
 
 ## 4) Upload to PyPI
 
 ```bash
-python -m twine upload dist/knf-<version>*
+python -m twine upload dist/nciforge-<version>*
 ```
 
 ## 5) Verify publish on PyPI
 
 ```bash
-python -m pip index versions KNF
+python -m pip index versions nciforge
 ```
 
 ## 6) Create GitHub tag and release
 
-Naming convention used in this repo:
+Release convention:
 
-- Tag: `v<version>-knf-gpu` (example: `v1.0.6-knf-gpu`)
-- Release title: `KNF-Core v<version> (KNF-GPU)`
+- Tag: `v<version>` (example: `v1.0.7`)
+- Release title: `NCIForge v<version>`
 
 Commands:
 
 ```bash
-git checkout KNF-GPU
+git checkout main
 git pull
-git tag -a v<version>-knf-gpu -m "KNF-Core v<version> (KNF-GPU)"
-git push origin KNF-GPU
-git push origin v<version>-knf-gpu
-gh release create v<version>-knf-gpu --title "KNF-Core v<version> (KNF-GPU)" --notes-file RELEASE_NOTES.md
+git tag -a v<version> -m "NCIForge v<version>"
+git push origin main
+git push origin v<version>
+gh release create v<version> --title "NCIForge v<version>" --notes-file RELEASE_NOTES.md
 ```
 
 ## 7) Docker smoke test (recommended)
@@ -64,11 +64,11 @@ gh release create v<version>-knf-gpu --title "KNF-Core v<version> (KNF-GPU)" --n
 Build:
 
 ```bash
-docker build -t knf-core:<version> -t knf-core:latest .
+docker build -t nciforge:<version> -t nciforge:latest .
 ```
 
 CLI smoke run:
 
 ```bash
-docker run --rm -v "$(pwd):/work" -w /work knf-core:<version> example.mol --charge 0 --force
+docker run --rm -v "$(pwd):/work" -w /work nciforge:<version> example.mol --charge 0 --force
 ```

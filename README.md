@@ -1,47 +1,20 @@
-# KUID Branch
+# NCIForge
 
-This branch is focused on KUID generation, calibration, and indexing workflows.
+NCIForge is a physics-informed descriptor pipeline for non-covalent interactions.
+It computes KNF descriptors, SNCI/SCDI metrics, and KUID-family indexing artifacts
+from molecular structure files using xTB + NCI backend + KNF post-processing.
 
-## What Is KNF
+Current package version: `1.0.0`  
+Release milestone tag: `v1`
 
-KNF (Kulkarni–NCI Fingerprint) is a physics-informed descriptor framework that encodes non-covalent interactions into a structured, high-dimensional representation derived from electronic structure and NCI analysis.
+## What It Covers
 
-Current package version in this branch: `1.0.6`
-
-## Scope
-
-- Generate full `KUID` identifiers for single and batch runs
-- Generate topology-oriented `KUID-Intensive` identifiers
-- Persist calibration metadata for reproducible encoding
-- Build lookup artifacts (prefix, reverse, and bridge indexes)
+- Generate KNF feature vectors (`f1..f9`) for single files and batches
+- Generate full `KUID` identifiers (instance-level)
+- Generate `KUID-Intensive` identifiers (topology-family level)
+- Build reusable lookup artifacts (prefix, reverse, and bridge indexes)
 - Recompute universal KUID outputs from existing batch folders (`--universal-kuid`)
-
-## KUID Representations
-
-### 1) Full KUID (Instance Address)
-
-- Feature set: `f1..f9`
-- Format: 18 hex chars (`00-FF` per feature in canonical order)
-- Intended use: exact instance lookup and deduplication
-
-### 2) KUID-Intensive (Topology Passport)
-
-- Feature set: `f3,f4,f7,f8,f9`
-- Format: 5 hex chars (display form: `X-X-X-X-X`)
-- Intended use: family-level grouping and topology comparison
-
-### Undefined `f2` behavior
-
-- If `f2` is undefined, the pipeline preserves `f2_defined = 0`.
-- Full KUID still remains available by using an internal surrogate bin during encoding.
-- KUID-Intensive remains directly comparable because it does not depend on `f2`.
-
-### Prefix semantics
-
-- `KUID_prefix2`: `f3`
-- `KUID_prefix4`: `f3+f4`
-- `KUID_prefix6`: `f3+f4+f7`
-- Full topology passport: `KUID_Intensive_raw = f3+f4+f7+f8+f9`
+- Generate canonical atlas bundle files (`--atlas-bundle`)
 
 ## Requirements
 
@@ -53,7 +26,7 @@ Current package version in this branch: `1.0.6`
 
 Optional:
 
-- `torch` for Torch NCI backend
+- `torch` for Torch NCI backend (CPU or CUDA)
 
 ## Install
 
@@ -71,43 +44,58 @@ Install with Torch extra:
 pip install -e ".[torch-nci]"
 ```
 
-## Run KUID Workflows
+## CLI Commands
 
-Primary CLI command in this branch:
+Primary CLI:
 
-- `kuid`
+- `nciforge`
+
+Compatibility alias (still supported):
+
+- `knf`
+
+## Example Runs
 
 Single molecule:
 
 ```bash
-kuid example.mol --force
+nciforge example.mol
 ```
 
 Batch run:
 
 ```bash
-kuid ./molecules --processing multi --workers 4 --force
+nciforge ./molecules --processing multi --workers 4 --force
 ```
 
-Split into batches and emit combined universal outputs:
+GPU run (Torch CUDA):
 
 ```bash
-kuid ./molecules --batches 4
+nciforge ./molecules --gpu
 ```
 
-Recompute universal KUID from existing batch outputs:
+On first `--gpu` use, the tool checks for NVIDIA GPU and CUDA-enabled PyTorch.  
+If GPU is detected but PyTorch is CPU-only, it prompts to install CUDA PyTorch.
+
+Split into batches:
 
 ```bash
-kuid ./existing_runs --universal-kuid
+nciforge ./molecules --batches 4
+```
+
+Recompute universal KUID calibration from existing batch outputs:
+
+```bash
+nciforge ./existing_runs --universal-kuid
 ```
 
 Generate canonical atlas submission bundle:
 
 ```bash
-kuid ./molecules --atlas-bundle
+nciforge ./molecules --atlas-bundle
 ```
 
-## KUID Files Emitted
+## Outputs
 
 Single-run outputs include:
 
@@ -117,7 +105,7 @@ Single-run outputs include:
 Batch root outputs include:
 
 - `batch_knf.json`
-- `atlas_submission.csv`
+- `batch_knf_unified.csv`
 - `kuid_calibration.json`
 - `kuid_intensive_calibration.json`
 - `kuid_prefix_index.json`
@@ -138,39 +126,41 @@ With `--water`, water-suffixed variants are emitted (for example `*_water.json`,
 
 ## Atlas Submission Bundle
 
-When `--atlas-bundle` is supplied, KNF writes a deterministic bundle under the relevant results root:
+When `--atlas-bundle` is supplied, NCIForge writes:
 
-- `submission_bundle/batch_knf_unified_kuid_intensive.csv`
+- `submission_bundle/atlas_submission.csv`
 - `submission_bundle/manifest.json`
 
-If prior batch outputs already exist, running `--atlas-bundle` will parse those existing CSV outputs and generate the bundle without recomputing KNF.
+If prior batch outputs already exist, running `--atlas-bundle` can parse those
+existing CSV outputs and generate the bundle without recomputing the KNF pipeline.
+Legacy batch CSV names are still supported for upgrade compatibility.
 
-## Key CSV Columns
+After bundle creation, submission runs clean up auxiliary analysis/index artifacts
+in the same results root to keep exports lightweight.
 
 `atlas_submission.csv` includes:
 
-- `KUID_raw`
-- `KUID`
-- `KUID_Cluster`
-- `KUID_Intensive_raw`
-- `KUID_Intensive`
-- `KUID_Intensive_Cluster`
-- `KUID_prefix2`
-- `KUID_prefix4`
-- `KUID_prefix6`
-- `f2_defined`
+- `molecule_name`, `charge`, `spin`
+- `f1..f9`, `SNCI`, `SCDI`, `SCDI_variance`
+- `backend`, `device`, `xtb_version`, `knf_core_version`
+- `nci_grid_spacing`, `nci_grid_padding`, `water_mode`
+- `KUID_raw`, `KUID_Cluster`
+- `KUID_Intensive_raw`, `KUID_Intensive_Cluster`
+- `instance_hash` (`sha256(f1..f9,charge,spin,xtb_version,nci_grid_spacing,nci_grid_padding)[:8]`)
 
 ## Incremental Resume
 
-When `atlas_submission.csv` already exists (legacy names are also supported) and `--force` is not set, existing rows are reused and only new files are processed.
+When `batch_knf_unified.csv` already exists (legacy names are also supported,
+including older `atlas_submission.csv`), and `--force` is not set, existing rows
+are reused and only new files are processed.
 
 ## Docker
 
-KUID-focused Docker usage is documented in `README.DOCKER.md`.
+Container workflows are documented in [`README.DOCKER.md`](README.DOCKER.md).
 
 ## Releasing
 
-Release steps are documented in `RELEASE.md`.
+Release steps are documented in [`RELEASE.md`](RELEASE.md).
 
 ## License
 

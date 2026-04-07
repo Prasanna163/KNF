@@ -1,13 +1,13 @@
-# KUID Docker Guide
+# NCIForge Docker Guide
 
-This guide covers containerized KUID workflows for this branch.
+This guide covers containerized NCIForge workflows.
 
 ## Image Contents
 
 The Docker image installs:
 
 - Python 3.11
-- Project package and CLI (`kuid`)
+- Project package and CLI (`nciforge`, with `knf` alias)
 - PyTorch (CPU build)
 - xTB (conda-forge)
 - Open Babel (`obabel`)
@@ -18,7 +18,9 @@ The Docker image installs:
 Runtime environment includes:
 
 - `PATH=/opt/conda/bin:/opt/conda/condabin:/opt/Multiwfn:$PATH`
-- `KUID_MULTIWFN_PATH=/opt/Multiwfn/Multiwfn`
+- `NCIFORGE_MULTIWFN_PATH=/opt/Multiwfn/Multiwfn`
+- `KUID_MULTIWFN_PATH=/opt/Multiwfn/Multiwfn` (compat)
+- `KNF_MULTIWFN_PATH=/opt/Multiwfn/Multiwfn` (compat)
 - `XTBHOME=/opt/conda`
 - `MPLBACKEND=Agg`
 - `OMP_NUM_THREADS`, `OPENBLAS_NUM_THREADS`, `MKL_NUM_THREADS` (default `4`)
@@ -26,14 +28,14 @@ Runtime environment includes:
 ## Files
 
 - `Dockerfile`: build definition
-- `docker-compose.yml`: ready-to-run KUID service
+- `docker-compose.yml`: ready-to-run NCIForge service
 - `scripts/docker-entrypoint.sh`: entrypoint wrapper
 - `.dockerignore`: build-context exclusions
 
 ## Build
 
 ```bash
-docker build -t kuid-core:1.0.6 -t kuid-core:latest .
+docker build -t nciforge:v1 -t nciforge:latest .
 ```
 
 ## Run
@@ -41,25 +43,25 @@ docker build -t kuid-core:1.0.6 -t kuid-core:latest .
 Single molecule:
 
 ```bash
-docker run --rm -v "$(pwd):/work" -w /work kuid-core:1.0.6 example.mol --charge 0 --force
+docker run --rm -v "$(pwd):/work" -w /work nciforge:v1 example.mol --charge 0 --force
 ```
 
 Directory batch:
 
 ```bash
-docker run --rm -v "$(pwd):/work" -w /work kuid-core:1.0.6 molecules --processing multi --force
+docker run --rm -v "$(pwd):/work" -w /work nciforge:v1 molecules --processing multi --force
 ```
 
 Universal KUID recompute:
 
 ```bash
-docker run --rm -v "$(pwd):/work" -w /work kuid-core:1.0.6 existing_runs --universal-kuid
+docker run --rm -v "$(pwd):/work" -w /work nciforge:v1 existing_runs --universal-kuid
 ```
 
 Interactive shell:
 
 ```bash
-docker run --rm -it -v "$(pwd):/work" -w /work kuid-core:1.0.6 bash
+docker run --rm -it -v "$(pwd):/work" -w /work nciforge:v1 bash
 ```
 
 ## Docker Compose
@@ -83,25 +85,27 @@ With `-v "$(pwd):/work"`:
 - inputs are read from your host folder
 - result artifacts are written back under `Results/...`
 
-KUID-focused outputs include:
+Common outputs include:
 
 - `knf.json` (contains `kuid` + `kuid_intensive`)
 - `batch_knf.json`
-- `batch_knf_unified_kuid_intensive.csv`
+- `batch_knf_unified.csv`
 - `kuid_calibration.json`
 - `kuid_intensive_calibration.json`
 - `kuid_*index*.json` / `kuid_*index*.csv`
+- `submission_bundle/atlas_submission.csv` (when `--atlas-bundle` is used)
 
 ## Health Checks
 
 Inside container:
 
 ```bash
-kuid --help
+nciforge --help
+knf --help
 xtb --version
 obabel -V
 command -v Multiwfn
-echo "$KUID_MULTIWFN_PATH"
+echo "$NCIFORGE_MULTIWFN_PATH"
 echo "$XTBHOME"
 ```
 
@@ -110,12 +114,13 @@ echo "$XTBHOME"
 Use `${PWD}` in mount expressions:
 
 ```powershell
-docker run --rm -v "${PWD}:/work" -w /work kuid-core:1.0.6 example.mol --charge 0 --force
+docker run --rm -v "${PWD}:/work" -w /work nciforge:v1 example.mol --charge 0 --force
 ```
 
 ## Troubleshooting
 
 - Build issues after dependency changes:
-  - `docker build --no-cache -t kuid-core:1.0.6 -t kuid-core:latest .`
+  - `docker build --no-cache -t nciforge:v1 -t nciforge:latest .`
 - No output files:
   - verify mounted path and input path inside `/work`
+

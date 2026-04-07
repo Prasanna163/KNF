@@ -1,17 +1,18 @@
 services:
-  kuid:
+  nciforge:
     build:
       context: .
       dockerfile: Dockerfile
-    image: kuid-core:1.0.6
-    container_name: kuid-core
+    image: nciforge:v1
+    container_name: nciforge
     working_dir: /work
     stdin_open: true
     tty: true
     volumes:
       - ./:/work
-      - kuid-cache:/home/mambauser/.knf
+      - nciforge-cache:/home/mambauser/.knf
     environment:
+      NCIFORGE_MULTIWFN_PATH: /opt/Multiwfn/Multiwfn
       KUID_MULTIWFN_PATH: /opt/Multiwfn/Multiwfn
       KNF_MULTIWFN_PATH: /opt/Multiwfn/Multiwfn
       XTBHOME: /opt/conda
@@ -22,4 +23,5 @@ services:
     command: ["example.mol", "--charge", "0", "--force"]
 
 volumes:
-  kuid-cache:
+  nciforge-cache:
+
