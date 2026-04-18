@@ -3,7 +3,6 @@ import math
 import numpy as np
 from rdkit import Chem
 from rdkit.Chem import rdMolTransforms
-from scipy.spatial.distance import euclidean
 
 # Periodic table masses (simplified for common elements, can be expanded)
 # RDKit has this built-in, so we'll use RDKit's GetMass()
@@ -75,7 +74,7 @@ def compute_fragment_distance(mol: Chem.Mol, frag1_indices: list[int], frag2_ind
     """Computes the Euclidean distance between the COMs of two fragments."""
     com1 = compute_center_of_mass(mol, frag1_indices)
     com2 = compute_center_of_mass(mol, frag2_indices)
-    return float(euclidean(com1, com2))
+    return float(np.linalg.norm(com1 - com2))
 
 def detect_hb_angle(mol: Chem.Mol, frag1_indices: list[int], frag2_indices: list[int]) -> float:
     """

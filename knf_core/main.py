@@ -1138,9 +1138,6 @@ def write_batch_water_delta_outputs(
 
 def check_dependencies(multiwfn_path: str = None, nci_backend: str = "torch"):
     """Checks if required external tools are available in PATH."""
-    # Attempt to add Multiwfn to PATH if missing
-    utils.ensure_multiwfn_in_path(explicit_path=multiwfn_path)
-
     missing = []
     
     if not shutil.which('obabel'):
@@ -1150,8 +1147,11 @@ def check_dependencies(multiwfn_path: str = None, nci_backend: str = "torch"):
         missing.append('xtb (Extended Tight Binding)')
         
     backend = (nci_backend or "multiwfn").strip().lower()
-    if backend == "multiwfn" and not shutil.which('Multiwfn') and not shutil.which('Multiwfn.exe'):
-        missing.append('Multiwfn')
+    if backend == "multiwfn":
+        # Avoid expensive Multiwfn auto-discovery for torch/gpu runs.
+        utils.ensure_multiwfn_in_path(explicit_path=multiwfn_path)
+        if not shutil.which('Multiwfn') and not shutil.which('Multiwfn.exe'):
+            missing.append('Multiwfn')
         
     if missing:
         print("WARNING: The following required tools were not found in your PATH:")
