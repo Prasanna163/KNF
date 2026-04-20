@@ -54,7 +54,8 @@ def _check_tools(
     explicit_multiwfn_path: Optional[str] = None,
     require_multiwfn: bool = True,
 ) -> Dict[str, bool]:
-    utils.ensure_multiwfn_in_path(explicit_path=explicit_multiwfn_path)
+    if require_multiwfn:
+        utils.ensure_multiwfn_in_path(explicit_path=explicit_multiwfn_path)
     status = {
         "xtb": _tool_exists(["xtb"]),
         "obabel": _tool_exists(["obabel"]),
@@ -123,6 +124,8 @@ def _print_missing_help(status: Dict[str, bool]) -> None:
             print("  knf <input> --multiwfn-path \"<path-to-Multiwfn.exe-or-folder>\"")
             print("Or set env var:")
             print("  KNF_MULTIWFN_PATH=<path-to-Multiwfn.exe-or-folder>")
+            print("Optional (slower):")
+            print("  KNF_MULTIWFN_AUTO_SCAN=1  # enable bounded filesystem auto-scan fallback")
     print("")
 
 

@@ -2,7 +2,9 @@
 import shutil
 import logging
 import subprocess
+import time
 import unicodedata
+from collections import deque
 from pathlib import Path
 from typing import Optional
 
@@ -160,14 +162,46 @@ def _common_multiwfn_candidates() -> list[str]:
     return candidates
 
 
-def _scan_for_multiwfn_roots() -> Optional[str]:
-    """Lightweight scan for Multiwfn executable in likely parent directories."""
-    roots = [Path.home(), Path.cwd()]
-    drive = os.environ.get("HOMEDRIVE")
-    if drive:
-        roots.append(Path(drive + "\\"))
+def _multiwfn_scan_enabled() -> bool:
+    """Returns True only when broad Multiwfn filesystem scan is explicitly enabled."""
+    flag = os.environ.get("KNF_MULTIWFN_AUTO_SCAN", "")
+    return flag.strip().lower() in {"1", "true", "yes", "on"}
 
-    visited = set()
+
+def _scan_for_multiwfn_roots(
+    max_depth: int = 2,
+    max_dirs: int = 2500,
+    timeout_seconds: float = 3.0,
+) -> Optional[str]:
+    """Bounded scan for Multiwfn executable in likely directories."""
+    target_names = {"multiwfn.exe", "multiwfn"}
+    skip_dir_names = {
+        ".git",
+        ".venv",
+        "venv",
+        "node_modules",
+        "__pycache__",
+        ".pytest_cache",
+        ".pytest-industrial-check",
+        "tmp",
+        "$recycle.bin",
+        "system volume information",
+        "windows",
+        "program files",
+        "program files (x86)",
+        "appdata",
+    }
+    roots = [
+        Path.cwd(),
+        Path.cwd().parent,
+        Path.home() / "Downloads",
+        Path.home() / "Desktop",
+        Path.home() / "Documents",
+        Path.home(),
+    ]
+
+    visited: set[Path] = set()
+    queue: deque[tuple[Path, int]] = deque()
     for root in roots:
         try:
             root_resolved = root.resolve()
@@ -176,26 +210,52 @@ def _scan_for_multiwfn_roots() -> Optional[str]:
         if root_resolved in visited or not root_resolved.exists():
             continue
         visited.add(root_resolved)
+        queue.append((root_resolved, 0))
 
-        queue = [root_resolved]
-        while queue:
-            current = queue.pop(0)
-            try:
-                if current.name and "multiwfn" in current.name.lower():
-                    resolved = resolve_multiwfn_executable(str(current))
-                    if resolved:
-                        return resolved
+    deadline = time.monotonic() + max(timeout_seconds, 0.1)
+    scanned_dirs = 0
 
-                depth = len(current.relative_to(root_resolved).parts)
-                if depth >= 3:
-                    continue
-                for child in current.iterdir():
-                    if child.is_dir():
-                        queue.append(child)
-                    elif child.is_file() and child.name.lower() in {"multiwfn.exe", "multiwfn"}:
-                        return str(child.resolve())
-            except Exception:
-                continue
+    while queue and scanned_dirs < max_dirs:
+        if time.monotonic() >= deadline:
+            break
+        current, depth = queue.popleft()
+        scanned_dirs += 1
+
+        current_name = current.name.lower()
+        if current_name and "multiwfn" in current_name:
+            resolved = resolve_multiwfn_executable(str(current))
+            if resolved:
+                return resolved
+
+        if depth >= max_depth:
+            continue
+
+        try:
+            with os.scandir(current) as entries:
+                for entry in entries:
+                    name_lower = entry.name.lower()
+
+                    if name_lower in target_names:
+                        try:
+                            if entry.is_file(follow_symlinks=False):
+                                return str(Path(entry.path).resolve())
+                        except OSError:
+                            continue
+
+                    if name_lower in skip_dir_names or name_lower.startswith(".pytest"):
+                        continue
+
+                    try:
+                        if entry.is_dir(follow_symlinks=False):
+                            child_path = Path(entry.path)
+                            if child_path not in visited:
+                                visited.add(child_path)
+                                queue.append((child_path, depth + 1))
+                    except OSError:
+                        continue
+        except (PermissionError, FileNotFoundError, NotADirectoryError, OSError):
+            continue
+
     return None
 
 
@@ -210,6 +270,9 @@ def find_multiwfn(explicit_path: Optional[str] = None) -> Optional[str]:
         resolved = resolve_multiwfn_executable(candidate)
         if resolved:
             return resolved
+
+    if not _multiwfn_scan_enabled():
+        return None
 
     return _scan_for_multiwfn_roots()
 

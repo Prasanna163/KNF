@@ -1146,7 +1146,7 @@ def check_dependencies(multiwfn_path: str = None, nci_backend: str = "torch"):
     if not shutil.which('xtb'):
         missing.append('xtb (Extended Tight Binding)')
         
-    backend = (nci_backend or "multiwfn").strip().lower()
+    backend = (nci_backend or "torch").strip().lower()
     if backend == "multiwfn":
         # Avoid expensive Multiwfn auto-discovery for torch/gpu runs.
         utils.ensure_multiwfn_in_path(explicit_path=multiwfn_path)
