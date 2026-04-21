@@ -139,6 +139,85 @@ class KNFPipeline:
             name for name in required if not os.path.exists(os.path.join(self.results_dir, name))
         ]
         return len(missing) == 0, missing
+
+    def _run_torch_nci_with_adaptive_fallback(
+        self,
+        molden_file: str,
+        final_grid_binary_path: str,
+        final_grid_text_path: str,
+    ) -> dict:
+        from .nci_torch import get_nci_router, is_cuda_oom_error, release_cuda_memory, run_nci_torch
+
+        text_export_path = final_grid_text_path if self.keep_full_files else None
+        router = get_nci_router()
+        packets = router.build_packets(
+            requested_device=self.nci_device,
+            batch_size=self.nci_batch_size,
+            eig_batch_size=self.nci_eig_batch_size,
+        )
+
+        attempts: list[dict] = []
+        last_error = None
+        for packet in packets:
+            attempt_record = packet.to_dict()
+            attempt_record["status"] = "running"
+            attempts.append(attempt_record)
+            try:
+                metadata = run_nci_torch(
+                    molden_path=molden_file,
+                    output_path=final_grid_binary_path,
+                    output_text_path=text_export_path,
+                    spacing_angstrom=self.nci_grid_spacing,
+                    padding_angstrom=self.nci_grid_padding,
+                    device=packet.device,
+                    dtype=self.nci_dtype,
+                    batch_size=packet.batch_size,
+                    eig_batch_size=packet.eig_batch_size,
+                    rho_floor=self.nci_rho_floor,
+                    output_units="bohr",
+                    apply_primitive_normalization=self.nci_apply_primitive_norm,
+                    cpu_threads=packet.cpu_threads,
+                )
+                attempt_record["status"] = "success"
+                router.report_success(packet)
+                metadata["routing"] = {
+                    "attempts": attempts,
+                    "selected": attempt_record,
+                    "router_state": router.state_snapshot(),
+                }
+                metadata["attempted_devices"] = [entry["device"] for entry in attempts]
+                if packet.device == "cpu" and any(
+                    str(entry.get("device", "")).lower().startswith("cuda")
+                    for entry in attempts[:-1]
+                ):
+                    metadata["runtime_fallback"] = {
+                        "trigger": "cuda_oom",
+                        "fallback_device": packet.device,
+                        "cpu_threads": packet.cpu_threads,
+                        "attempted_devices": metadata["attempted_devices"],
+                        "gpu_retry_policy": "retry_gpu_on_next_molecule",
+                    }
+                return metadata
+            except RuntimeError as e:
+                last_error = e
+                attempt_record["status"] = "failed"
+                attempt_record["error"] = str(e)
+                if str(packet.device).lower().startswith("cuda") and is_cuda_oom_error(e):
+                    router.report_cuda_oom(packet, e)
+                    logging.warning(
+                        "CUDA OOM during NCI for %s on packet(batch=%s eig_batch=%s). "
+                        "Routing to the next packet for this molecule.",
+                        self.base_name,
+                        packet.batch_size,
+                        packet.eig_batch_size,
+                    )
+                    release_cuda_memory()
+                    continue
+                raise
+
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError("Torch NCI backend failed before any compute attempt completed.")
         
     def setup_directories(self):
         """Creates directory structure."""
@@ -429,21 +508,10 @@ class KNFPipeline:
                     raise RuntimeError("Multiwfn executed but did not produce expected output.")
             elif self.nci_backend == "torch":
                 self._stage(5, "NCI (Torch Experimental)")
-                from .nci_torch import run_nci_torch
-                text_export_path = final_grid_text_path if self.keep_full_files else None
-                nci_engine_metadata = run_nci_torch(
-                    molden_path=molden_file,
-                    output_path=final_grid_binary_path,
-                    output_text_path=text_export_path,
-                    spacing_angstrom=self.nci_grid_spacing,
-                    padding_angstrom=self.nci_grid_padding,
-                    device=self.nci_device,
-                    dtype=self.nci_dtype,
-                    batch_size=self.nci_batch_size,
-                    eig_batch_size=self.nci_eig_batch_size,
-                    rho_floor=self.nci_rho_floor,
-                    output_units="bohr",
-                    apply_primitive_normalization=self.nci_apply_primitive_norm,
+                nci_engine_metadata = self._run_torch_nci_with_adaptive_fallback(
+                    molden_file=molden_file,
+                    final_grid_binary_path=final_grid_binary_path,
+                    final_grid_text_path=final_grid_text_path,
                 )
                 nci_success = os.path.exists(final_grid_binary_path)
                 if not nci_success:

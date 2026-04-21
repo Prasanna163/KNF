@@ -76,8 +76,12 @@ GPU run (Torch CUDA):
 nciforge ./molecules --gpu
 ```
 
-On first `--gpu` use, the tool checks for NVIDIA GPU and CUDA-enabled PyTorch.  
-If GPU is detected but PyTorch is CPU-only, it prompts to install CUDA PyTorch.
+`--gpu` enables smart GPU routing by default:
+
+- Runs Torch NCI on CUDA first.
+- If a molecule hits CUDA OOM, that molecule is re-routed to CPU automatically.
+- The next molecule retries GPU automatically.
+- Uses memory-friendlier `float32` by default.
 
 Split into batches:
 

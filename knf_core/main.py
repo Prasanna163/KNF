@@ -4337,10 +4337,12 @@ def main():
             wbo_mode = "native"
             enable_stop_key = True
             interactive_quadrant_plot = False
+            gpu = False
             
         args = Args()
 
         if nci_mode == "gpu":
+            args.gpu = True
             args.nci_backend = "torch"
             args.nci_device = "cuda"
         elif nci_mode == "multiwfn":
@@ -4351,7 +4353,11 @@ def main():
             require_multiwfn=(args.nci_backend == "multiwfn"),
         )
         check_dependencies(nci_backend=args.nci_backend)
-        if (args.nci_backend or "").strip().lower() == "torch" and (args.nci_device or "").strip().lower() == "cuda":
+        if (
+            (args.nci_backend or "").strip().lower() == "torch"
+            and (args.nci_device or "").strip().lower() == "cuda"
+            and not bool(getattr(args, "gpu", False))
+        ):
             try:
                 _ensure_cuda_runtime_for_gpu_mode(allow_prompt=True)
             except RuntimeError as e:
@@ -4485,7 +4491,10 @@ def main():
     parser.add_argument(
         '--gpu',
         action='store_true',
-        help="Shortcut: use torch NCI backend on CUDA"
+        help=(
+            "Smart GPU mode: run torch NCI on CUDA with adaptive packet routing "
+            "(CUDA OOM auto-fallback to CPU for that molecule, then retry GPU next molecule)."
+        ),
     )
     parser.add_argument(
         '--multiwfn',
@@ -4596,7 +4605,8 @@ def main():
     elif args.gpu:
         args.nci_backend = "torch"
         args.nci_device = "cuda"
-        args.nci_dtype = "float64"
+        # Keep GPU mode memory-friendly by default; router handles adaptive fallback.
+        args.nci_dtype = "float32"
 
     # Configure logging after CLI args are known.
     if args.debug:
@@ -4635,7 +4645,11 @@ def main():
             require_multiwfn=(args.nci_backend == "multiwfn"),
         )
         check_dependencies(multiwfn_path=args.multiwfn_path, nci_backend=args.nci_backend)
-        if (args.nci_backend or "").strip().lower() == "torch" and (args.nci_device or "").strip().lower() == "cuda":
+        if (
+            (args.nci_backend or "").strip().lower() == "torch"
+            and (args.nci_device or "").strip().lower() == "cuda"
+            and not bool(getattr(args, "gpu", False))
+        ):
             try:
                 _ensure_cuda_runtime_for_gpu_mode(allow_prompt=True)
             except RuntimeError as e:
