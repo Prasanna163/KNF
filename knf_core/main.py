@@ -36,6 +36,21 @@ STOP_KEY = "q"
 VALID_INPUT_EXTS = {".xyz", ".sdf", ".mol", ".pdb", ".mol2"}
 GPU_SETUP_STATE_FILE = os.path.join(os.path.expanduser("~"), ".knf_gpu_setup_state.json")
 PYTORCH_CUDA_INDEX_URL = "https://download.pytorch.org/whl/cu128"
+GPU_RUNTIME_CACHE_MAX_AGE_SECONDS = 12 * 60 * 60
+_DEPENDENCY_CHECK_CACHE: dict[tuple[str, str], list[str]] = {}
+
+
+class _NoLive:
+    """Fallback Live-compatible context manager for non-interactive terminals."""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def update(self, *args, **kwargs):
+        return None
 
 
 def _final_output_name(filename: str, water: bool) -> str:
@@ -72,6 +87,15 @@ def _save_gpu_setup_state(state: dict) -> None:
             json.dump(state, f, indent=2)
     except Exception as e:
         logging.debug("Could not persist GPU setup state: %s", e)
+
+
+def _parse_iso_z(ts: str):
+    if not ts or not isinstance(ts, str):
+        return None
+    try:
+        return datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    except Exception:
+        return None
 
 
 def _nvidia_gpu_probe() -> dict:
@@ -247,7 +271,32 @@ def _ensure_cuda_runtime_for_gpu_mode(allow_prompt: bool = True) -> None:
         entry = {}
 
     first_gpu_check = not bool(entry.get("gpu_checked"))
-    torch_info = _probe_torch_cuda_runtime()
+    now_utc = datetime.now(timezone.utc)
+    cached_checked_at = _parse_iso_z(entry.get("last_checked_at"))
+    cache_age_ok = bool(
+        cached_checked_at
+        and (now_utc - cached_checked_at).total_seconds() <= GPU_RUNTIME_CACHE_MAX_AGE_SECONDS
+    )
+    cached_names = entry.get("gpu_names") if isinstance(entry.get("gpu_names"), list) else []
+    gpu_names_now = nvidia.get("gpu_names", [])
+    gpu_identity_same = bool(cached_names) and cached_names == gpu_names_now
+    can_reuse_cached = bool(
+        cache_age_ok
+        and gpu_identity_same
+        and entry.get("torch_cuda_version")
+        and entry.get("cuda_available") is True
+    )
+
+    if can_reuse_cached:
+        torch_info = {
+            "torch_version": entry.get("torch_version", ""),
+            "torch_cuda_version": entry.get("torch_cuda_version"),
+            "cuda_available": bool(entry.get("cuda_available")),
+            "cuda_device_name": (gpu_names_now[0] if gpu_names_now else ""),
+        }
+    else:
+        torch_info = _probe_torch_cuda_runtime()
+
     torch_has_cuda_build = bool(torch_info.get("torch_cuda_version"))
     cuda_available = bool(torch_info.get("cuda_available"))
 
@@ -1138,20 +1187,26 @@ def write_batch_water_delta_outputs(
 
 def check_dependencies(multiwfn_path: str = None, nci_backend: str = "torch"):
     """Checks if required external tools are available in PATH."""
-    missing = []
+    cache_key = ((multiwfn_path or "").strip(), (nci_backend or "torch").strip().lower())
+    cached = _DEPENDENCY_CHECK_CACHE.get(cache_key)
+    if cached is not None:
+        missing = list(cached)
+    else:
+        missing = []
     
-    if not shutil.which('obabel'):
-        missing.append('obabel (Open Babel)')
+        if not shutil.which('obabel'):
+            missing.append('obabel (Open Babel)')
         
-    if not shutil.which('xtb'):
-        missing.append('xtb (Extended Tight Binding)')
+        if not shutil.which('xtb'):
+            missing.append('xtb (Extended Tight Binding)')
         
-    backend = (nci_backend or "torch").strip().lower()
-    if backend == "multiwfn":
-        # Avoid expensive Multiwfn auto-discovery for torch/gpu runs.
-        utils.ensure_multiwfn_in_path(explicit_path=multiwfn_path)
-        if not shutil.which('Multiwfn') and not shutil.which('Multiwfn.exe'):
-            missing.append('Multiwfn')
+        backend = (nci_backend or "torch").strip().lower()
+        if backend == "multiwfn":
+            # Avoid expensive Multiwfn auto-discovery for torch/gpu runs.
+            utils.ensure_multiwfn_in_path(explicit_path=multiwfn_path)
+            if not shutil.which('Multiwfn') and not shutil.which('Multiwfn.exe'):
+                missing.append('Multiwfn')
+        _DEPENDENCY_CHECK_CACHE[cache_key] = list(missing)
         
     if missing:
         print("WARNING: The following required tools were not found in your PATH:")
@@ -4045,8 +4100,10 @@ def run_batch_directory(
             jobs,
         )
 
+    live_enabled = bool(getattr(sys.stdout, "isatty", lambda: False)())
     if mode == 'single' or len(files) == 1:
-        with Live(render(active_workers=1), console=console, refresh_per_second=5, transient=False) as live:
+        live_ctx = Live(render(active_workers=1), console=console, refresh_per_second=5, transient=False) if live_enabled else _NoLive()
+        with live_ctx as live:
             queue = Queue()
             for path in files:
                 queue.put(path)
@@ -4069,7 +4126,8 @@ def run_batch_directory(
                 live.update(render(active_workers=0))
                 queue.task_done()
     elif use_gpu_overlap:
-        with Live(render(active_workers=workers + 1), console=console, refresh_per_second=5, transient=False) as live:
+        live_ctx = Live(render(active_workers=workers + 1), console=console, refresh_per_second=5, transient=False) if live_enabled else _NoLive()
+        with live_ctx as live:
             with ThreadPoolExecutor(max_workers=workers) as cpu_executor, ThreadPoolExecutor(max_workers=1) as gpu_executor:
                 pre_futures = {
                     cpu_executor.submit(process_file_pre_nci, file_path, args, results_root): file_path
@@ -4153,7 +4211,8 @@ def run_batch_directory(
                     active_workers = min(workers, len(pre_futures)) + (1 if post_futures else 0)
                     live.update(render(active_workers=active_workers))
     else:
-        with Live(render(active_workers=workers), console=console, refresh_per_second=5, transient=False) as live:
+        live_ctx = Live(render(active_workers=workers), console=console, refresh_per_second=5, transient=False) if live_enabled else _NoLive()
+        with live_ctx as live:
             with ThreadPoolExecutor(max_workers=workers) as executor:
                 futures = {
                     executor.submit(process_file, file_path, args, results_root): file_path
