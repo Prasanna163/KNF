@@ -10,6 +10,7 @@ import statistics
 import math
 import hashlib
 import subprocess
+import gc
 from pathlib import Path
 from copy import deepcopy
 from queue import Queue
@@ -51,6 +52,44 @@ class _NoLive:
 
     def update(self, *args, **kwargs):
         return None
+
+
+def _best_effort_release_memory() -> None:
+    try:
+        gc.collect()
+    except Exception:
+        pass
+    try:
+        import torch  # type: ignore
+        if bool(getattr(torch, "cuda", None)) and torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
+
+
+def _is_transient_file_error(exc: Exception) -> bool:
+    if isinstance(exc, (PermissionError, FileNotFoundError, BlockingIOError)):
+        return True
+    if isinstance(exc, OSError) and getattr(exc, "errno", None) in {5, 11, 13, 16, 32}:
+        return True
+    msg = str(exc).lower()
+    markers = (
+        "permission denied",
+        "access is denied",
+        "being used by another process",
+        "resource temporarily unavailable",
+        "cannot open",
+        "file is locked",
+    )
+    return any(m in msg for m in markers)
+
+
+def _is_oom_error(exc: Exception) -> bool:
+    if isinstance(exc, MemoryError):
+        return True
+    msg = str(exc).lower()
+    markers = ("out of memory", "cuda oom", "cuda out of memory", "cublas_status_alloc_failed")
+    return any(m in msg for m in markers)
 
 
 def _final_output_name(filename: str, water: bool) -> str:
@@ -1244,45 +1283,84 @@ def _build_pipeline(file_path: str, args, output_root: str = None) -> KNFPipelin
 def process_file(file_path: str, args, output_root: str = None):
     """Runs the pipeline for a single file and returns status."""
     start = time.perf_counter()
-    try:
-        pipeline = _build_pipeline(file_path, args, output_root=output_root)
-        pipeline.run()
-        return True, None, time.perf_counter() - start
-    except Exception as e:
-        if args.debug:
-            logging.exception(f"Error processing {file_path}:")
-        else:
-            logging.error(f"Error processing {file_path}: {e}")
-        return False, str(e), time.perf_counter() - start
+    attempts = 3
+    last_error = None
+    for attempt in range(1, attempts + 1):
+        try:
+            pipeline = _build_pipeline(file_path, args, output_root=output_root)
+            pipeline.run()
+            return True, None, time.perf_counter() - start
+        except Exception as e:
+            last_error = e
+            retryable = _is_transient_file_error(e) or _is_oom_error(e)
+            if _is_oom_error(e):
+                _best_effort_release_memory()
+            if retryable and attempt < attempts:
+                wait_s = 1.5 * attempt
+                logging.warning("Retrying %s after error (%s/%s): %s", file_path, attempt, attempts, e)
+                time.sleep(wait_s)
+                continue
+            if args.debug:
+                logging.exception(f"Error processing {file_path}:")
+            else:
+                logging.error(f"Error processing {file_path}: {e}")
+            return False, str(e), time.perf_counter() - start
+    return False, str(last_error), time.perf_counter() - start
 
 
 def process_file_pre_nci(file_path: str, args, output_root: str = None):
     """Runs pre-NCI stages only (geometry + xTB) and returns pipeline context."""
     start = time.perf_counter()
-    try:
-        pipeline = _build_pipeline(file_path, args, output_root=output_root)
-        context = pipeline.run_pre_nci_stage()
-        return True, None, time.perf_counter() - start, pipeline, context
-    except Exception as e:
-        if args.debug:
-            logging.exception(f"Pre-NCI error processing {file_path}:")
-        else:
-            logging.error(f"Pre-NCI error processing {file_path}: {e}")
-        return False, str(e), time.perf_counter() - start, None, None
+    attempts = 3
+    last_error = None
+    for attempt in range(1, attempts + 1):
+        try:
+            pipeline = _build_pipeline(file_path, args, output_root=output_root)
+            context = pipeline.run_pre_nci_stage()
+            return True, None, time.perf_counter() - start, pipeline, context
+        except Exception as e:
+            last_error = e
+            retryable = _is_transient_file_error(e) or _is_oom_error(e)
+            if _is_oom_error(e):
+                _best_effort_release_memory()
+            if retryable and attempt < attempts:
+                wait_s = 1.5 * attempt
+                logging.warning("Retrying pre-NCI %s after error (%s/%s): %s", file_path, attempt, attempts, e)
+                time.sleep(wait_s)
+                continue
+            if args.debug:
+                logging.exception(f"Pre-NCI error processing {file_path}:")
+            else:
+                logging.error(f"Pre-NCI error processing {file_path}: {e}")
+            return False, str(e), time.perf_counter() - start, None, None
+    return False, str(last_error), time.perf_counter() - start, None, None
 
 
 def process_file_post_nci(pipeline: KNFPipeline, context: dict, file_path: str):
     """Runs post-NCI stage (NCI + SNCI/SCDI + final output write)."""
     start = time.perf_counter()
-    try:
-        pipeline.run_post_nci_stage(context)
-        return True, None, time.perf_counter() - start
-    except Exception as e:
-        if pipeline.debug:
-            logging.exception(f"Post-NCI error processing {file_path}:")
-        else:
-            logging.error(f"Post-NCI error processing {file_path}: {e}")
-        return False, str(e), time.perf_counter() - start
+    attempts = 3
+    last_error = None
+    for attempt in range(1, attempts + 1):
+        try:
+            pipeline.run_post_nci_stage(context)
+            return True, None, time.perf_counter() - start
+        except Exception as e:
+            last_error = e
+            retryable = _is_transient_file_error(e) or _is_oom_error(e)
+            if _is_oom_error(e):
+                _best_effort_release_memory()
+            if retryable and attempt < attempts:
+                wait_s = 1.5 * attempt
+                logging.warning("Retrying post-NCI %s after error (%s/%s): %s", file_path, attempt, attempts, e)
+                time.sleep(wait_s)
+                continue
+            if pipeline.debug:
+                logging.exception(f"Post-NCI error processing {file_path}:")
+            else:
+                logging.error(f"Post-NCI error processing {file_path}: {e}")
+            return False, str(e), time.perf_counter() - start
+    return False, str(last_error), time.perf_counter() - start
 
 
 def _fmt_elapsed(seconds: float) -> str:
@@ -3798,6 +3876,10 @@ def run_batch_directory(
     if not files:
         print(f"No molecular files found in {directory}.")
         return
+    batch_input_root = os.path.abspath(directory)
+    failed_root = os.path.join(batch_input_root, "failed")
+    failed_manifest = os.path.join(failed_root, "failed_manifest.csv")
+    failed_manifest_written = False
 
     existing_batch_records = []
     skipped_existing = 0
@@ -3981,7 +4063,7 @@ def run_batch_directory(
         completed_rows.append((_display_name(file_path), f"{elapsed:.1f}s", "[green]OK[/green]"))
 
     def add_failure(file_path: str, error: str, elapsed: float):
-        nonlocal completed
+        nonlocal completed, failed_manifest_written
         completed += 1
         if elapsed > 0:
             recent_job_durations.append(float(elapsed))
@@ -3989,6 +4071,24 @@ def run_batch_directory(
                 del recent_job_durations[:-20]
         progress.advance(task_id, 1)
         failures.append((file_path, error))
+        try:
+            os.makedirs(failed_root, exist_ok=True)
+            src = os.path.abspath(file_path)
+            base = os.path.basename(src)
+            stem, ext = os.path.splitext(base)
+            dst = os.path.join(failed_root, base)
+            if os.path.exists(dst):
+                short_hash = hashlib.sha1(src.encode("utf-8")).hexdigest()[:8]
+                dst = os.path.join(failed_root, f"{stem}__{short_hash}{ext}")
+            shutil.copy2(src, dst)
+            with open(failed_manifest, "a", newline="", encoding="utf-8") as mf:
+                writer = csv.writer(mf)
+                if not failed_manifest_written and os.path.getsize(failed_manifest) == 0:
+                    writer.writerow(["source_file", "failed_copy", "error"])
+                    failed_manifest_written = True
+                writer.writerow([src, dst, str(error)])
+        except Exception as copy_exc:
+            logging.warning("Failed to copy failed input to %s for %s: %s", failed_root, file_path, copy_exc)
         batch_records.append(
             {
                 "input_file": file_path,
@@ -4101,8 +4201,33 @@ def run_batch_directory(
         )
 
     live_enabled = bool(getattr(sys.stdout, "isatty", lambda: False)())
+    live_repaint_enabled = bool(
+        live_enabled
+        and bool(getattr(console, "is_terminal", False))
+        and not bool(getattr(console, "is_dumb_terminal", False))
+    )
+    last_live_signature = None
+    last_live_update_at = 0.0
+
+    def maybe_update_live(live_obj, active_workers: int, force: bool = False):
+        nonlocal last_live_signature, last_live_update_at
+        now = time.perf_counter()
+        signature = (
+            completed,
+            succeeded,
+            len(failures),
+            stopped_count,
+            active_workers,
+            stop_requested,
+        )
+        # Keep live feed, but avoid repainting the same frame repeatedly.
+        if not force and signature == last_live_signature and (now - last_live_update_at) < 0.6:
+            return
+        live_obj.update(render(active_workers=active_workers))
+        last_live_signature = signature
+        last_live_update_at = now
     if mode == 'single' or len(files) == 1:
-        live_ctx = Live(render(active_workers=1), console=console, refresh_per_second=5, transient=False) if live_enabled else _NoLive()
+        live_ctx = Live(render(active_workers=1), console=console, refresh_per_second=5, transient=False) if live_repaint_enabled else _NoLive()
         with live_ctx as live:
             queue = Queue()
             for path in files:
@@ -4114,7 +4239,7 @@ def run_batch_directory(
                         pending_file = queue.get()
                         add_stopped(pending_file)
                         queue.task_done()
-                    live.update(render(active_workers=0))
+                    maybe_update_live(live, active_workers=0, force=True)
                     break
 
                 file_path = queue.get()
@@ -4123,10 +4248,10 @@ def run_batch_directory(
                     add_success(file_path, elapsed)
                 else:
                     add_failure(file_path, error, elapsed)
-                live.update(render(active_workers=0))
+                maybe_update_live(live, active_workers=0, force=True)
                 queue.task_done()
     elif use_gpu_overlap:
-        live_ctx = Live(render(active_workers=workers + 1), console=console, refresh_per_second=5, transient=False) if live_enabled else _NoLive()
+        live_ctx = Live(render(active_workers=workers + 1), console=console, refresh_per_second=5, transient=False) if live_repaint_enabled else _NoLive()
         with live_ctx as live:
             with ThreadPoolExecutor(max_workers=workers) as cpu_executor, ThreadPoolExecutor(max_workers=1) as gpu_executor:
                 pre_futures = {
@@ -4209,9 +4334,9 @@ def run_batch_directory(
                             add_failure(file_path, error, total_elapsed_file)
 
                     active_workers = min(workers, len(pre_futures)) + (1 if post_futures else 0)
-                    live.update(render(active_workers=active_workers))
+                    maybe_update_live(live, active_workers=active_workers)
     else:
-        live_ctx = Live(render(active_workers=workers), console=console, refresh_per_second=5, transient=False) if live_enabled else _NoLive()
+        live_ctx = Live(render(active_workers=workers), console=console, refresh_per_second=5, transient=False) if live_repaint_enabled else _NoLive()
         with live_ctx as live:
             with ThreadPoolExecutor(max_workers=workers) as executor:
                 futures = {
@@ -4257,7 +4382,7 @@ def run_batch_directory(
                             add_failure(file_path, error, elapsed)
 
                     active_workers = min(workers, len(futures))
-                    live.update(render(active_workers=active_workers))
+                    maybe_update_live(live, active_workers=active_workers)
 
     total_time = time.perf_counter() - t0
     completed_non_stopped = max(0, total - stopped_count)
@@ -4265,16 +4390,24 @@ def run_batch_directory(
     avg_per_molecule = total_time / completed_non_stopped if completed_non_stopped else 0.0
     merged_records = _dedupe_batch_records(existing_batch_records + batch_records)
     aggregate_total_time = _sum_elapsed_seconds(merged_records)
-    aggregate_json_path, aggregate_csv_path, quadrant_payload, batch_delta_json_path, batch_delta_txt_path = write_batch_aggregate_json(
-        directory=directory,
-        results_root=results_root,
-        records=merged_records,
-        mode=mode,
-        workers=workers,
-        total_time=aggregate_total_time,
-        water=bool(getattr(args, "water", False)),
-        interactive_quadrant_plot=(interactive_quadrant_plot or stop_requested),
-    )
+    try:
+        aggregate_json_path, aggregate_csv_path, quadrant_payload, batch_delta_json_path, batch_delta_txt_path = write_batch_aggregate_json(
+            directory=directory,
+            results_root=results_root,
+            records=merged_records,
+            mode=mode,
+            workers=workers,
+            total_time=aggregate_total_time,
+            water=bool(getattr(args, "water", False)),
+            interactive_quadrant_plot=(interactive_quadrant_plot or stop_requested),
+        )
+    except Exception as e:
+        logging.exception("Aggregate write failed, but batch execution completed. Error: %s", e)
+        aggregate_json_path = f"[failed to write] {e}"
+        aggregate_csv_path = f"[failed to write] {e}"
+        quadrant_payload = {}
+        batch_delta_json_path = None
+        batch_delta_txt_path = None
 
     summary = Table.grid(padding=(0, 2))
     summary.add_column(style="bold")
