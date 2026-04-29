@@ -32,7 +32,28 @@ Optional:
 
 ## Install
 
-From source:
+Fastest local install (from this repo):
+
+Windows PowerShell:
+
+```powershell
+./scripts/install_nciforge.ps1
+```
+
+macOS/Linux:
+
+```bash
+bash ./scripts/install_nciforge.sh
+```
+
+This opens an interactive CLI wizard that asks:
+
+- install scope: `global` or `local` virtual environment
+- PyTorch mode: `cpu`, `gpu`, or `skip`
+- whether to auto-setup external dependencies (`xtb`, `obabel`, etc.)
+- whether to install `gxtb`/`dxtb` helper packages
+
+Manual source install:
 
 ```bash
 git clone https://github.com/Prasanna163/KNF.git
