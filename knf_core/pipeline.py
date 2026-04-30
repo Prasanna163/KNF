@@ -240,16 +240,6 @@ class KNFPipeline:
         self._stage(1, "Geometry")
         target_xyz = converter.ensure_xyz(self.input_file, self.input_dir)
 
-        # ---- .xyz format warning ------------------------------------
-        input_ext = os.path.splitext(self.input_file)[1].lower()
-        if input_ext == '.xyz':
-            logging.warning(
-                "⚠️  Direct .xyz input detected. Be careful — .xyz files "
-                "carry no bond/connectivity information, so bond perception "
-                "is heuristic and may unintentionally alter bonds and affect "
-                "final convergence.  For best results, prefer "
-                ".mol / .mol2 / .sdf formats."
-            )
 
         mol = geometry.load_molecule(target_xyz)
         fragments = geometry.detect_fragments(mol)
