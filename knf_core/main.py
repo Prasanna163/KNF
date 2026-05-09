@@ -2029,48 +2029,65 @@ def _write_kuid_intensive_distribution_outputs(
 
 
 def _ensure_kuid_csv_field_order(fieldnames: list[str]) -> list[str]:
-    base_fields = [
-        name
-        for name in (fieldnames or [])
-        if name
-        not in {
-            "KUID_raw",
-            "KUID",
-            "KUID_Cluster",
-            "KUID_Intensive_raw",
-            "KUID_Intensive",
-            "KUID_Intensive_Cluster",
-            "KUID_prefix2",
-            "KUID_prefix4",
-            "KUID_prefix6",
-            "SCDI",
-        }
+    preferred_head = [
+        "source_batch",
+        "File",
+        *[f"f{i}" for i in range(1, 10)],
+        "f2_defined",
+        "KUID_raw",
+        "KUID",
+        "KUID_Cluster",
+        "KUID_Intensive_raw",
+        "KUID_Intensive",
+        "KUID_Intensive_Cluster",
+        "KUID_prefix2",
+        "KUID_prefix4",
+        "KUID_prefix6",
+        "SNCI",
+        "SCDI_variance",
+        "SNCI_Norm",
+        "SCDI_Norm",
     ]
-    if not base_fields:
-        base_fields = (
-            ["File"]
-            + [f"f{i}" for i in range(1, 10)]
-            + ["SNCI", "SCDI_variance", "SNCI_Norm", "SCDI_Norm"]
-        )
-    if "f9" in base_fields:
-        insert_idx = base_fields.index("f9") + 1
+    available = {str(name).strip() for name in (fieldnames or []) if str(name).strip()}
+    filtered = [name for name in preferred_head if name in available]
+    if filtered:
+        return filtered
+    return [name for name in preferred_head if name != "source_batch"]
+
+
+def _merge_master_and_batch_csv(master_csv: str, new_csv: str, args) -> dict:
+    water_mode = bool(getattr(args, "water", False))
+    master_csv = os.path.abspath(master_csv)
+    new_csv = os.path.abspath(new_csv)
+    if not os.path.exists(master_csv):
+        raise FileNotFoundError(f"Master CSV not found: {master_csv}")
+    if not os.path.exists(new_csv):
+        raise FileNotFoundError(f"New CSV not found: {new_csv}")
+
+    output_root = getattr(args, "merge_output_dir", None)
+    if output_root:
+        output_root = os.path.abspath(output_root)
     else:
-        insert_idx = len(base_fields)
-    return (
-        base_fields[:insert_idx]
-        + [
-            "KUID_raw",
-            "KUID",
-            "KUID_Cluster",
-            "KUID_Intensive_raw",
-            "KUID_Intensive",
-            "KUID_Intensive_Cluster",
-            "KUID_prefix2",
-            "KUID_prefix4",
-            "KUID_prefix6",
-        ]
-        + base_fields[insert_idx:]
+        output_root = os.path.join(os.path.dirname(master_csv), "Combined Results")
+    os.makedirs(output_root, exist_ok=True)
+
+    source_specs = [
+        {"source_batch": "master_batch", "path": master_csv, "type": "csv"},
+        {"source_batch": "new_batch", "path": new_csv, "type": "csv"},
+    ]
+    result = _combine_batch_sources(
+        source_directory=os.path.dirname(master_csv) or os.getcwd(),
+        source_specs=source_specs,
+        output_root=output_root,
+        water=water_mode,
+        mode="merge_master_and_new_csv",
     )
+
+    if bool(getattr(args, "overwrite_master_csv", False)):
+        shutil.copy2(result["batch_csv"], master_csv)
+        result["master_csv_updated"] = master_csv
+
+    return result
 
 
 def _persist_entry_outputs_with_kuid(entry: dict, water: bool = False):
@@ -2926,6 +2943,8 @@ def run_single_file(file_path: str, args):
         fail_table.add_column("Error")
         fail_table.add_row(os.path.basename(file_path), str(error))
         console.print(fail_table)
+    else:
+        _cleanup_compound_knf_json_outputs(results_root, water=bool(getattr(args, "water", False)))
 
 
 def _discover_input_files(directory: str, valid_exts: set[str] = None) -> list[str]:
@@ -2973,8 +2992,23 @@ def _record_file_name(record: dict) -> str:
 def _has_reusable_compound_outputs(file_path: str, results_root: str, water: bool = False) -> bool:
     stem = Path(file_path).stem
     result_dir = os.path.join(results_root, stem)
-    knf_json_path = os.path.join(result_dir, _final_output_name("knf.json", water))
-    return os.path.exists(knf_json_path)
+    output_txt_path = os.path.join(result_dir, _final_output_name("output.txt", water))
+    return os.path.exists(output_txt_path)
+
+
+def _cleanup_compound_knf_json_outputs(results_root: str, water: bool = False) -> int:
+    target_name = _final_output_name("knf.json", water)
+    removed = 0
+    for root, _, files in os.walk(results_root):
+        if target_name not in files:
+            continue
+        path = os.path.join(root, target_name)
+        try:
+            os.remove(path)
+            removed += 1
+        except Exception as e:
+            logging.warning("Could not remove %s: %s", path, e)
+    return removed
 
 
 def _dedupe_batch_records(records: list[dict]) -> list[dict]:
@@ -3692,10 +3726,17 @@ def write_batch_aggregate_json(
             "knf": None,
         }
 
-        if record["status"] == "success" and os.path.exists(knf_path):
-            try:
-                with open(knf_path, "r", encoding="utf-8") as f:
-                    knf_data = json.load(f)
+        if record["status"] == "success":
+            knf_data = record.get("knf") if isinstance(record.get("knf"), dict) else None
+            if knf_data is None and os.path.exists(knf_path):
+                try:
+                    with open(knf_path, "r", encoding="utf-8") as f:
+                        knf_data = json.load(f)
+                except Exception as e:
+                    entry["status"] = "failed"
+                    entry["error"] = f"Failed to read {_final_output_name('knf.json', water)}: {e}"
+                    failure_count += 1
+            if knf_data is not None and entry["status"] == "success":
                 entry["knf"] = knf_data
                 knf_results.append(
                     {
@@ -3706,14 +3747,12 @@ def write_batch_aggregate_json(
                     }
                 )
                 success_count += 1
-            except Exception as e:
+            elif entry["status"] == "success":
                 entry["status"] = "failed"
-                entry["error"] = f"Failed to read {_final_output_name('knf.json', water)}: {e}"
+                entry["error"] = (
+                    f"Missing KNF payload (record.knf or {_final_output_name('knf.json', water)} output)."
+                )
                 failure_count += 1
-        elif record["status"] == "success":
-            entry["status"] = "failed"
-            entry["error"] = f"Missing {_final_output_name('knf.json', water)} output."
-            failure_count += 1
         elif record["status"] == "stopped":
             stopped_count += 1
         else:
@@ -4467,6 +4506,7 @@ def run_batch_directory(
         for file_path, error in failures:
             fail_table.add_row(os.path.basename(file_path), str(error))
         console.print(fail_table)
+    _cleanup_compound_knf_json_outputs(results_root, water=water_mode)
 
 def main():
     # If no arguments provided -> Interactive mode (simplified)
@@ -4639,6 +4679,26 @@ def main():
         ),
     )
     parser.add_argument(
+        '--merge-master-csv',
+        default=None,
+        help="Path to the master batch CSV.",
+    )
+    parser.add_argument(
+        '--merge-new-csv',
+        default=None,
+        help="Path to the new batch CSV to append into the master set.",
+    )
+    parser.add_argument(
+        '--merge-output-dir',
+        default=None,
+        help="Output directory for merged universal-KUID outputs. Default: <master_csv_dir>/Combined Results",
+    )
+    parser.add_argument(
+        '--overwrite-master-csv',
+        action='store_true',
+        help="Overwrite --merge-master-csv with the merged/recomputed CSV output.",
+    )
+    parser.add_argument(
         '--ram-per-job',
         type=float,
         default=50.0,
@@ -4785,6 +4845,10 @@ def main():
         parser.error("--batches must be a positive integer, or provided without a value for auto mode.")
     if args.batches is not None and args.universal_kuid:
         parser.error("Use either --batches or --universal-kuid, not both in the same command.")
+    if bool(args.merge_master_csv) ^ bool(args.merge_new_csv):
+        parser.error("Use both --merge-master-csv and --merge-new-csv together.")
+    if (args.batches is not None or args.universal_kuid) and (args.merge_master_csv or args.merge_new_csv):
+        parser.error("--merge-master-csv/--merge-new-csv cannot be combined with --batches or --universal-kuid.")
 
     if args.multi:
         args.processing = "multi"
@@ -4830,7 +4894,8 @@ def main():
         print(f"Manifest:   {atlas_from_existing['manifest_path']}")
         return
 
-    if not args.universal_kuid:
+    merge_mode = bool(args.merge_master_csv and args.merge_new_csv)
+    if not args.universal_kuid and not merge_mode:
         first_ok = first_run.ensure_first_run_setup(
             force=args.refresh_first_run,
             multiwfn_path=args.multiwfn_path,
@@ -4854,7 +4919,14 @@ def main():
     # If user provided flags, use them.
     # Default behavior for 'knf <file>' without flags is now determined by argparse defaults.
     
-    if os.path.isdir(args.input_path):
+    if merge_mode:
+        merge_result = _merge_master_and_batch_csv(args.merge_master_csv, args.merge_new_csv, args)
+        print(f"Merged results root: {merge_result['output_root']}")
+        print(f"Combined Batch JSON: {merge_result['batch_json']}")
+        print(f"Combined Batch CSV:  {merge_result['batch_csv']}")
+        if merge_result.get("master_csv_updated"):
+            print(f"Updated master CSV:  {merge_result['master_csv_updated']}")
+    elif os.path.isdir(args.input_path):
         if args.universal_kuid:
             run_universal_kuid(args.input_path, args)
         elif args.batches is not None:
