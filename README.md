@@ -6,7 +6,7 @@ NCIForge is a physics-informed descriptor pipeline for non-covalent interactions
 It computes KNF descriptors, SNCI/SCDI metrics, and KUID-family indexing artifacts
 from molecular structure files using xTB + NCI backend + KNF post-processing.
 
-Current package version: `1.0.0`  
+Current package version: `1.0.8`  
 Release milestone tag: `v1`
 
 ## What It Covers
@@ -51,7 +51,6 @@ This opens an interactive CLI wizard that asks:
 - install scope: `global` or `local` virtual environment
 - PyTorch mode: `cpu`, `gpu`, or `skip`
 - whether to auto-setup external dependencies (`xtb`, `obabel`, etc.)
-- whether to install `gxtb`/`dxtb` helper packages
 
 Manual source install:
 
@@ -103,6 +102,15 @@ nciforge ./molecules --gpu
 - If a molecule hits CUDA OOM, that molecule is re-routed to CPU automatically.
 - The next molecule retries GPU automatically.
 - Uses memory-friendlier `float32` by default.
+
+CPU run (no GPU):
+
+```bash
+nciforge ./molecules --cpu
+```
+
+`--cpu` forces CPU execution. If PyTorch is unavailable, KNF auto-falls back to
+the Multiwfn CPU backend (when Multiwfn is installed).
 
 Split into batches:
 

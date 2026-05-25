@@ -53,7 +53,9 @@ def _run_cmd(cmd: List[str]) -> bool:
 def _check_tools(
     explicit_multiwfn_path: Optional[str] = None,
     require_multiwfn: bool = True,
+    persist_external_paths: bool = False,
 ) -> Dict[str, bool]:
+    utils.ensure_external_tools_in_path(persist=persist_external_paths)
     if require_multiwfn:
         utils.ensure_multiwfn_in_path(explicit_path=explicit_multiwfn_path)
     status = {
@@ -174,12 +176,14 @@ def ensure_first_run_setup(
     status = _check_tools(
         explicit_multiwfn_path=resolved_multiwfn,
         require_multiwfn=require_multiwfn,
+        persist_external_paths=True,
     )
     if not all(status.values()):
         _try_install_with_conda(status)
         status = _check_tools(
             explicit_multiwfn_path=resolved_multiwfn,
             require_multiwfn=require_multiwfn,
+            persist_external_paths=True,
         )
 
     if not all(status.values()):
@@ -187,6 +191,7 @@ def ensure_first_run_setup(
         status = _check_tools(
             explicit_multiwfn_path=resolved_multiwfn,
             require_multiwfn=require_multiwfn,
+            persist_external_paths=True,
         )
 
     cfg = _run_one_time_autoconfig(force=force)

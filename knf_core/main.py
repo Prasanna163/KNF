@@ -411,6 +411,47 @@ def _ensure_cuda_runtime_for_gpu_mode(allow_prompt: bool = True) -> None:
         )
 
 
+def _is_torch_available() -> tuple[bool, str]:
+    try:
+        import torch  # type: ignore  # noqa: F401
+        return True, ""
+    except Exception as e:
+        return False, str(e)
+
+
+def _resolve_cpu_backend_when_torch_missing(args) -> None:
+    backend = (getattr(args, "nci_backend", "torch") or "torch").strip().lower()
+    device = (getattr(args, "nci_device", "cpu") or "cpu").strip().lower()
+    if backend != "torch":
+        return
+
+    torch_ok, torch_err = _is_torch_available()
+    if torch_ok:
+        return
+
+    if device == "cuda" or bool(getattr(args, "gpu", False)):
+        raise RuntimeError(
+            "GPU mode requires PyTorch with CUDA support, but PyTorch is not available in this environment. "
+            f"Import error: {torch_err}"
+        )
+
+    # CPU mode: if torch is missing, auto-fallback to Multiwfn CPU backend.
+    utils.ensure_multiwfn_in_path(explicit_path=getattr(args, "multiwfn_path", None))
+    if shutil.which("Multiwfn") or shutil.which("Multiwfn.exe"):
+        args.nci_backend = "multiwfn"
+        args.nci_device = "cpu"
+        logging.warning(
+            "PyTorch not available; falling back to Multiwfn CPU backend. "
+            "Install torch to use the torch backend."
+        )
+        return
+
+    raise RuntimeError(
+        "PyTorch is not available for torch CPU backend and Multiwfn was not found for CPU fallback. "
+        "Install torch (CPU) or install Multiwfn and run with --cpu/--multiwfn."
+    )
+
+
 _BATCH_PRIMARY_CSV_NAME = "batch_knf_unified.csv"
 _BATCH_LEGACY_CSV_NAMES = (
     "atlas_submission.csv",
@@ -1225,7 +1266,7 @@ def write_batch_water_delta_outputs(
             f.write("\n")
 
 def check_dependencies(multiwfn_path: str = None, nci_backend: str = "torch"):
-    """Checks if required external tools are available in PATH."""
+    """Checks if required external tools are available in PATH or registered fallback locations."""
     cache_key = ((multiwfn_path or "").strip(), (nci_backend or "torch").strip().lower())
     cached = _DEPENDENCY_CHECK_CACHE.get(cache_key)
     if cached is not None:
@@ -1233,10 +1274,11 @@ def check_dependencies(multiwfn_path: str = None, nci_backend: str = "torch"):
     else:
         missing = []
     
-        if not shutil.which('obabel'):
+        utils.ensure_external_tools_in_path(persist=False)
+        if not utils.resolve_external_tool_command('obabel'):
             missing.append('obabel (Open Babel)')
         
-        if not shutil.which('xtb'):
+        if not utils.resolve_external_tool_command('xtb'):
             missing.append('xtb (Extended Tight Binding)')
         
         backend = (nci_backend or "torch").strip().lower()
@@ -4534,9 +4576,9 @@ def main():
             break
 
         nci_mode = input(
-            "Run mode [default/gpu/multiwfn] (default: default): "
+            "Run mode [default/cpu/gpu/multiwfn] (default: default): "
         ).strip().lower()
-        if nci_mode not in {"", "default", "gpu", "multiwfn"}:
+        if nci_mode not in {"", "default", "cpu", "gpu", "multiwfn"}:
             print(f"Unknown mode '{nci_mode}'. Using default.")
             nci_mode = "default"
         
@@ -4570,16 +4612,26 @@ def main():
             enable_stop_key = True
             interactive_quadrant_plot = False
             gpu = False
+            cpu = False
             
         args = Args()
 
-        if nci_mode == "gpu":
+        if nci_mode == "cpu":
+            args.cpu = True
+            args.nci_device = "cpu"
+        elif nci_mode == "gpu":
             args.gpu = True
             args.nci_backend = "torch"
             args.nci_device = "cuda"
         elif nci_mode == "multiwfn":
             args.nci_backend = "multiwfn"
-            args.nci_device = "auto"
+            args.nci_device = "cpu"
+
+        try:
+            _resolve_cpu_backend_when_torch_missing(args)
+        except RuntimeError as e:
+            print(f"Backend setup failed: {e}")
+            sys.exit(1)
 
         first_ok = first_run.ensure_first_run_setup(
             require_multiwfn=(args.nci_backend == "multiwfn"),
@@ -4749,6 +4801,14 @@ def main():
         ),
     )
     parser.add_argument(
+        '--cpu',
+        action='store_true',
+        help=(
+            "Force CPU execution. Prefers torch CPU backend when torch is installed; "
+            "otherwise auto-falls back to Multiwfn CPU backend."
+        ),
+    )
+    parser.add_argument(
         '--multiwfn',
         action='store_true',
         help="Use Multiwfn backend for NCI instead of default Torch backend"
@@ -4833,6 +4893,11 @@ def main():
         default=None,
         help="Path to Multiwfn executable or folder (saved for future runs)"
     )
+    parser.add_argument(
+        '--knf',
+        action='store_true',
+        help=argparse.SUPPRESS,
+    )
     
     args = parser.parse_args()
     args.input_path = utils.resolve_artifacted_path(args.input_path)
@@ -4841,6 +4906,10 @@ def main():
         parser.error("Use only one of --multi or --single.")
     if args.gpu and args.multiwfn:
         parser.error("Use only one of --gpu or --multiwfn.")
+    if args.gpu and args.cpu:
+        parser.error("Use only one of --gpu or --cpu.")
+    if args.cpu and args.multiwfn:
+        parser.error("Use only one of --cpu or --multiwfn.")
     if args.batches is not None and args.batches < 0:
         parser.error("--batches must be a positive integer, or provided without a value for auto mode.")
     if args.batches is not None and args.universal_kuid:
@@ -4857,12 +4926,15 @@ def main():
 
     if args.multiwfn:
         args.nci_backend = "multiwfn"
-        args.nci_device = "auto"
+        args.nci_device = "cpu"
     elif args.gpu:
         args.nci_backend = "torch"
         args.nci_device = "cuda"
         # Keep GPU mode memory-friendly by default; router handles adaptive fallback.
         args.nci_dtype = "float32"
+    elif args.cpu:
+        args.nci_backend = "torch"
+        args.nci_device = "cpu"
 
     # Configure logging after CLI args are known.
     if args.debug:
@@ -4873,6 +4945,11 @@ def main():
         )
     else:
         logging.basicConfig(level=logging.WARNING, format='%(levelname)s - %(message)s')
+
+    try:
+        _resolve_cpu_backend_when_torch_missing(args)
+    except RuntimeError as e:
+        parser.error(str(e))
 
     atlas_from_existing = try_write_atlas_bundle_from_existing_outputs(args)
     if atlas_from_existing:

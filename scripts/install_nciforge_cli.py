@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from typing import Optional
 
 
 def _run(cmd, check=True):
@@ -77,12 +78,102 @@ def _install_external_tools(installer):
     except Exception as exc:
         print(f"External dependency setup encountered an issue: {exc}")
 
+    _embed_external_tool_paths()
     missing = [name for name in ("xtb", "obabel") if shutil.which(name) is None]
     if missing:
         print(f"WARNING: Missing required tools after setup: {', '.join(missing)}")
         print("Please install them manually and ensure they are available in PATH.")
     else:
         print("External tool check passed: xtb and obabel found.")
+
+
+def _windows_persist_user_path(path_dir: str) -> bool:
+    if os.name != "nt":
+        return False
+    try:
+        import winreg
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Environment",
+            0,
+            winreg.KEY_READ | winreg.KEY_WRITE,
+        ) as key:
+            try:
+                raw, _ = winreg.QueryValueEx(key, "Path")
+                current = raw if isinstance(raw, str) else ""
+            except FileNotFoundError:
+                current = ""
+            parts = [p for p in current.split(";") if p]
+            norm = lambda p: os.path.normcase(os.path.normpath(p))
+            merged = []
+            seen = set()
+            for item in [path_dir] + parts:
+                n = norm(item)
+                if n in seen:
+                    continue
+                seen.add(n)
+                merged.append(item)
+            winreg.SetValueEx(key, "Path", 0, winreg.REG_EXPAND_SZ, ";".join(merged))
+        return True
+    except Exception:
+        return False
+
+
+def _find_tool_executable(tool: str) -> Optional[str]:
+    current = shutil.which(tool)
+    if current:
+        return current
+    names = [tool]
+    if os.name == "nt":
+        names.insert(0, f"{tool}.exe")
+
+    candidates = []
+    conda_prefix = os.environ.get("CONDA_PREFIX")
+    if conda_prefix:
+        candidates.extend(
+            [
+                Path(conda_prefix) / "Library" / "bin",
+                Path(conda_prefix) / "Scripts",
+                Path(conda_prefix) / "bin",
+            ]
+        )
+    conda_exe = os.environ.get("CONDA_EXE")
+    if conda_exe:
+        conda_root = Path(conda_exe).resolve().parent.parent
+        candidates.extend(
+            [
+                conda_root / "Library" / "bin",
+                conda_root / "Scripts",
+                conda_root / "bin",
+            ]
+        )
+    if os.name == "nt" and tool == "obabel":
+        pf = Path(os.environ.get("ProgramFiles", r"C:\Program Files"))
+        candidates.extend([pf / "OpenBabel-3.1.1", pf / "Open Babel 3.1.1", pf / "OpenBabel"])
+
+    seen = set()
+    for base in candidates:
+        key = os.path.normcase(os.path.normpath(str(base)))
+        if key in seen:
+            continue
+        seen.add(key)
+        for name in names:
+            exe = base / name
+            if exe.exists() and exe.is_file():
+                return str(exe)
+    return None
+
+
+def _embed_external_tool_paths() -> None:
+    for tool in ("xtb", "obabel"):
+        exe = _find_tool_executable(tool)
+        if not exe:
+            continue
+        tool_dir = str(Path(exe).parent)
+        path_parts = os.environ.get("PATH", "").split(os.pathsep)
+        if not any(os.path.normcase(os.path.normpath(p or "")) == os.path.normcase(os.path.normpath(tool_dir)) for p in path_parts):
+            os.environ["PATH"] = tool_dir + os.pathsep + os.environ.get("PATH", "")
+        _windows_persist_user_path(tool_dir)
 
 
 def _install_pytorch(python_exe: str, mode: str):
@@ -123,19 +214,13 @@ def _install_pytorch(python_exe: str, mode: str):
         )
 
 
-def _install_gxtb_related(python_exe: str):
-    # Best-effort helper packages commonly used around differentiable/graph xTB workflows.
-    _run([python_exe, "-m", "pip", "install", "--upgrade", "gxtb", "dxtb"], check=False)
-
-
 def main():
     print("NCIForge Interactive Installer")
     print("------------------------------")
 
     scope = _ask_choice("Install scope", ["local", "global"], "local")
-    torch_mode = _ask_choice("PyTorch mode", ["cpu", "gpu", "skip"], "cpu")
+    torch_mode = _ask_choice("PyTorch mode", ["cpu", "gpu", "skip"], "skip")
     setup_external = _ask_yes_no("Set up xtb/obabel and other external tools now?", True)
-    setup_gxtb = _ask_yes_no("Also install g-xtb helper Python packages (gxtb/dxtb)?", True)
 
     repo_root = Path(__file__).resolve().parents[1]
     python_exe = sys.executable
@@ -153,9 +238,6 @@ def main():
         _run([python_exe, "-m", "pip", "install", "--user", "-e", str(repo_root)])
 
     _install_pytorch(python_exe, torch_mode)
-
-    if setup_gxtb:
-        _install_gxtb_related(python_exe)
 
     if setup_external:
         installer = _choose_tool_installer()

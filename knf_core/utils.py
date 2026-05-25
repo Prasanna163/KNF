@@ -8,6 +8,9 @@ from collections import deque
 from pathlib import Path
 from typing import Optional
 
+if os.name == "nt":
+    import winreg
+
 TOOL_CONFIG_DIR = ".knf"
 TOOL_CONFIG_FILE = "tool_paths.json"
 _MOJIBAKE_PROBE_CHARS = {
@@ -139,6 +142,180 @@ def register_multiwfn_path(candidate_path: str, persist: bool = True) -> Optiona
         config["multiwfn_path"] = exe
         _save_tool_config(config)
     return exe
+
+
+def _path_contains_dir(path_dir: str) -> bool:
+    existing = os.environ.get("PATH", "")
+    norm_target = os.path.normcase(os.path.normpath(path_dir))
+    for item in existing.split(os.pathsep):
+        if os.path.normcase(os.path.normpath(item or "")) == norm_target:
+            return True
+    return False
+
+
+def _prepend_path_dir(path_dir: str) -> None:
+    if not _path_contains_dir(path_dir):
+        os.environ["PATH"] = path_dir + os.pathsep + os.environ.get("PATH", "")
+
+
+def _persist_user_path_windows(path_dir: str) -> bool:
+    if os.name != "nt":
+        return False
+    try:
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Environment",
+            0,
+            winreg.KEY_READ | winreg.KEY_WRITE,
+        ) as key:
+            try:
+                raw, _ = winreg.QueryValueEx(key, "Path")
+                current = raw if isinstance(raw, str) else ""
+            except FileNotFoundError:
+                current = ""
+            parts = [p for p in current.split(";") if p]
+            deduped = []
+            seen = set()
+            for part in [path_dir] + parts:
+                norm = os.path.normcase(os.path.normpath(part))
+                if norm in seen:
+                    continue
+                seen.add(norm)
+                deduped.append(part)
+            winreg.SetValueEx(key, "Path", 0, winreg.REG_EXPAND_SZ, ";".join(deduped))
+        return True
+    except Exception as exc:
+        logging.debug("Could not persist user PATH on Windows: %s", exc)
+        return False
+
+
+def _tool_names(tool: str) -> tuple[str, ...]:
+    if tool == "xtb":
+        return ("xtb.exe", "xtb")
+    if tool == "obabel":
+        return ("obabel.exe", "obabel")
+    return (f"{tool}.exe", tool)
+
+
+def _resolve_candidate_executable(candidate_path: str, names: tuple[str, ...]) -> Optional[str]:
+    if not candidate_path:
+        return None
+    candidate = Path(candidate_path).expanduser()
+    if not candidate.is_absolute():
+        candidate = (Path.cwd() / candidate).resolve()
+    if candidate.is_file():
+        if candidate.name.lower() in {n.lower() for n in names}:
+            return str(candidate)
+        return None
+    if candidate.is_dir():
+        for name in names:
+            exe = candidate / name
+            if exe.exists() and exe.is_file():
+                return str(exe.resolve())
+    return None
+
+
+def _common_external_tool_candidates(tool: str) -> list[str]:
+    candidates: list[str] = []
+
+    config = _load_tool_config()
+    key = f"{tool}_path"
+    saved = config.get(key)
+    if isinstance(saved, str) and saved:
+        candidates.append(saved)
+    if tool == "obabel":
+        py312_env = os.environ.get("KNF_OBABEL_PY312_ENV") or config.get("obabel_py312_env")
+        if isinstance(py312_env, str) and py312_env:
+            candidates.append(str(Path(py312_env) / "Scripts"))
+            candidates.append(str(Path(py312_env) / "bin"))
+            candidates.append(py312_env)
+
+    for env_name in ("CONDA_PREFIX",):
+        root = os.environ.get(env_name)
+        if not root:
+            continue
+        candidates.append(str(Path(root) / "Library" / "bin"))
+        candidates.append(str(Path(root) / "bin"))
+        candidates.append(str(Path(root) / "Scripts"))
+
+    conda_exe = os.environ.get("CONDA_EXE")
+    if conda_exe:
+        conda_root = Path(conda_exe).resolve().parent.parent
+        candidates.append(str(conda_root / "Library" / "bin"))
+        candidates.append(str(conda_root / "bin"))
+        candidates.append(str(conda_root / "Scripts"))
+
+    if os.name == "nt" and tool == "obabel":
+        pf = os.environ.get("ProgramFiles", r"C:\Program Files")
+        candidates.extend(
+            [
+                str(Path(pf) / "OpenBabel-3.1.1"),
+                str(Path(pf) / "Open Babel 3.1.1"),
+                str(Path(pf) / "OpenBabel"),
+            ]
+        )
+
+    for p in os.environ.get("PATH", "").split(os.pathsep):
+        if p:
+            candidates.append(p)
+
+    deduped = []
+    seen = set()
+    for c in candidates:
+        k = os.path.normcase(os.path.normpath(c))
+        if k in seen:
+            continue
+        seen.add(k)
+        deduped.append(c)
+    return deduped
+
+
+def register_external_tool_path(tool: str, candidate_path: str, persist: bool = True) -> Optional[str]:
+    names = _tool_names(tool)
+    exe = _resolve_candidate_executable(candidate_path, names)
+    if not exe:
+        return None
+
+    exe_dir = str(Path(exe).parent)
+    _prepend_path_dir(exe_dir)
+
+    if persist:
+        config = _load_tool_config()
+        config[f"{tool}_path"] = exe
+        _save_tool_config(config)
+        _persist_user_path_windows(exe_dir)
+    return exe
+
+
+def ensure_external_tools_in_path(persist: bool = False) -> dict[str, Optional[str]]:
+    resolved: dict[str, Optional[str]] = {"xtb": None, "obabel": None}
+    for tool in ("xtb", "obabel"):
+        current = shutil.which(tool)
+        if current:
+            resolved[tool] = current
+            continue
+        names = _tool_names(tool)
+        for candidate in _common_external_tool_candidates(tool):
+            exe = _resolve_candidate_executable(candidate, names)
+            if not exe:
+                continue
+            resolved[tool] = register_external_tool_path(tool, exe, persist=persist)
+            if resolved[tool]:
+                break
+    return resolved
+
+
+def resolve_external_tool_command(tool: str) -> Optional[str]:
+    """Resolves a callable executable path for an external tool."""
+    names = _tool_names(tool)
+    current = shutil.which(tool)
+    if current:
+        return current
+    for candidate in _common_external_tool_candidates(tool):
+        exe = _resolve_candidate_executable(candidate, names)
+        if exe:
+            return exe
+    return None
 
 
 def _common_multiwfn_candidates() -> list[str]:
