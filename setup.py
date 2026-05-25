@@ -6,7 +6,7 @@ with open(os.path.join(this_directory, 'README.md'), encoding='utf-8') as f:
     long_description = f.read()
 
 setup(
-    name='nciforge',
+    name='knf',
     version='1.0.8',
     description='Automated Descriptor Engine for SNCI, SCDI, and 9D KNF',
     long_description=long_description,
