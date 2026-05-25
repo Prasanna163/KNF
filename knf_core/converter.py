@@ -1,6 +1,6 @@
 import os
 import logging
-from .utils import run_subprocess, normalized_extension
+from .utils import run_subprocess, normalized_extension, resolve_external_tool_command
 
 def ensure_xyz(input_path: str, output_dir: str) -> str:
     """
@@ -32,7 +32,8 @@ def ensure_xyz(input_path: str, output_dir: str) -> str:
     # format is derived from extension (without dot)
     informat = ext[1:]
     
-    cmd = ['obabel',f'-i{informat}', input_path, '-oxyz', '-O', target_xyz]
+    obabel_cmd = resolve_external_tool_command("obabel") or "obabel"
+    cmd = [obabel_cmd, f'-i{informat}', input_path, '-oxyz', '-O', target_xyz]
     
     run_subprocess(cmd)
     
