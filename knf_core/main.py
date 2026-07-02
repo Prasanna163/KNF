@@ -16,6 +16,8 @@ from copy import deepcopy
 from queue import Queue
 from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError, CancelledError
 from datetime import datetime, timezone
+from rich import box
+from rich.align import Align
 from .pipeline import KNFPipeline
 from . import utils
 from . import autoconfig
@@ -27,10 +29,12 @@ from rich.live import Live
 from rich.panel import Panel
 from rich.progress import BarColumn, Progress, TaskProgressColumn, TextColumn, TimeRemainingColumn, TimeElapsedColumn
 from rich.table import Table
+from rich.text import Text
 
 CLI_NAME = "NCIForge"
 CLI_VERSION = "v1"
 CLI_TITLE = f"{CLI_NAME} {CLI_VERSION}"
+CLI_SUBTITLE = "Non-Covalent Interaction Atlas Engine"
 DISPLAY_NAME_LIMIT = 40
 OUTPUT_PATH_DISPLAY_LIMIT = 72
 STOP_KEY = "q"
@@ -39,6 +43,143 @@ GPU_SETUP_STATE_FILE = os.path.join(os.path.expanduser("~"), ".knf_gpu_setup_sta
 PYTORCH_CUDA_INDEX_URL = "https://download.pytorch.org/whl/cu128"
 GPU_RUNTIME_CACHE_MAX_AGE_SECONDS = 12 * 60 * 60
 _DEPENDENCY_CHECK_CACHE: dict[tuple[str, str], list[str]] = {}
+STARTUP_SPLASH = r"""
+███╗   ██╗ ██████╗██╗███████╗ ██████╗ ██████╗  ██████╗ ███████╗
+████╗  ██║██╔════╝██║██╔════╝██╔═══██╗██╔══██╗██╔════╝ ██╔════╝
+██╔██╗ ██║██║     ██║█████╗  ██║   ██║████████╗██║  ███╗█████╗
+██║╚██╗██║██║     ██║██╔══╝  ██║   ██║██╔══██╗██║   ██║██╔══╝
+██║ ╚████║╚██████╗██║██║     ╚██████╔╝██║  ██║╚██████╔╝███████╗
+╚═╝  ╚═══╝ ╚═════╝╚═╝╚═╝      ╚═════╝ ╚═╝  ╚═╝ ╚═════╝ ╚══════╝
+
+              Non-Covalent Interaction Atlas Engine
+"""
+
+
+def _supports_unicode_terminal(stream=None) -> bool:
+    stream = stream or sys.stdout
+    encoding = getattr(stream, "encoding", "") or ""
+    if "utf" in encoding.lower():
+        return True
+    if os.name == "nt" and getattr(stream, "isatty", lambda: False)():
+        return True
+    if os.environ.get("WT_SESSION") or os.environ.get("TERM_PROGRAM"):
+        return True
+    return False
+
+
+def _brand_panel() -> Panel:
+    unicode_ok = _supports_unicode_terminal(sys.stdout)
+    title = Text()
+    title.append(f" {CLI_NAME} ", style="bold black on bright_cyan")
+    title.append(f" {CLI_SUBTITLE}", style="bold white")
+    return Panel(
+        Align.center(title),
+        border_style="bright_cyan",
+        padding=(0, 1),
+        box=(box.HEAVY if unicode_ok else box.ASCII),
+    )
+
+
+def _clear_terminal() -> None:
+    os.system("cls" if os.name == "nt" else "clear")
+
+
+def _ensure_utf8_stdout() -> None:
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            try:
+                reconfigure(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
+
+
+def _center_text_block(text: str) -> str:
+    width = shutil.get_terminal_size((100, 24)).columns
+    lines = []
+    for line in text.strip("\n").splitlines():
+        stripped = line.rstrip()
+        lines.append("" if not stripped else stripped.center(width))
+    return "\n".join(lines)
+
+
+def _show_startup_splash() -> None:
+    splash = _center_text_block(STARTUP_SPLASH)
+    print()
+    print(splash)
+    print()
+
+
+def _key_value_panel(
+    rows: list[tuple[str, str]],
+    *,
+    title: str,
+    border_style: str = "cyan",
+    title_align: str = "left",
+) -> Panel:
+    table = Table.grid(padding=(0, 2), expand=True)
+    table.add_column(style="bold white", ratio=1)
+    table.add_column(style="white", ratio=4)
+    for key, value in rows:
+        table.add_row(key, value)
+    return Panel(
+        table,
+        title=title,
+        title_align=title_align,
+        border_style=border_style,
+        padding=(0, 1),
+        box=(box.ROUNDED if _supports_unicode_terminal(sys.stdout) else box.ASCII),
+    )
+
+
+def _notices_panel(notices: list[str]) -> Panel:
+    table = Table.grid(expand=True)
+    table.add_column()
+    unicode_ok = _supports_unicode_terminal(sys.stdout)
+    if notices:
+        for notice in notices:
+            line = Text()
+            line.append(("[i] " if not unicode_ok else "[ℹ] "), style="bold cyan")
+            line.append(notice, style="white")
+            table.add_row(line)
+    else:
+        quiet = Text()
+        quiet.append(("[OK] " if not unicode_ok else "[✓] "), style="bold green")
+        quiet.append("No active notices.", style="white")
+        table.add_row(quiet)
+    return Panel(
+        table,
+        title="SYSTEM NOTICES",
+        title_align="left",
+        border_style="cyan",
+        padding=(0, 1),
+        box=(box.ROUNDED if unicode_ok else box.ASCII),
+    )
+
+
+def _calculation_results_panel(rows: list[tuple[str, str, str]], *, title: str = "CALCULATION RESULTS") -> Panel:
+    unicode_ok = _supports_unicode_terminal(sys.stdout)
+    table = Table(
+        title=title,
+        expand=True,
+        box=(box.SIMPLE_HEAVY if unicode_ok else box.ASCII),
+        show_lines=False,
+        pad_edge=False,
+    )
+    table.add_column("File", overflow="fold")
+    table.add_column("Elapsed", justify="right", width=10)
+    table.add_column("Status", width=10)
+    for row in rows:
+        table.add_row(*row)
+    if not rows:
+        table.add_row("-", "-", "[yellow]running[/yellow]")
+    return Panel(
+        table,
+        border_style="bright_cyan",
+        padding=(0, 1),
+        box=(box.ROUNDED if unicode_ok else box.ASCII),
+    )
 
 
 class _NoLive:
@@ -2908,20 +3049,23 @@ def run_single_file(file_path: str, args):
             peak_cpu = max(peak_cpu, avg_cpu)
         peak_ram = max(peak_ram, ram_mb)
 
-        header = Table.grid(padding=(0, 2))
-        header.add_column(style="bold")
-        header.add_column()
-        header.add_row(CLI_NAME, CLI_VERSION)
-        header.add_row("Detected", f"{physical}C / {logical}T")
-        header.add_row("Mode", "single")
-        header.add_row("File", _display_name(file_path))
-        header.add_row("Output", _display_path(results_root))
-        header.add_row("Avg CPU", f"{avg_cpu:.1f}%")
-        header.add_row("RAM", f"{ram_mb:.1f} MB")
-        header.add_row("Status", f"[{status_style}]{status_text}[/{status_style}]")
+        init_panel = _key_value_panel(
+            [
+                ("Detected", f"{physical}C / {logical}T"),
+                ("Mode", "single"),
+                ("File", _display_name(file_path)),
+                ("Output", _display_path(results_root)),
+                ("Avg CPU", f"{avg_cpu:.1f}%"),
+                ("RAM", f"{ram_mb:.1f} MB"),
+                ("Status", f"[{status_style}]{status_text}[/{status_style}]"),
+            ],
+            title="SYSTEM INITIALIZATION",
+            border_style="cyan",
+        )
 
         return Group(
-            Panel(header, title=f"{CLI_NAME} Single Run", border_style="cyan"),
+            _brand_panel(),
+            init_panel,
             progress,
         )
 
@@ -2977,10 +3121,19 @@ def run_single_file(file_path: str, args):
             kuid_issue = kuid_summary.get("error") or kuid_summary.get("reason")
             if kuid_issue:
                 summary.add_row("KUID", f"not updated ({kuid_issue})")
-    console.print(Panel(summary, title="Run Completed", border_style="green" if success else "red"))
+    console.print(
+        Panel(
+            summary,
+            title="PROCESS COMPLETE",
+            title_align="left",
+            border_style="green" if success else "red",
+            padding=(0, 1),
+            box=(box.ROUNDED if _supports_unicode_terminal(sys.stdout) else box.ASCII),
+        )
+    )
 
     if not success:
-        fail_table = Table(title="Failure", expand=True)
+        fail_table = Table(title="FAILED CALCULATION", expand=True, box=(box.SIMPLE_HEAVY if _supports_unicode_terminal(sys.stdout) else box.ASCII))
         fail_table.add_column("File")
         fail_table.add_column("Error")
         fail_table.add_row(os.path.basename(file_path), str(error))
@@ -4227,58 +4380,68 @@ def run_batch_directory(
             else:
                 throughput_trend = "near average"
 
-        header = Table.grid(padding=(0, 2))
-        header.add_column(style="bold")
-        header.add_column()
-        header.add_row(CLI_NAME, CLI_VERSION)
-        header.add_row("Detected", f"{physical}C / {logical}T")
-        if mode == "multi":
-            if use_gpu_overlap:
-                header.add_row("Mode", f"multi (cpu->gpu overlap: {workers} CPU + 1 GPU)")
-            else:
-                mode_text = "auto" if args.workers is None else "manual"
-                header.add_row("Mode", f"multi ({mode_text} -> {workers} workers)")
-        else:
-            header.add_row("Mode", "single")
-        header.add_row("Files", str(total))
-        header.add_row("Completed", f"{completed}/{total}")
-        header.add_row("Output", _display_path(results_root))
-        header.add_row("Active Workers", str(active_workers))
         failed_count = len(failures)
         running_count = max(0, min(active_workers, total - completed))
         jobs_per_min = (processed_count / max(elapsed, 1e-6)) * 60 if processed_count else 0.0
-        header.add_row(
-            "Status",
-            f"Done {succeeded} | Failed {failed_count} | Running {running_count} | {jobs_per_min:.1f} jobs/min",
-        )
-        header.add_row("Batch Runtime", _fmt_elapsed(elapsed))
-        if projected_total_runtime is not None:
-            header.add_row("Projected Total", _fmt_elapsed(projected_total_runtime))
-        header.add_row("Avg CPU", f"{avg_cpu:.1f}%")
-        header.add_row("RAM", f"{ram_mb:.1f} MB")
-        if processed_count:
-            header.add_row("Throughput", f"{compounds_per_hour:.1f} compounds/hour")
-            header.add_row("Avg / Compound", f"{avg_sec_per_compound:.1f}s")
-        else:
-            header.add_row("Throughput", "n/a")
-            header.add_row("Avg / Compound", "n/a")
-        if recent_avg_sec is not None:
-            header.add_row("Recent (8) / Compound", f"{recent_avg_sec:.1f}s ({throughput_trend})")
-        header.add_row("ETA", _fmt_elapsed(eta))
 
-        jobs = Table(title="Completed Jobs", expand=True)
-        jobs.add_column("File", overflow="fold")
-        jobs.add_column("Time", justify="right", width=8)
-        jobs.add_column("Status", width=8)
-        for row in completed_rows[-15:]:
-            jobs.add_row(*row)
-        if not completed_rows:
-            jobs.add_row("-", "-", "running")
+        if mode == "multi":
+            if use_gpu_overlap:
+                mode_text = f"multi (cpu->gpu overlap: {workers} CPU + 1 GPU)"
+            else:
+                mode_text = f"multi ({'auto' if args.workers is None else 'manual'} -> {workers} workers)"
+        else:
+            mode_text = "single"
+
+        notices = []
+        if use_gpu_overlap:
+            notices.append("CUDA overlap scheduling is enabled for multi-worker runs.")
+        elif mode == "multi" and args.workers is None:
+            notices.append("Worker count was auto-sized from system resources.")
+        if skipped_existing:
+            notices.append(f"Resume mode skipped {skipped_existing} existing file(s).")
+        if stop_requested:
+            notices.append("Stop requested. Running tasks will finish before outputs are finalized.")
+        if failures:
+            notices.append(f"{len(failures)} file(s) failed and are listed below.")
+
+        init_panel = _key_value_panel(
+            [
+                ("Detected", f"{physical}C / {logical}T"),
+                ("Mode", mode_text),
+                ("Files", str(total)),
+                ("Completed", f"{completed}/{total}"),
+                ("Output", _display_path(results_root)),
+                ("Active Workers", str(active_workers)),
+            ],
+            title="SYSTEM INITIALIZATION",
+            border_style="cyan",
+        )
+
+        pipeline_panel = _key_value_panel(
+            [
+                ("Batch Runtime", _fmt_elapsed(elapsed)),
+                ("Projected Total", _fmt_elapsed(projected_total_runtime) if projected_total_runtime is not None else "n/a"),
+                ("Avg CPU", f"{avg_cpu:.1f}%"),
+                ("RAM", f"{ram_mb:.1f} MB"),
+                ("Throughput", f"{compounds_per_hour:.1f} compounds/hour" if processed_count else "n/a"),
+                ("Avg / Compound", f"{avg_sec_per_compound:.1f}s" if processed_count else "n/a"),
+                ("Recent (8) / Compound", f"{recent_avg_sec:.1f}s ({throughput_trend})" if recent_avg_sec is not None else "warming up"),
+                ("ETA", _fmt_elapsed(eta)),
+                ("Status", f"Done {succeeded} | Failed {failed_count} | Running {running_count} | {jobs_per_min:.1f} jobs/min"),
+            ],
+            title="EXECUTION PIPELINE",
+            border_style="cyan",
+        )
+
+        results_panel = _calculation_results_panel(completed_rows, title="CALCULATION RESULTS")
 
         return Group(
-            Panel(header, title=f"{CLI_NAME} Batch Summary", border_style="cyan"),
+            _brand_panel(),
+            init_panel,
+            pipeline_panel,
+            _notices_panel(notices),
             progress,
-            jobs,
+            results_panel,
         )
 
     live_enabled = bool(getattr(sys.stdout, "isatty", lambda: False)())
@@ -4537,12 +4700,24 @@ def run_batch_directory(
         summary.add_row("Quadrant Plot", f"not generated ({quadrant_payload['plot_error']})")
     if quadrant_payload.get("quadrant_json"):
         summary.add_row("Quadrant JSON", quadrant_payload["quadrant_json"])
-    panel_title = "Batch Stopped" if stop_requested else "Batch Completed"
     panel_color = "yellow" if stop_requested else "green"
-    console.print(Panel(summary, title=panel_title, border_style=panel_color))
+    console.print(
+        Panel(
+            summary,
+            title="PROCESS COMPLETE",
+            title_align="left",
+            border_style=panel_color,
+            padding=(0, 1),
+            box=(box.ROUNDED if _supports_unicode_terminal(sys.stdout) else box.ASCII),
+        )
+    )
 
     if failures:
-        fail_table = Table(title="Failed Files", expand=True)
+        fail_table = Table(
+            title="FAILED FILES",
+            expand=True,
+            box=(box.SIMPLE_HEAVY if _supports_unicode_terminal(sys.stdout) else box.ASCII),
+        )
         fail_table.add_column("File")
         fail_table.add_column("Error")
         for file_path, error in failures:
@@ -4551,6 +4726,9 @@ def run_batch_directory(
     _cleanup_compound_knf_json_outputs(results_root, water=water_mode)
 
 def main():
+    _ensure_utf8_stdout()
+    _clear_terminal()
+    _show_startup_splash()
     # If no arguments provided -> Interactive mode (simplified)
     if len(sys.argv) == 1:
         logging.basicConfig(
@@ -4558,10 +4736,9 @@ def main():
             format='%(asctime)s - %(levelname)s - %(message)s',
             datefmt='%H:%M:%S'
         )
-        print("\n------------------------------------------------------------")
-        print(f"      {CLI_NAME} Interactive Mode")
-        print("------------------------------------------------------------\n")
-        
+        Console().print(_brand_panel())
+        print()
+
         while True:
             input_path = input("Enter path to input file or folder (or 'q' to quit): ").strip()
             if input_path.lower() == 'q':

@@ -76,6 +76,40 @@ Compatibility alias (still supported):
 
 - `knf`
 
+## HTTP API
+
+If you want the pipeline reachable over HTTP, install the API extra:
+
+```bash
+pip install -e ".[api]"
+```
+
+Start the server:
+
+```bash
+nciforge-api --host 0.0.0.0 --port 8000
+```
+
+Or run Uvicorn directly:
+
+```bash
+uvicorn knf_core.api:app --host 0.0.0.0 --port 8000
+```
+
+Available endpoints:
+
+- `GET /health`
+- `GET /jobs`
+- `POST /jobs/path`
+- `POST /jobs/upload`
+- `GET /jobs/{job_id}`
+- `GET /jobs/{job_id}/download/{artifact_name}`
+
+The upload endpoint accepts multipart form data with:
+
+- `file`: the molecular file to process
+- `options_json`: a JSON string with run options such as `charge`, `spin`, `nci_backend`, and `output_dir`
+
 ## Example Runs
 
 Single molecule:

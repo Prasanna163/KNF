@@ -6,7 +6,7 @@ with open(os.path.join(this_directory, 'README.md'), encoding='utf-8') as f:
     long_description = f.read()
 
 setup(
-    name='knf',
+    name='nciforge',
     version='1.0.8',
     description='Automated Descriptor Engine for SNCI, SCDI, and 9D KNF',
     long_description=long_description,
@@ -19,6 +19,7 @@ setup(
         'console_scripts': [
             'nciforge=knf_core.main:main',
             'knf=knf_core.main:main',
+            'nciforge-api=knf_core.api:main',
         ],
     },
     install_requires=[
@@ -29,9 +30,10 @@ setup(
         'rdkit',
     ],
     extras_require={
+        'api': ['fastapi', 'uvicorn[standard]', 'python-multipart'],
         'torch-nci': ['torch'],
         'plots': ['matplotlib'],
-        'full': ['torch', 'matplotlib'],
+        'full': ['torch', 'matplotlib', 'fastapi', 'uvicorn[standard]', 'python-multipart'],
     },
     classifiers=[
         'Programming Language :: Python :: 3',
