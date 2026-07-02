@@ -38,6 +38,9 @@ class KNFPipeline:
         scdi_var_min: float = None,
         scdi_var_max: float = None,
         wbo_mode: str = "native",
+        preopt_engine: str = "uff",
+        xtb_engine: str = "xtb",
+        xtb_gpu_atom_cutoff: int = 350,
     ):
         self.input_file = utils.resolve_artifacted_path(input_file)
         self.charge = charge
@@ -62,7 +65,10 @@ class KNFPipeline:
         self.scdi_var_min = scdi_var_min
         self.scdi_var_max = scdi_var_max
         self.wbo_mode = (wbo_mode or "native").strip().lower()
-        
+        self.preopt_engine = (preopt_engine or "uff").strip().lower()
+        self.xtb_engine = (xtb_engine or "xtb").strip().lower()
+        self.xtb_gpu_atom_cutoff = int(xtb_gpu_atom_cutoff)
+
         self.base_name = Path(self.input_file).stem
         default_output_root = os.path.join(os.path.dirname(self.input_file), "Results")
         self.output_root = os.path.abspath(output_root) if output_root else default_output_root
@@ -139,6 +145,35 @@ class KNFPipeline:
             name for name in required if not os.path.exists(os.path.join(self.results_dir, name))
         ]
         return len(missing) == 0, missing
+
+    @staticmethod
+    def _atom_count_xyz(xyz_path: str) -> int:
+        """Reads the atom count from the header line of an .xyz file (0 on failure)."""
+        try:
+            with open(xyz_path, "r", encoding="utf-8", errors="replace") as f:
+                return int(f.readline().strip())
+        except Exception:
+            return 0
+
+    def _resolve_xtb_cmd(self, xyz_path: str) -> str:
+        """Resolves which xTB launcher to use for this molecule.
+
+        'xtb'/'xtbx' are used verbatim. 'auto' size-gates on atom count: the
+        GPU front-end (xtbx) carries a large fixed WSL/CUDA launch cost, so it
+        only pays off at/above the cutoff; smaller systems stay on native xtb.
+        """
+        engine = self.xtb_engine
+        if engine != "auto":
+            return engine
+        n = self._atom_count_xyz(xyz_path)
+        chosen = "xtbx" if (n and n >= self.xtb_gpu_atom_cutoff) else "xtb"
+        logging.info(
+            "xTB engine auto-gate: %s atoms vs cutoff %s -> %s",
+            n or "unknown",
+            self.xtb_gpu_atom_cutoff,
+            chosen,
+        )
+        return chosen
 
     def _run_torch_nci_with_adaptive_fallback(
         self,
@@ -308,12 +343,20 @@ class KNFPipeline:
 
         if not os.path.exists(optimized_xyz) or self.force:
             uhf = self.spin - 1
-            # ---- UFF pre-optimisation --------------------------------
-            self._stage(2, "UFF Pre-optimisation")
-            wrapper.run_uff_preopt(work_xyz)
+            # ---- pre-optimisation (UFF by default, GeoInit warm-start opt-in) ----
+            preopt_label = (
+                "GeoInit Pre-optimisation"
+                if self.preopt_engine == "geoinit"
+                else "UFF Pre-optimisation"
+            )
+            self._stage(2, preopt_label)
+            wrapper.run_preopt(work_xyz, engine=self.preopt_engine)
 
-            self._stage(3, "xTB Opt")
-            wrapper.run_xtb_opt(work_xyz, self.charge, uhf, use_water=self.water)
+            opt_cmd = self._resolve_xtb_cmd(work_xyz)
+            self._stage(3, f"xTB Opt [{opt_cmd}]")
+            wrapper.run_xtb_opt(
+                work_xyz, self.charge, uhf, use_water=self.water, xtb_cmd=opt_cmd
+            )
 
 
         wbo_file = os.path.join(self.results_dir, 'wbo')
@@ -326,8 +369,11 @@ class KNFPipeline:
             or self.force
         ):
             uhf = self.spin - 1
-            self._stage(4, "xTB SP")
-            wrapper.run_xtb_sp(optimized_xyz, self.charge, uhf, use_water=self.water)
+            sp_cmd = self._resolve_xtb_cmd(optimized_xyz)
+            self._stage(4, f"xTB SP [{sp_cmd}]")
+            wrapper.run_xtb_sp(
+                optimized_xyz, self.charge, uhf, use_water=self.water, xtb_cmd=sp_cmd
+            )
         elif not xtb_ready:
             logging.info(
                 "xTB artifacts incomplete for %s; missing=%s. Reused available optimized geometry and completed missing stages.",
@@ -571,6 +617,8 @@ class KNFPipeline:
                 'wbo_overlap_model': wbo_overlap_model,
                 'wbo_native_n_ao': wbo_native_n_ao,
                 'wbo_mode': wbo_mode,
+                'preopt_engine': self.preopt_engine,
+                'xtb_engine': self.xtb_engine,
                 'xtb_water': self.water,
                 'nci_backend': self.nci_backend,
                 'nci_status': 'success' if nci_success else 'skipped',

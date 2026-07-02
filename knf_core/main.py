@@ -1406,22 +1406,33 @@ def write_batch_water_delta_outputs(
                 f.write("\n")
             f.write("\n")
 
-def check_dependencies(multiwfn_path: str = None, nci_backend: str = "torch"):
+def check_dependencies(multiwfn_path: str = None, nci_backend: str = "torch", xtb_engine: str = "xtb"):
     """Checks if required external tools are available in PATH or registered fallback locations."""
-    cache_key = ((multiwfn_path or "").strip(), (nci_backend or "torch").strip().lower())
+    engine = (xtb_engine or "xtb").strip().lower()
+    cache_key = (
+        (multiwfn_path or "").strip(),
+        (nci_backend or "torch").strip().lower(),
+        engine,
+    )
     cached = _DEPENDENCY_CHECK_CACHE.get(cache_key)
     if cached is not None:
         missing = list(cached)
     else:
         missing = []
-    
+
         utils.ensure_external_tools_in_path(persist=False)
         if not utils.resolve_external_tool_command('obabel'):
             missing.append('obabel (Open Babel)')
-        
+
         if not utils.resolve_external_tool_command('xtb'):
             missing.append('xtb (Extended Tight Binding)')
-        
+
+        # The GPU/WSL front-end is only required when it may actually be invoked.
+        if engine in ("xtbx", "auto") and not shutil.which('xtbx'):
+            missing.append(
+                'xtbx (GPU xTB front-end; required for --xtb-engine xtbx/auto)'
+            )
+
         backend = (nci_backend or "torch").strip().lower()
         if backend == "multiwfn":
             # Avoid expensive Multiwfn auto-discovery for torch/gpu runs.
@@ -1460,6 +1471,9 @@ def _build_pipeline(file_path: str, args, output_root: str = None) -> KNFPipelin
         scdi_var_min=args.scdi_var_min,
         scdi_var_max=args.scdi_var_max,
         wbo_mode=getattr(args, "wbo_mode", "native"),
+        preopt_engine=getattr(args, "preopt", "uff"),
+        xtb_engine=getattr(args, "xtb_engine", "xtb"),
+        xtb_gpu_atom_cutoff=getattr(args, "xtb_gpu_atoms", 350),
     )
 
 
@@ -4786,6 +4800,9 @@ def main():
             scdi_var_min = None
             scdi_var_max = None
             wbo_mode = "native"
+            preopt = "uff"
+            xtb_engine = "xtb"
+            xtb_gpu_atoms = 350
             enable_stop_key = True
             interactive_quadrant_plot = False
             gpu = False
@@ -5061,6 +5078,34 @@ def main():
         help="WBO computation mode: native (default, from molden.input) or xtb (from xTB wbo file).",
     )
     parser.add_argument(
+        '--preopt',
+        choices=['uff', 'geoinit'],
+        default='uff',
+        help=(
+            "Pre-optimisation engine before xTB: 'uff' (default, RDKit UFF) or "
+            "'geoinit' (basin-safe warm-start; requires the 'geoinit' package)."
+        ),
+    )
+    parser.add_argument(
+        '--xtb-engine',
+        choices=['xtb', 'xtbx', 'auto'],
+        default='xtb',
+        help=(
+            "xTB launcher for opt + single-point: 'xtb' (default, native CPU build), "
+            "'xtbx' (GPU/WSL front-end), or 'auto' (size-gate to xtbx at/above "
+            "--xtb-gpu-atoms, otherwise native xtb)."
+        ),
+    )
+    parser.add_argument(
+        '--xtb-gpu-atoms',
+        type=int,
+        default=350,
+        help=(
+            "Atom-count cutoff for '--xtb-engine auto': systems with at least this "
+            "many atoms route to xtbx (GPU). Default 350."
+        ),
+    )
+    parser.add_argument(
         '--refresh-first-run',
         action='store_true',
         help="Re-run one-time first-run setup and overwrite its cached state"
@@ -5155,7 +5200,11 @@ def main():
             multiwfn_path=args.multiwfn_path,
             require_multiwfn=(args.nci_backend == "multiwfn"),
         )
-        check_dependencies(multiwfn_path=args.multiwfn_path, nci_backend=args.nci_backend)
+        check_dependencies(
+            multiwfn_path=args.multiwfn_path,
+            nci_backend=args.nci_backend,
+            xtb_engine=getattr(args, "xtb_engine", "xtb"),
+        )
         if (
             (args.nci_backend or "").strip().lower() == "torch"
             and (args.nci_device or "").strip().lower() == "cuda"
