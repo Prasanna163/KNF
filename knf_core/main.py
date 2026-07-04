@@ -1471,7 +1471,7 @@ def _build_pipeline(file_path: str, args, output_root: str = None) -> KNFPipelin
         scdi_var_min=args.scdi_var_min,
         scdi_var_max=args.scdi_var_max,
         wbo_mode=getattr(args, "wbo_mode", "native"),
-        preopt_engine=getattr(args, "preopt", "uff"),
+        preopt_engine=getattr(args, "preopt", "geoinit"),
         xtb_engine=getattr(args, "xtb_engine", "xtb"),
         xtb_gpu_atom_cutoff=getattr(args, "xtb_gpu_atoms", 350),
     )
@@ -4800,7 +4800,7 @@ def main():
             scdi_var_min = None
             scdi_var_max = None
             wbo_mode = "native"
-            preopt = "uff"
+            preopt = "geoinit"
             xtb_engine = "xtb"
             xtb_gpu_atoms = 350
             enable_stop_key = True
@@ -5080,10 +5080,10 @@ def main():
     parser.add_argument(
         '--preopt',
         choices=['uff', 'geoinit'],
-        default='uff',
+        default='geoinit',
         help=(
-            "Pre-optimisation engine before xTB: 'uff' (default, RDKit UFF) or "
-            "'geoinit' (basin-safe warm-start; requires the 'geoinit' package)."
+            "Pre-optimisation engine before xTB: 'geoinit' (default, basin-safe "
+            "warm-start) or 'uff' (RDKit UFF fallback)."
         ),
     )
     parser.add_argument(
@@ -5261,4 +5261,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

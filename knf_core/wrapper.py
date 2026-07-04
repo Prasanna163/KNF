@@ -149,9 +149,8 @@ def run_geoinit_preopt(filepath: str, sigma: float = 0.05, maxiter: int = 500) -
     except ImportError as e:
         raise RuntimeError(
             "GeoInit pre-optimisation was requested (--preopt geoinit) but the "
-            "'geoinit' package is not importable in this environment "
-            f"({e}). Install it (e.g. `pip install -e path/to/GeoInit`) or use "
-            "--preopt uff."
+            "bundled 'geoinit' package is not importable in this environment "
+            f"({e}). Reinstall NCIForge or use --preopt uff."
         ) from e
 
     try:
@@ -197,9 +196,9 @@ def run_geoinit_preopt(filepath: str, sigma: float = 0.05, maxiter: int = 500) -
     return filepath
 
 
-def run_preopt(filepath: str, engine: str = "uff") -> str:
-    """Dispatch pre-optimisation to the selected engine (default UFF)."""
-    engine = (engine or "uff").strip().lower()
+def run_preopt(filepath: str, engine: str = "geoinit") -> str:
+    """Dispatch pre-optimisation to the selected engine (default GeoInit)."""
+    engine = (engine or "geoinit").strip().lower()
     if engine == "geoinit":
         return run_geoinit_preopt(filepath)
     if engine in ("", "uff"):

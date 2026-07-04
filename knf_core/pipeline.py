@@ -38,7 +38,7 @@ class KNFPipeline:
         scdi_var_min: float = None,
         scdi_var_max: float = None,
         wbo_mode: str = "native",
-        preopt_engine: str = "uff",
+        preopt_engine: str = "geoinit",
         xtb_engine: str = "xtb",
         xtb_gpu_atom_cutoff: int = 350,
     ):
@@ -65,7 +65,7 @@ class KNFPipeline:
         self.scdi_var_min = scdi_var_min
         self.scdi_var_max = scdi_var_max
         self.wbo_mode = (wbo_mode or "native").strip().lower()
-        self.preopt_engine = (preopt_engine or "uff").strip().lower()
+        self.preopt_engine = (preopt_engine or "geoinit").strip().lower()
         self.xtb_engine = (xtb_engine or "xtb").strip().lower()
         self.xtb_gpu_atom_cutoff = int(xtb_gpu_atom_cutoff)
 
@@ -343,7 +343,7 @@ class KNFPipeline:
 
         if not os.path.exists(optimized_xyz) or self.force:
             uhf = self.spin - 1
-            # ---- pre-optimisation (UFF by default, GeoInit warm-start opt-in) ----
+            # ---- pre-optimisation (GeoInit by default, UFF available as fallback) ----
             preopt_label = (
                 "GeoInit Pre-optimisation"
                 if self.preopt_engine == "geoinit"

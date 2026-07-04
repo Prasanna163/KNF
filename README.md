@@ -118,6 +118,19 @@ Single molecule:
 nciforge example.mol
 ```
 
+GeoInit is bundled with NCIForge and is the default pre-optimisation engine.
+Use `--preopt uff` only when you want the older RDKit UFF warm-start:
+
+```bash
+nciforge example.mol --preopt uff
+```
+
+The bundled GeoInit CLI is also available for standalone warm-start checks:
+
+```bash
+geoinit relax example.xyz
+```
+
 Batch run:
 
 ```bash

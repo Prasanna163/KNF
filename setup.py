@@ -15,11 +15,13 @@ setup(
     license='MIT',
     url='https://github.com/Prasanna163/KNF',
     packages=find_packages(),
+    py_modules=['nciforge_cli'],
     entry_points={
         'console_scripts': [
-            'nciforge=knf_core.main:main',
-            'knf=knf_core.main:main',
-            'nciforge-api=knf_core.api:main',
+            'nciforge=nciforge_cli:main',
+            'knf=nciforge_cli:main',
+            'geoinit=nciforge_cli:geoinit_main',
+            'nciforge-api=nciforge_cli:api_main',
         ],
     },
     install_requires=[
@@ -33,17 +35,23 @@ setup(
         'api': ['fastapi', 'uvicorn[standard]', 'python-multipart'],
         'torch-nci': ['torch'],
         'plots': ['matplotlib'],
-        'full': ['torch', 'matplotlib', 'fastapi', 'uvicorn[standard]', 'python-multipart'],
+        'geoinit-benchmark': ['pandas', 'matplotlib'],
+        'full': [
+            'torch',
+            'matplotlib',
+            'pandas',
+            'fastapi',
+            'uvicorn[standard]',
+            'python-multipart',
+        ],
     },
     classifiers=[
         'Programming Language :: Python :: 3',
-        'Programming Language :: Python :: 3.8',
-        'Programming Language :: Python :: 3.9',
         'Programming Language :: Python :: 3.10',
         'Programming Language :: Python :: 3.11',
         'Programming Language :: Python :: 3.12',
         'Operating System :: OS Independent',
     ],
-    python_requires='>=3.8',
+    python_requires='>=3.10',
 )
 
