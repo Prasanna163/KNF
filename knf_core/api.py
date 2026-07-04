@@ -64,6 +64,9 @@ class RunOptions(BaseModel):
     scdi_var_min: Optional[float] = None
     scdi_var_max: Optional[float] = None
     wbo_mode: Literal["native", "xtb"] = "native"
+    preopt: Literal["uff", "geoinit"] = "geoinit"
+    xtb_engine: Literal["xtb", "xtbx", "auto"] = "xtbx"
+    xtb_gpu_atoms: int = 350
     output_dir: Optional[str] = None
     multiwfn_path: Optional[str] = None
 
@@ -108,6 +111,9 @@ def _runtime_args(options: RunOptions) -> SimpleNamespace:
         scdi_var_min=options.scdi_var_min,
         scdi_var_max=options.scdi_var_max,
         wbo_mode=options.wbo_mode,
+        preopt=options.preopt,
+        xtb_engine=options.xtb_engine,
+        xtb_gpu_atoms=options.xtb_gpu_atoms,
         multiwfn_path=options.multiwfn_path,
     )
 
@@ -133,14 +139,18 @@ def _preflight(runtime_args: SimpleNamespace) -> None:
     core_main.check_dependencies(
         multiwfn_path=getattr(runtime_args, "multiwfn_path", None),
         nci_backend=runtime_args.nci_backend,
+        xtb_engine=getattr(runtime_args, "xtb_engine", "xtbx"),
     )
 
     missing_tools: List[str] = []
     core_main.utils.ensure_external_tools_in_path(persist=False)
     if not core_main.utils.resolve_external_tool_command("obabel"):
         missing_tools.append("obabel")
-    if not core_main.utils.resolve_external_tool_command("xtb"):
+    xtb_engine = getattr(runtime_args, "xtb_engine", "xtbx")
+    if xtb_engine in ("xtb", "auto") and not core_main.utils.resolve_external_tool_command("xtb"):
         missing_tools.append("xtb")
+    if xtb_engine in ("xtbx", "auto") and not shutil.which("xtbx"):
+        missing_tools.append("xtbx")
     if runtime_args.nci_backend == "multiwfn":
         core_main.utils.ensure_multiwfn_in_path(explicit_path=getattr(runtime_args, "multiwfn_path", None))
         if not shutil.which("Multiwfn") and not shutil.which("Multiwfn.exe"):

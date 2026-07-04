@@ -15,11 +15,11 @@ def _solvent_args(use_water: bool) -> list[str]:
 def _xtb_invocation(xtb_cmd: str = "xtb") -> list[str]:
     """Resolve an xTB launcher name into an argv prefix for subprocess.
 
-    Accepts either the stock CPU build (``xtb``) or the GPU-accelerated
+    Accepts either the stock CPU build (``xtb``) or the unified accelerated
     front-end (``xtbx``). ``shutil.which`` locates the launcher on PATH
-    (including ``.cmd``/``.bat`` shims like ``xtbx.cmd``, which wraps a WSL
-    call); for the stock ``xtb`` we also fall back to KNF-CORE's own tool
-    discovery. Windows' ``CreateProcess`` cannot execute a batch file
+    (including ``.cmd``/``.bat`` shims like ``xtbx.cmd``); for the stock
+    ``xtb`` we also fall back to KNF-CORE's own tool discovery. Windows'
+    ``CreateProcess`` cannot execute a batch file
     directly, so ``.cmd``/``.bat`` launchers are invoked through ``cmd /c``.
 
     Raises
@@ -34,7 +34,7 @@ def _xtb_invocation(xtb_cmd: str = "xtb") -> list[str]:
     if resolved is None:
         raise FileNotFoundError(
             f"xTB launcher '{xtb_cmd}' was not found on PATH. "
-            "Install it (or, for 'xtbx', ensure the WSL GPU build is available) "
+            "Install it (or, for 'xtbx', ensure the native launcher is available) "
             "or select a different --xtb-engine."
         )
     if os.name == "nt" and resolved.lower().endswith((".cmd", ".bat")):

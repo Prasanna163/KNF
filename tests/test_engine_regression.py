@@ -9,8 +9,8 @@ Covers three layers, cheapest first:
    — same atom count, still-parseable .xyz, finite coordinates.
 3. End-to-end pipeline regression (opt-in): set ``KNF_RUN_XTB_TESTS=1`` and have
    ``xtb`` on PATH. Runs the full pipeline on a water dimer and asserts a valid
-   9-D KNF vector is produced for the default (geoinit+xtb) and for the legacy
-   UFF warm-start path.
+   9-D KNF vector is produced for the explicit geoinit+xtb and legacy UFF+xtb
+   paths.
 
 Run just the fast unit layer:
     pytest tests/test_engine_regression.py -q
@@ -106,10 +106,11 @@ def test_geoinit_is_bundled_with_nciforge_checkout():
     assert geoinit_path == (repo_geoinit / "__init__.py").resolve()
 
 
-def test_default_preopt_engine_is_geoinit(tmp_path):
+def test_default_engine_policy_is_geoinit_xtbx(tmp_path):
     xyz = _write_xyz(tmp_path / "m.xyz")
     pipe = KNFPipeline(input_file=xyz, output_root=str(tmp_path / "Results"))
     assert pipe.preopt_engine == "geoinit"
+    assert pipe.xtb_engine == "xtbx"
 
 
 # ---------------------------------------------------------------------------

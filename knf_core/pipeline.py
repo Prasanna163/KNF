@@ -39,7 +39,7 @@ class KNFPipeline:
         scdi_var_max: float = None,
         wbo_mode: str = "native",
         preopt_engine: str = "geoinit",
-        xtb_engine: str = "xtb",
+        xtb_engine: str = "xtbx",
         xtb_gpu_atom_cutoff: int = 350,
     ):
         self.input_file = utils.resolve_artifacted_path(input_file)
@@ -66,7 +66,7 @@ class KNFPipeline:
         self.scdi_var_max = scdi_var_max
         self.wbo_mode = (wbo_mode or "native").strip().lower()
         self.preopt_engine = (preopt_engine or "geoinit").strip().lower()
-        self.xtb_engine = (xtb_engine or "xtb").strip().lower()
+        self.xtb_engine = (xtb_engine or "xtbx").strip().lower()
         self.xtb_gpu_atom_cutoff = int(xtb_gpu_atom_cutoff)
 
         self.base_name = Path(self.input_file).stem
@@ -159,8 +159,8 @@ class KNFPipeline:
         """Resolves which xTB launcher to use for this molecule.
 
         'xtb'/'xtbx' are used verbatim. 'auto' size-gates on atom count: the
-        GPU front-end (xtbx) carries a large fixed WSL/CUDA launch cost, so it
-        only pays off at/above the cutoff; smaller systems stay on native xtb.
+        xtbx can route to CPU or GPU internally. 'auto' remains available for
+        older mixed setups where small systems should stay on stock xtb.
         """
         engine = self.xtb_engine
         if engine != "auto":

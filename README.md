@@ -131,6 +131,14 @@ The bundled GeoInit CLI is also available for standalone warm-start checks:
 geoinit relax example.xyz
 ```
 
+`xtbx` is the default xTB launcher. It uses the native Windows wrapper, which
+can route small work to its CPU binary and GPU work to the CUDA build. Use
+`--xtb-engine xtb` only when you explicitly want the older stock `xtb` command:
+
+```bash
+nciforge example.mol --xtb-engine xtb
+```
+
 Batch run:
 
 ```bash

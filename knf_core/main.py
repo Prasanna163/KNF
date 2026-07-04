@@ -1406,9 +1406,9 @@ def write_batch_water_delta_outputs(
                 f.write("\n")
             f.write("\n")
 
-def check_dependencies(multiwfn_path: str = None, nci_backend: str = "torch", xtb_engine: str = "xtb"):
+def check_dependencies(multiwfn_path: str = None, nci_backend: str = "torch", xtb_engine: str = "xtbx"):
     """Checks if required external tools are available in PATH or registered fallback locations."""
-    engine = (xtb_engine or "xtb").strip().lower()
+    engine = (xtb_engine or "xtbx").strip().lower()
     cache_key = (
         (multiwfn_path or "").strip(),
         (nci_backend or "torch").strip().lower(),
@@ -1424,13 +1424,13 @@ def check_dependencies(multiwfn_path: str = None, nci_backend: str = "torch", xt
         if not utils.resolve_external_tool_command('obabel'):
             missing.append('obabel (Open Babel)')
 
-        if not utils.resolve_external_tool_command('xtb'):
+        if engine in ("xtb", "auto") and not utils.resolve_external_tool_command('xtb'):
             missing.append('xtb (Extended Tight Binding)')
 
-        # The GPU/WSL front-end is only required when it may actually be invoked.
+        # The unified xtbx front-end is required when selected or when auto may invoke it.
         if engine in ("xtbx", "auto") and not shutil.which('xtbx'):
             missing.append(
-                'xtbx (GPU xTB front-end; required for --xtb-engine xtbx/auto)'
+                'xtbx (native xTB front-end; required for --xtb-engine xtbx/auto)'
             )
 
         backend = (nci_backend or "torch").strip().lower()
@@ -1472,7 +1472,7 @@ def _build_pipeline(file_path: str, args, output_root: str = None) -> KNFPipelin
         scdi_var_max=args.scdi_var_max,
         wbo_mode=getattr(args, "wbo_mode", "native"),
         preopt_engine=getattr(args, "preopt", "geoinit"),
-        xtb_engine=getattr(args, "xtb_engine", "xtb"),
+        xtb_engine=getattr(args, "xtb_engine", "xtbx"),
         xtb_gpu_atom_cutoff=getattr(args, "xtb_gpu_atoms", 350),
     )
 
@@ -4801,7 +4801,7 @@ def main():
             scdi_var_max = None
             wbo_mode = "native"
             preopt = "geoinit"
-            xtb_engine = "xtb"
+            xtb_engine = "xtbx"
             xtb_gpu_atoms = 350
             enable_stop_key = True
             interactive_quadrant_plot = False
@@ -4830,7 +4830,10 @@ def main():
         first_ok = first_run.ensure_first_run_setup(
             require_multiwfn=(args.nci_backend == "multiwfn"),
         )
-        check_dependencies(nci_backend=args.nci_backend)
+        check_dependencies(
+            nci_backend=args.nci_backend,
+            xtb_engine=getattr(args, "xtb_engine", "xtbx"),
+        )
         if (
             (args.nci_backend or "").strip().lower() == "torch"
             and (args.nci_device or "").strip().lower() == "cuda"
@@ -5089,11 +5092,11 @@ def main():
     parser.add_argument(
         '--xtb-engine',
         choices=['xtb', 'xtbx', 'auto'],
-        default='xtb',
+        default='xtbx',
         help=(
-            "xTB launcher for opt + single-point: 'xtb' (default, native CPU build), "
-            "'xtbx' (GPU/WSL front-end), or 'auto' (size-gate to xtbx at/above "
-            "--xtb-gpu-atoms, otherwise native xtb)."
+            "xTB launcher for opt + single-point: 'xtbx' (default, unified native "
+            "Windows CPU/GPU front-end), 'xtb' (stock CPU build), or 'auto' "
+            "(size-gate to xtbx at/above --xtb-gpu-atoms, otherwise stock xtb)."
         ),
     )
     parser.add_argument(
@@ -5203,7 +5206,7 @@ def main():
         check_dependencies(
             multiwfn_path=args.multiwfn_path,
             nci_backend=args.nci_backend,
-            xtb_engine=getattr(args, "xtb_engine", "xtb"),
+            xtb_engine=getattr(args, "xtb_engine", "xtbx"),
         )
         if (
             (args.nci_backend or "").strip().lower() == "torch"
