@@ -36,6 +36,7 @@ from typer.testing import CliRunner
 
 from knf_core.engine import jobs as engine_jobs
 from knf_core.engine import processing as engine_processing
+from knf_core.engine.events import EventKind
 from knf_core.engine.types import RunOptions
 from knf_core.cli import app as cli_app
 from knf_core.cli import commands as cli_commands
@@ -192,6 +193,41 @@ def test_xtb_wrapper_can_force_xtbx_gpu(monkeypatch, tmp_path):
 
     assert "--gpu" in calls[0]
     assert calls[0][0] == "xtbx-runner"
+
+
+def test_xtb_streaming_progress_writes_log_and_emits_events(tmp_path):
+    log_path = tmp_path / "xtb.log"
+    events = []
+
+    return_code = wrapper._run_xtb_streaming(
+        [
+            sys.executable,
+            "-c",
+            "print('cycle 7 energy -1.234 grad 0.056', flush=True)",
+        ],
+        cwd=str(tmp_path),
+        log_path=str(log_path),
+        progress_callback=events.append,
+        stage="opt",
+        launcher="xtbx",
+        use_gpu=True,
+    )
+
+    assert return_code == 0
+    assert "cycle 7 energy -1.234 grad 0.056" in log_path.read_text(encoding="utf-8")
+    output_events = [event for event in events if event.get("event") == "output"]
+    assert output_events
+    assert output_events[-1]["cycle"] == 7
+    assert output_events[-1]["energy"] == "-1.234"
+    assert output_events[-1]["gradient"] == "0.056"
+    assert "cycle 7" in output_events[-1]["message"]
+    assert "Energy -1.234 Eh" in output_events[-1]["message"]
+
+
+def test_xtb_progress_parser_reads_cycle_table_energy():
+    payload = wrapper._parse_xtb_progress_line("   12     -1493.782345     0.000123     0.00456")
+    assert payload["cycle"] == 12
+    assert payload["energy"] == "-1493.782345"
 
 
 # ---------------------------------------------------------------------------
@@ -564,6 +600,35 @@ def test_engine_batch_job_matches_legacy_batch_outputs(monkeypatch, tmp_path):
     )
 
 
+def test_single_file_job_emits_stage_progress_event(monkeypatch, tmp_path):
+    xyz = _write_xyz(tmp_path / "mol.xyz")
+    events = []
+
+    def fake_process_file(file_path, args, output_root=None, batch_size=1, progress_callback=None):
+        if progress_callback is not None:
+            progress_callback(
+                {
+                    "message": "xTB OPT [xtbx gpu] | cycle 3",
+                    "stage": "opt",
+                    "cycle": 3,
+                    "elapsed_seconds": 1.25,
+                }
+            )
+        return True, None, 2.0
+
+    monkeypatch.setattr(engine_jobs, "process_file", fake_process_file)
+
+    args = SimpleNamespace(output_dir=str(tmp_path / "Results"), water=False, force=True)
+    result = engine_jobs.run_single_file_job(xyz, args, on_event=events.append)
+
+    assert result.success is True
+    progress_events = [event for event in events if event.kind == EventKind.FILE_STAGE_PROGRESS]
+    assert progress_events
+    assert progress_events[0].input_file == xyz
+    assert progress_events[0].payload["cycle"] == 3
+    assert "cycle 3" in (progress_events[0].message or "")
+
+
 def test_main_cli_dispatches_single_file_to_cli_commands(monkeypatch, tmp_path):
     xyz = _write_xyz(tmp_path / "mol.xyz")
     called = {}
@@ -828,7 +893,7 @@ def test_sp_only_pipeline_skips_preopt_and_xtb_optimization(monkeypatch, tmp_pat
     def fail_opt(*args, **kwargs):
         raise AssertionError("xTB optimization should not run in SP-only mode")
 
-    def fake_sp(filepath, charge=0, uhf=0, use_water=False, xtb_cmd="xtb", force_gpu=False):
+    def fake_sp(filepath, charge=0, uhf=0, use_water=False, xtb_cmd="xtb", force_gpu=False, progress_callback=None):
         calls.append((Path(filepath).name, charge, uhf, use_water, xtb_cmd, force_gpu))
         cwd = Path(filepath).parent
         (cwd / "xtb.log").write_text("fake xtb log", encoding="utf-8")

@@ -1,9 +1,24 @@
 import os
+import queue
+import re
 import shutil
 import subprocess
+import threading
+import time
 import logging
+from typing import Callable
 
 from . import utils
+
+
+XtbProgressCallback = Callable[[dict], None]
+
+_FLOAT_RE = r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[Ee][-+]?\d+)?"
+_CYCLE_WORD_RE = re.compile(r"\b(?:cycle|iter(?:ation)?)\s*[:=]?\s*(\d+)\b", re.IGNORECASE)
+_CYCLE_ROW_RE = re.compile(r"^\s*(\d{1,5})(?=\s+[-+]?(?:\d|\.))")
+_ENERGY_RE = re.compile(rf"\b(?:energy|total\s+energy|E)\s*[:=]?\s*({_FLOAT_RE})", re.IGNORECASE)
+_GRADIENT_RE = re.compile(rf"\b(?:grad(?:ient)?|gnorm)\s*[:=]?\s*({_FLOAT_RE})", re.IGNORECASE)
+_FLOAT_TOKEN_RE = re.compile(_FLOAT_RE)
 
 
 def _solvent_args(use_water: bool) -> list[str]:
@@ -237,6 +252,140 @@ def run_subprocess(cmd: list, cwd: str = None) -> subprocess.CompletedProcess:
         logging.error(f"STDERR: {e.stderr}")
         raise e
 
+
+def _parse_xtb_progress_line(line: str) -> dict:
+    payload: dict = {}
+    stripped = line.strip()
+    if not stripped:
+        return payload
+
+    cycle_row_match = _CYCLE_ROW_RE.match(stripped)
+    cycle_match = _CYCLE_WORD_RE.search(stripped) or cycle_row_match
+    if cycle_match:
+        try:
+            payload["cycle"] = int(cycle_match.group(1))
+        except ValueError:
+            pass
+
+    energy_match = _ENERGY_RE.search(stripped)
+    if energy_match:
+        payload["energy"] = energy_match.group(1)
+    elif cycle_row_match:
+        row_tail = stripped[cycle_row_match.end() :]
+        row_floats = _FLOAT_TOKEN_RE.findall(row_tail)
+        if row_floats:
+            payload["energy"] = row_floats[0]
+
+    gradient_match = _GRADIENT_RE.search(stripped)
+    if gradient_match:
+        payload["gradient"] = gradient_match.group(1)
+
+    return payload
+
+
+def _format_xtb_progress_message(payload: dict) -> str:
+    parts = [str(payload.get("label") or "xTB")]
+    if payload.get("cycle") is not None:
+        parts.append(f"cycle {payload['cycle']}")
+    if payload.get("energy"):
+        parts.append(f"Energy {payload['energy']} Eh")
+    if payload.get("gradient"):
+        parts.append(f"Grad {payload['gradient']}")
+    if len(parts) == 1 and payload.get("last_line"):
+        last_line = str(payload["last_line"]).strip()
+        if last_line:
+            parts.append(last_line[:96])
+    return " | ".join(parts)
+
+
+def _run_xtb_streaming(
+    cmd: list,
+    *,
+    cwd: str,
+    log_path: str,
+    progress_callback: XtbProgressCallback | None,
+    stage: str,
+    launcher: str,
+    use_gpu: bool,
+) -> int:
+    started_at = time.perf_counter()
+    label = f"xTB {stage.upper()} [{launcher}{' gpu' if use_gpu else ''}]"
+    line_queue: queue.Queue[str | None] = queue.Queue()
+
+    def emit(event: str, **payload) -> None:
+        if progress_callback is None:
+            return
+        elapsed = time.perf_counter() - started_at
+        body = {
+            "event": event,
+            "stage": stage,
+            "label": label,
+            "launcher": launcher,
+            "use_gpu": bool(use_gpu),
+            "elapsed_seconds": elapsed,
+            "log_path": log_path,
+        }
+        body.update(payload)
+        body["message"] = _format_xtb_progress_message(body)
+        progress_callback(body)
+
+    process = subprocess.Popen(
+        cmd,
+        cwd=cwd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        errors="replace",
+        bufsize=1,
+    )
+
+    def reader() -> None:
+        assert process.stdout is not None
+        try:
+            for output_line in process.stdout:
+                line_queue.put(output_line)
+        finally:
+            line_queue.put(None)
+
+    reader_thread = threading.Thread(target=reader, daemon=True)
+    reader_thread.start()
+
+    emit("started")
+    last_payload: dict = {}
+    last_heartbeat = time.perf_counter()
+    stream_closed = False
+    with open(log_path, "w", encoding="utf-8", errors="replace") as log:
+        while True:
+            try:
+                line = line_queue.get(timeout=0.2)
+            except queue.Empty:
+                if process.poll() is not None and stream_closed:
+                    break
+                now = time.perf_counter()
+                if progress_callback is not None and now - last_heartbeat >= 2.0:
+                    emit("heartbeat", **last_payload)
+                    last_heartbeat = now
+                continue
+
+            if line is None:
+                stream_closed = True
+                if process.poll() is not None:
+                    break
+                continue
+
+            log.write(line)
+            log.flush()
+            parsed = _parse_xtb_progress_line(line)
+            parsed["last_line"] = line.strip()
+            last_payload.update(parsed)
+            emit("output", **last_payload)
+            last_heartbeat = time.perf_counter()
+
+    reader_thread.join(timeout=1.0)
+    return_code = process.wait()
+    emit("finished", return_code=return_code, **last_payload)
+    return return_code
+
 def run_xtb_opt(
     filepath: str,
     charge: int = 0,
@@ -244,6 +393,7 @@ def run_xtb_opt(
     use_water: bool = False,
     xtb_cmd: str = "xtb",
     force_gpu: bool = False,
+    progress_callback: XtbProgressCallback | None = None,
 ) -> str:
     cwd = os.path.dirname(os.path.abspath(filepath))
     filename = os.path.basename(filepath)
@@ -261,27 +411,39 @@ def run_xtb_opt(
 
     logging.info(f"Wrapper Executing xTB Opt: {cmd} in {cwd}")
     xtb_opt_log = os.path.join(cwd, 'xtb_opt.log')
-    with open(xtb_opt_log, 'w', encoding='utf-8', errors='replace') as log:
-        result = subprocess.run(
+    if progress_callback is None:
+        with open(xtb_opt_log, 'w', encoding='utf-8', errors='replace') as log:
+            result = subprocess.run(
+                cmd,
+                cwd=cwd,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                text=True,
+                errors='replace',
+                check=False,
+            )
+        return_code = result.returncode
+    else:
+        return_code = _run_xtb_streaming(
             cmd,
             cwd=cwd,
-            stdout=log,
-            stderr=subprocess.STDOUT,
-            text=True,
-            errors='replace',
-            check=False,
+            log_path=xtb_opt_log,
+            progress_callback=progress_callback,
+            stage="opt",
+            launcher=(xtb_cmd or "xtb").strip().lower(),
+            use_gpu=bool(force_gpu and (xtb_cmd or "").strip().lower() == "xtbx"),
         )
 
     output = os.path.join(cwd, 'xtbopt.xyz')
-    if result.returncode != 0:
+    if return_code != 0:
         if os.path.exists(output):
             logging.warning(
                 "xTB optimization exited with code %s, but xtbopt.xyz exists. "
                 "Proceeding to NCI pipeline using the latest available geometry.",
-                result.returncode,
+                return_code,
             )
             return output
-        raise subprocess.CalledProcessError(result.returncode, cmd)
+        raise subprocess.CalledProcessError(return_code, cmd)
 
     if not os.path.exists(output):
         raise FileNotFoundError(f"xTB opt failed: {output}")
@@ -294,6 +456,7 @@ def run_xtb_sp(
     use_water: bool = False,
     xtb_cmd: str = "xtb",
     force_gpu: bool = False,
+    progress_callback: XtbProgressCallback | None = None,
 ):
     cwd = os.path.dirname(os.path.abspath(filepath))
     filename = os.path.basename(filepath)
@@ -305,11 +468,25 @@ def run_xtb_sp(
     cmd.extend(['--charge', str(charge), '--uhf', str(uhf)])
     
     logging.info(f"Wrapper Executing xTB SP: {cmd} in {cwd}")
-    
-    with open(os.path.join(cwd, 'xtb.log'), 'w') as log:
-        # Using subprocess.run directly to redirect stdout/stderr to file
-        try:
-             subprocess.run(cmd, cwd=cwd, stdout=log, stderr=subprocess.STDOUT, check=True)
-        except subprocess.CalledProcessError as e:
-             logging.error(f"Command failed with {e.returncode}. Check xtb.log in {cwd}")
-             raise e
+
+    xtb_log = os.path.join(cwd, 'xtb.log')
+    if progress_callback is None:
+        with open(xtb_log, 'w', encoding='utf-8', errors='replace') as log:
+            try:
+                subprocess.run(cmd, cwd=cwd, stdout=log, stderr=subprocess.STDOUT, check=True)
+            except subprocess.CalledProcessError as e:
+                logging.error(f"Command failed with {e.returncode}. Check xtb.log in {cwd}")
+                raise e
+    else:
+        return_code = _run_xtb_streaming(
+            cmd,
+            cwd=cwd,
+            log_path=xtb_log,
+            progress_callback=progress_callback,
+            stage="sp",
+            launcher=(xtb_cmd or "xtb").strip().lower(),
+            use_gpu=bool(force_gpu and (xtb_cmd or "").strip().lower() == "xtbx"),
+        )
+        if return_code != 0:
+            logging.error(f"Command failed with {return_code}. Check xtb.log in {cwd}")
+            raise subprocess.CalledProcessError(return_code, cmd)

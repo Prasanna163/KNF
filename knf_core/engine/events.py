@@ -8,6 +8,7 @@ from typing import Any, Protocol
 class EventKind(str, Enum):
     BATCH_STARTED = "batch_started"
     FILE_STARTED = "file_started"
+    FILE_STAGE_PROGRESS = "file_stage_progress"
     FILE_SUCCEEDED = "file_succeeded"
     FILE_FAILED = "file_failed"
     FILE_SKIPPED = "file_skipped"

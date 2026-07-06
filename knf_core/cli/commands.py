@@ -177,7 +177,13 @@ def _batch_dashboard(state, completed_rows) -> Group:
     Live repainting in place instead of stacking frames.
     """
     d = _derive(state)
-    detail = f"ETA {fmt_elapsed(d['eta'])}" if d["eta"] is not None else ""
+    detail_parts = []
+    if d["eta"] is not None:
+        detail_parts.append(f"ETA {fmt_elapsed(d['eta'])}")
+    stage_detail = str(state.get("stage_detail") or "").strip()
+    if stage_detail:
+        detail_parts.append(stage_detail)
+    detail = " | ".join(detail_parts)
     return Group(
         progress_panel(d["completed"], d["total"], detail=detail),
         stat_tiles(_stat_metrics(state)),
@@ -219,18 +225,30 @@ def run_single_file(file_path: str, args):
     console.print(specs_columns(config_rows, sysinfo.system_rows(args)))
 
     if use_live_progress:
+        state = {"detail": "processing..."}
+
+        def on_event(event: JobEvent) -> None:
+            if event.kind == EventKind.FILE_STAGE_PROGRESS and event.message:
+                state["detail"] = event.message
+            elif event.kind == EventKind.FILE_STARTED:
+                state["detail"] = f"Starting {display_name(event.input_file or file_path)}"
+            elif event.kind == EventKind.FILE_SUCCEEDED:
+                state["detail"] = "done"
+            elif event.kind == EventKind.FILE_FAILED:
+                state["detail"] = "failed"
+
         with _live_logging(console), Live(
-            progress_panel(0, 1, detail="processing…", pulse=True),
+            progress_panel(0, 1, detail=state["detail"], pulse=True),
             console=console,
             refresh_per_second=8,
             transient=False,
             vertical_overflow="crop",
         ) as live:
             with ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(jobs.run_single_file_job, file_path, args)
+                future = executor.submit(jobs.run_single_file_job, file_path, args, on_event)
                 while not future.done():
                     time.sleep(0.1)
-                    live.update(progress_panel(0, 1, detail="processing…", pulse=True))
+                    live.update(progress_panel(0, 1, detail=state["detail"], pulse=True))
                 result = future.result()
             live.update(progress_panel(1, 1, detail="done"))
     else:
@@ -303,6 +321,7 @@ def run_batch_directory(
         "mode": getattr(args, "processing", "auto"),
         "workers": getattr(args, "workers", None),
         "results_root": "",
+        "stage_detail": "",
     }
     live: Live | None = None
     specs_shown = False
@@ -345,9 +364,15 @@ def run_batch_directory(
             if live is None and event.message:
                 console.print(event.message)
             refresh_dashboard()
+        elif event.kind == EventKind.FILE_STAGE_PROGRESS:
+            if event.message:
+                state["stage_detail"] = f"{display_name(event.input_file or '')}: {event.message}"
+            refresh_dashboard()
         elif event.kind in {EventKind.FILE_SUCCEEDED, EventKind.FILE_FAILED, EventKind.FILE_STOPPED}:
             state["completed"] = int(event.completed or (int(state.get("completed") or 0) + 1))
             state["active_workers"] = max(0, int(state.get("active_workers") or 0) - 1)
+            if event.input_file and str(state.get("stage_detail") or "").startswith(display_name(event.input_file)):
+                state["stage_detail"] = ""
             elapsed = f"{(event.elapsed_seconds or 0.0):.1f}s" if event.elapsed_seconds else "-"
             if event.kind == EventKind.FILE_SUCCEEDED:
                 state["succeeded"] = int(state.get("succeeded") or 0) + 1

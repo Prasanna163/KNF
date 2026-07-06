@@ -47,6 +47,7 @@ class KNFPipeline:
         xtb_explicit_gpu: bool = False,
         xtb_batch_size: int = 1,
         sp_only: bool = False,
+        progress_callback=None,
     ):
         self.input_file = utils.resolve_artifacted_path(input_file)
         self.charge = charge
@@ -80,6 +81,7 @@ class KNFPipeline:
         # Records each xTB stage's routing decision for logging + knf.json metadata.
         self.xtb_routing_log: list[dict] = []
         self.sp_only = bool(sp_only)
+        self.progress_callback = progress_callback
 
         self.base_name = Path(self.input_file).stem
         default_output_root = os.path.join(os.path.dirname(self.input_file), "Results")
@@ -150,6 +152,19 @@ class KNFPipeline:
     def _stage(self, index: int, name: str):
         if self.debug:
             logging.info(f"[{index}/5] {name}")
+
+    def _emit_progress(self, payload: dict) -> None:
+        if self.progress_callback is None:
+            return
+        progress_payload = dict(payload or {})
+        progress_payload.update(
+            {
+                "molecule": self.base_name,
+                "input_file": self.input_file,
+                "results_dir": self.results_dir,
+            }
+        )
+        self.progress_callback(progress_payload)
 
     def _xtb_artifacts_ready(self) -> tuple[bool, list[str]]:
         required = ["wbo", "molden.input", "xtb.log"]
@@ -419,6 +434,7 @@ class KNFPipeline:
                 use_water=self.water,
                 xtb_cmd=opt_route.launcher,
                 force_gpu=opt_route.use_gpu,
+                progress_callback=self._emit_progress,
             )
 
 
@@ -442,6 +458,7 @@ class KNFPipeline:
                 use_water=self.water,
                 xtb_cmd=sp_route.launcher,
                 force_gpu=sp_route.use_gpu,
+                progress_callback=self._emit_progress,
             )
         elif not xtb_ready:
             logging.info(

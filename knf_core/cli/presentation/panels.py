@@ -165,19 +165,25 @@ def progress_panel(completed: int, total: int, *, detail: str = "", pulse: bool 
         style=MUTED,
     )
     if pulse or not total_safe:
-        counts = f"[{MUTED}]{detail or 'working…'}[/]"
+        counts = ""
     else:
         pct = (completed / total_safe) * 100.0
         counts = f"[bold]{completed}/{total_safe}[/]  [{ACCENT}]{pct:.0f}%[/]"
-        if detail:
-            counts += f"  [{MUTED}]{detail}[/]"
 
     row = Table.grid(expand=True, padding=(0, 2))
     row.add_column(ratio=1)
     row.add_column(justify="right", no_wrap=True)
     row.add_row(bar, counts)
+    detail_text = str(detail or ("working..." if pulse or not total_safe else "")).strip()
+    if detail_text:
+        detail_row = Table.grid(expand=True)
+        detail_row.add_column(ratio=1, overflow="fold")
+        detail_row.add_row(Text.from_markup(detail_text, style=MUTED, overflow="fold"))
+        body = Group(row, detail_row)
+    else:
+        body = row
     return Panel(
-        row,
+        body,
         title=f"[{ACCENT_BOLD}]{arrow} Progress[/]",
         title_align="left",
         border_style=ACCENT,

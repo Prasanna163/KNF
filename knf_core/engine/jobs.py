@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import inspect
 import logging
 import os
 import shutil
@@ -42,6 +43,74 @@ def _emit(on_event: OnEvent | None, event: JobEvent) -> None:
         on_event(event)
 
 
+def _make_file_progress_callback(
+    on_event: OnEvent | None,
+    *,
+    file_path: str,
+    total: int,
+    completed_getter,
+):
+    if on_event is None:
+        return None
+
+    def progress_callback(payload: dict) -> None:
+        message = str(payload.get("message") or payload.get("label") or "Processing")
+        _emit(
+            on_event,
+            JobEvent(
+                EventKind.FILE_STAGE_PROGRESS,
+                input_file=file_path,
+                message=message,
+                completed=int(completed_getter() or 0),
+                total=total,
+                elapsed_seconds=float(payload.get("elapsed_seconds") or 0.0),
+                payload=dict(payload),
+            ),
+        )
+
+    return progress_callback
+
+
+def _accepts_progress_callback(func) -> bool:
+    try:
+        signature = inspect.signature(func)
+    except (TypeError, ValueError):
+        return True
+    if "progress_callback" in signature.parameters:
+        return True
+    return any(param.kind == inspect.Parameter.VAR_KEYWORD for param in signature.parameters.values())
+
+
+def _process_file_with_optional_progress(
+    file_path: str,
+    options,
+    output_root: str,
+    batch_size: int,
+    progress_callback,
+):
+    if progress_callback is None or not _accepts_progress_callback(process_file):
+        return process_file(file_path, options, output_root=output_root, batch_size=batch_size)
+    return process_file(
+        file_path,
+        options,
+        output_root=output_root,
+        batch_size=batch_size,
+        progress_callback=progress_callback,
+    )
+
+
+def _process_file_pre_nci_with_optional_progress(
+    file_path: str,
+    options,
+    output_root: str,
+    batch_size: int,
+    progress_callback,
+):
+    if progress_callback is None or not _accepts_progress_callback(process_file_pre_nci):
+        return process_file_pre_nci(file_path, options, output_root, batch_size)
+    return process_file_pre_nci(file_path, options, output_root, batch_size, progress_callback)
+
+
 def _poll_stop_key(enable_stop_key: bool) -> bool:
     if not enable_stop_key:
         return False
@@ -65,9 +134,22 @@ def _poll_stop_key(enable_stop_key: bool) -> bool:
         return False
 
 
-def run_single_file_job(file_path: str, options) -> SingleFileResult:
+def run_single_file_job(file_path: str, options, on_event: OnEvent | None = None) -> SingleFileResult:
     results_root = resolve_results_root(file_path, getattr(options, "output_dir", None))
-    success, error, elapsed = process_file(file_path, options, output_root=results_root)
+    _emit(on_event, JobEvent(EventKind.FILE_STARTED, input_file=file_path, completed=0, total=1))
+    progress_callback = _make_file_progress_callback(
+        on_event,
+        file_path=file_path,
+        total=1,
+        completed_getter=lambda: 0,
+    )
+    success, error, elapsed = _process_file_with_optional_progress(
+        file_path,
+        options,
+        results_root,
+        1,
+        progress_callback,
+    )
 
     kuid_summary = None
     if success:
@@ -84,7 +166,7 @@ def run_single_file_job(file_path: str, options) -> SingleFileResult:
             water=bool(getattr(options, "water", False)),
         )
 
-    return SingleFileResult(
+    result = SingleFileResult(
         input_file=os.path.abspath(file_path),
         success=bool(success),
         error=None if success else str(error),
@@ -92,6 +174,18 @@ def run_single_file_job(file_path: str, options) -> SingleFileResult:
         output_root=results_root,
         kuid_summary=kuid_summary,
     )
+    _emit(
+        on_event,
+        JobEvent(
+            EventKind.FILE_SUCCEEDED if result.success else EventKind.FILE_FAILED,
+            input_file=file_path,
+            message=result.error,
+            completed=1,
+            total=1,
+            elapsed_seconds=result.elapsed_seconds,
+        ),
+    )
+    return result
 
 
 def _normalize_job_files(directory: str, file_paths: list[str] | None) -> list[str]:
@@ -455,7 +549,19 @@ def run_batch_directory_job(
 
             file_path = queue.get()
             _emit(on_event, JobEvent(EventKind.FILE_STARTED, input_file=file_path, completed=completed, total=total))
-            success, error, elapsed = process_file(file_path, options, output_root=results_root, batch_size=total)
+            progress_callback = _make_file_progress_callback(
+                on_event,
+                file_path=file_path,
+                total=total,
+                completed_getter=lambda: completed,
+            )
+            success, error, elapsed = _process_file_with_optional_progress(
+                file_path,
+                options,
+                results_root,
+                total,
+                progress_callback,
+            )
             if success:
                 add_success(file_path, elapsed)
             else:
@@ -463,10 +569,23 @@ def run_batch_directory_job(
             queue.task_done()
     elif use_gpu_overlap:
         with ThreadPoolExecutor(max_workers=workers) as cpu_executor, ThreadPoolExecutor(max_workers=1) as gpu_executor:
-            pre_futures = {
-                cpu_executor.submit(process_file_pre_nci, file_path, options, results_root, total): file_path
-                for file_path in files
-            }
+            pre_futures = {}
+            for file_path in files:
+                progress_callback = _make_file_progress_callback(
+                    on_event,
+                    file_path=file_path,
+                    total=total,
+                    completed_getter=lambda: completed,
+                )
+                future = cpu_executor.submit(
+                    _process_file_pre_nci_with_optional_progress,
+                    file_path,
+                    options,
+                    results_root,
+                    total,
+                    progress_callback,
+                )
+                pre_futures[future] = file_path
             for file_path in files:
                 _emit(on_event, JobEvent(EventKind.FILE_STARTED, input_file=file_path, completed=completed, total=total))
             post_futures = {}
@@ -548,7 +667,21 @@ def run_batch_directory_job(
             futures = {}
             for file_path in files:
                 _emit(on_event, JobEvent(EventKind.FILE_STARTED, input_file=file_path, completed=completed, total=total))
-                futures[executor.submit(process_file, file_path, options, results_root, total)] = file_path
+                progress_callback = _make_file_progress_callback(
+                    on_event,
+                    file_path=file_path,
+                    total=total,
+                    completed_getter=lambda: completed,
+                )
+                future = executor.submit(
+                    _process_file_with_optional_progress,
+                    file_path,
+                    options,
+                    results_root,
+                    total,
+                    progress_callback,
+                )
+                futures[future] = file_path
             cancellation_applied = False
 
             while futures:

@@ -43,7 +43,13 @@ def _is_oom_error(exc: Exception) -> bool:
     return any(m in msg for m in markers)
 
 
-def _build_pipeline(file_path: str, args, output_root: str = None, batch_size: int = 1) -> KNFPipeline:
+def _build_pipeline(
+    file_path: str,
+    args,
+    output_root: str = None,
+    batch_size: int = 1,
+    progress_callback=None,
+) -> KNFPipeline:
     xtb_engine = str(getattr(args, "xtb_engine", "xtbx") or "xtbx").strip().lower()
     # The GPU is "available" to the xTB router when this run is configured to use
     # CUDA for the NCI grid (only set once a CUDA-capable GPU is detected). This
@@ -84,17 +90,24 @@ def _build_pipeline(file_path: str, args, output_root: str = None, batch_size: i
         xtb_explicit_gpu=xtb_explicit_gpu,
         xtb_batch_size=batch_size,
         sp_only=bool(getattr(args, "sp", False)),
+        progress_callback=progress_callback,
     )
 
 
-def process_file(file_path: str, args, output_root: str = None, batch_size: int = 1):
+def process_file(file_path: str, args, output_root: str = None, batch_size: int = 1, progress_callback=None):
     """Runs the pipeline for a single file and returns status."""
     start = time.perf_counter()
     attempts = 3
     last_error = None
     for attempt in range(1, attempts + 1):
         try:
-            pipeline = _build_pipeline(file_path, args, output_root=output_root, batch_size=batch_size)
+            pipeline = _build_pipeline(
+                file_path,
+                args,
+                output_root=output_root,
+                batch_size=batch_size,
+                progress_callback=progress_callback,
+            )
             pipeline.run()
             return True, None, time.perf_counter() - start
         except Exception as e:
@@ -115,14 +128,20 @@ def process_file(file_path: str, args, output_root: str = None, batch_size: int 
     return False, str(last_error), time.perf_counter() - start
 
 
-def process_file_pre_nci(file_path: str, args, output_root: str = None, batch_size: int = 1):
+def process_file_pre_nci(file_path: str, args, output_root: str = None, batch_size: int = 1, progress_callback=None):
     """Runs pre-NCI stages only (geometry + xTB) and returns pipeline context."""
     start = time.perf_counter()
     attempts = 3
     last_error = None
     for attempt in range(1, attempts + 1):
         try:
-            pipeline = _build_pipeline(file_path, args, output_root=output_root, batch_size=batch_size)
+            pipeline = _build_pipeline(
+                file_path,
+                args,
+                output_root=output_root,
+                batch_size=batch_size,
+                progress_callback=progress_callback,
+            )
             context = pipeline.run_pre_nci_stage()
             return True, None, time.perf_counter() - start, pipeline, context
         except Exception as e:
