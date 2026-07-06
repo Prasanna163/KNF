@@ -8,7 +8,6 @@ from concurrent.futures import ThreadPoolExecutor
 
 from rich.console import Console, Group
 from rich.live import Live
-from rich.logging import RichHandler
 
 from ..engine import jobs
 from ..engine.discovery import _BATCH_LEGACY_CSV_NAMES, _BATCH_PRIMARY_CSV_NAME
@@ -20,6 +19,7 @@ from .presentation.formatting import (
     FAIL_STYLE,
     MUTED,
     OK_STYLE,
+    WARN_STYLE,
     build_console,
     display_name,
     display_path,
@@ -74,34 +74,36 @@ def _live_progress_supported(console: Console) -> bool:
     return True
 
 
+class _BufferHandler(logging.Handler):
+    def __init__(self):
+        super().__init__()
+        self.records: list[logging.LogRecord] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.records.append(record)
+
+
 class _live_logging:
-    """Route logging through the live console so records render *above* the
-    dashboard instead of tearing through its repainting region.
+    """Keep stray log output from tearing through the live dashboard.
 
     A ``StreamHandler`` created by ``logging.basicConfig`` holds the pre-Live
-    ``sys.stderr`` and writes straight past Rich's cursor control, which is a
-    classic source of duplicated/garbled live output. For the duration of the
-    ``with`` block we swap the root handlers for a :class:`RichHandler` bound to
-    the live console, then restore the originals.
+    ``sys.stderr`` and writes straight past Rich's cursor control (and, in
+    ``screen=True`` mode, onto the alternate screen), which garbles the display.
+    For the duration of the ``with`` block we capture records into a buffer and,
+    on exit, replay any warnings/errors to the console so nothing is lost.
     """
 
     def __init__(self, console: Console):
         self._console = console
         self._saved_handlers = None
         self._saved_level = None
+        self._buffer = _BufferHandler()
 
     def __enter__(self) -> "_live_logging":
         root = logging.getLogger()
         self._saved_handlers = root.handlers[:]
         self._saved_level = root.level
-        handler = RichHandler(
-            console=self._console,
-            show_path=False,
-            markup=False,
-            rich_tracebacks=True,
-            log_time_format="[%H:%M:%S]",
-        )
-        root.handlers = [handler]
+        root.handlers = [self._buffer]
         return self
 
     def __exit__(self, *exc) -> None:
@@ -110,6 +112,12 @@ class _live_logging:
             root.handlers = self._saved_handlers
         if self._saved_level is not None:
             root.setLevel(self._saved_level)
+        important = [r for r in self._buffer.records if r.levelno >= logging.WARNING]
+        if important:
+            self._console.print(f"[{MUTED}]{len(important)} warning(s)/error(s) during run:[/]")
+            for record in important[-20:]:
+                style = FAIL_STYLE if record.levelno >= logging.ERROR else WARN_STYLE
+                self._console.print(f"[{style}]{record.levelname}[/] {record.getMessage()}")
         return None
 
 
@@ -175,6 +183,25 @@ def _batch_dashboard(state, completed_rows) -> Group:
         stat_tiles(_stat_metrics(state)),
         recent_jobs_panel(completed_rows, limit=8),
     )
+
+
+def _screen_dashboard(state, completed_rows, system_rows) -> Group:
+    """Full dashboard for alternate-screen (``screen=True``) rendering.
+
+    In screen mode Rich owns a fixed canvas and fully redraws it each frame, so
+    brand + specs live *inside* the renderable (there is no scrollback to print
+    them into) and stacking is impossible regardless of terminal height.
+    """
+    return Group(
+        brand_banner(),
+        _batch_specs(state, system_rows),
+        _batch_dashboard(state, completed_rows),
+    )
+
+
+def _use_screen_dashboard() -> bool:
+    """Alternate-screen dashboard is the default; opt out with NCIFORGE_NO_SCREEN."""
+    return os.environ.get("NCIFORGE_NO_SCREEN", "").strip().lower() not in {"1", "true", "yes", "on"}
 
 
 # ---------------------------------------------------------------------------
@@ -279,12 +306,19 @@ def run_batch_directory(
     }
     live: Live | None = None
     specs_shown = False
+    screen = use_live_progress and _use_screen_dashboard()
 
-    console.print(brand_banner())
+    if not screen:
+        console.print(brand_banner())
+
+    def build_live():
+        if screen:
+            return _screen_dashboard(state, completed_rows, system_rows)
+        return _batch_dashboard(state, completed_rows)
 
     def refresh_dashboard() -> None:
         if live is not None:
-            live.update(_batch_dashboard(state, completed_rows))
+            live.update(build_live())
 
     def on_event(event: JobEvent) -> None:
         nonlocal specs_shown
@@ -296,8 +330,8 @@ def run_batch_directory(
             state["workers"] = payload.get("workers", state["workers"])
             state["results_root"] = payload.get("results_root", "")
             state["active_workers"] = 0
-            if not specs_shown:
-                # Printed once; Rich Live renders this above the live region.
+            if not screen and not specs_shown:
+                # Inline/plain mode only: screen mode puts specs in the dashboard.
                 console.print(_batch_specs(state, system_rows))
                 specs_shown = True
             if live is None:
@@ -343,10 +377,11 @@ def run_batch_directory(
 
     if use_live_progress:
         with _live_logging(console), Live(
-            _batch_dashboard(state, completed_rows),
+            build_live(),
             console=console,
             refresh_per_second=8,
             transient=False,
+            screen=screen,
             vertical_overflow="crop",
         ) as live_ctx:
             live = live_ctx
@@ -378,7 +413,11 @@ def run_batch_directory(
     throughput = (completed_non_stopped / result.total_time_seconds) * 3600 if result.total_time_seconds > 0 else 0.0
     avg_per_molecule = result.total_time_seconds / completed_non_stopped if completed_non_stopped else 0.0
 
-    if not use_live_progress:
+    if screen:
+        # The alternate-screen dashboard is torn down on exit; reprint a
+        # persistent report to the normal buffer.
+        console.print(brand_banner())
+    if screen or not use_live_progress:
         console.print(recent_jobs_panel(completed_rows, limit=15))
     summary_rows = [
         ("Total files", str(len(result.records))),
