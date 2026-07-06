@@ -9,15 +9,6 @@ from concurrent.futures import ThreadPoolExecutor
 from rich.console import Console, Group
 from rich.live import Live
 from rich.logging import RichHandler
-from rich.progress import (
-    BarColumn,
-    MofNCompleteColumn,
-    Progress,
-    SpinnerColumn,
-    TaskProgressColumn,
-    TextColumn,
-    TimeRemainingColumn,
-)
 
 from ..engine import jobs
 from ..engine.discovery import _BATCH_LEGACY_CSV_NAMES, _BATCH_PRIMARY_CSV_NAME
@@ -125,19 +116,7 @@ class _live_logging:
 # ---------------------------------------------------------------------------
 # Live batch dashboard
 # ---------------------------------------------------------------------------
-def _make_progress() -> Progress:
-    return Progress(
-        SpinnerColumn(style=ACCENT),
-        TextColumn("[bold]{task.description}"),
-        BarColumn(bar_width=None, complete_style=ACCENT, finished_style="green", pulse_style=ACCENT),
-        MofNCompleteColumn(),
-        TaskProgressColumn(),
-        TimeRemainingColumn(compact=True),
-        expand=True,
-    )
-
-
-def _stat_metrics(state: dict) -> list[tuple[str, str, str]]:
+def _derive(state: dict) -> dict:
     elapsed = time.perf_counter() - float(state.get("started_at") or time.perf_counter())
     completed = int(state.get("completed") or 0)
     total = int(state.get("total") or 0)
@@ -148,13 +127,27 @@ def _stat_metrics(state: dict) -> list[tuple[str, str, str]]:
     avg = (elapsed / completed) if completed else None
     remaining = max(0, total - completed)
     eta = (remaining * avg) if avg else None
+    return {
+        "elapsed": elapsed,
+        "completed": completed,
+        "total": total,
+        "done": done,
+        "failed": failed,
+        "running": running,
+        "jobs_per_min": jobs_per_min,
+        "eta": eta,
+    }
+
+
+def _stat_metrics(state: dict) -> list[tuple[str, str, str]]:
+    d = _derive(state)
     return [
-        ("Done", str(done), OK_STYLE),
-        ("Failed", str(failed), FAIL_STYLE if failed else MUTED),
-        ("Running", str(running), ACCENT),
-        ("Elapsed", fmt_elapsed(elapsed), "bold"),
-        ("ETA", fmt_elapsed(eta) if eta is not None else "--:--", f"bold {ACCENT}"),
-        ("Throughput", f"{jobs_per_min:.1f}/min", "bold"),
+        ("Done", str(d["done"]), OK_STYLE),
+        ("Failed", str(d["failed"]), FAIL_STYLE if d["failed"] else MUTED),
+        ("Running", str(d["running"]), ACCENT),
+        ("Elapsed", fmt_elapsed(d["elapsed"]), "bold"),
+        ("ETA", fmt_elapsed(d["eta"]) if d["eta"] is not None else "--:--", f"bold {ACCENT}"),
+        ("Throughput", f"{d['jobs_per_min']:.1f}/min", "bold"),
     ]
 
 
@@ -168,15 +161,17 @@ def _batch_specs(state, system_rows):
     return specs_columns(config_rows, system_rows)
 
 
-def _batch_dashboard(state, progress, completed_rows) -> Group:
+def _batch_dashboard(state, completed_rows) -> Group:
     """Compact, bounded live region (progress + stats + recent jobs).
 
     Static context (brand + specs) is printed once *above* the live region so
     this stays comfortably shorter than the terminal, which is what keeps Rich's
     Live repainting in place instead of stacking frames.
     """
+    d = _derive(state)
+    detail = f"ETA {fmt_elapsed(d['eta'])}" if d["eta"] is not None else ""
     return Group(
-        progress_panel(progress),
+        progress_panel(d["completed"], d["total"], detail=detail),
         stat_tiles(_stat_metrics(state)),
         recent_jobs_panel(completed_rows, limit=8),
     )
@@ -197,17 +192,20 @@ def run_single_file(file_path: str, args):
     console.print(specs_columns(config_rows, sysinfo.system_rows(args)))
 
     if use_live_progress:
-        progress = _make_progress()
-        task_id = progress.add_task("Processing", total=1)
         with _live_logging(console), Live(
-            progress_panel(progress), console=console, refresh_per_second=8, transient=False
-        ):
+            progress_panel(0, 1, detail="processing…", pulse=True),
+            console=console,
+            refresh_per_second=8,
+            transient=False,
+            vertical_overflow="crop",
+        ) as live:
             with ThreadPoolExecutor(max_workers=1) as executor:
                 future = executor.submit(jobs.run_single_file_job, file_path, args)
                 while not future.done():
                     time.sleep(0.1)
+                    live.update(progress_panel(0, 1, detail="processing…", pulse=True))
                 result = future.result()
-                progress.advance(task_id, 1)
+            live.update(progress_panel(1, 1, detail="done"))
     else:
         console.print(f"Running single job: {display_name(file_path)}")
         result = jobs.run_single_file_job(file_path, args)
@@ -279,8 +277,6 @@ def run_batch_directory(
         "workers": getattr(args, "workers", None),
         "results_root": "",
     }
-    progress = _make_progress()
-    task_id = progress.add_task("Processing", total=1)
     live: Live | None = None
     specs_shown = False
 
@@ -288,7 +284,7 @@ def run_batch_directory(
 
     def refresh_dashboard() -> None:
         if live is not None:
-            live.update(_batch_dashboard(state, progress, completed_rows))
+            live.update(_batch_dashboard(state, completed_rows))
 
     def on_event(event: JobEvent) -> None:
         nonlocal specs_shown
@@ -300,7 +296,6 @@ def run_batch_directory(
             state["workers"] = payload.get("workers", state["workers"])
             state["results_root"] = payload.get("results_root", "")
             state["active_workers"] = 0
-            progress.update(task_id, total=event.total or 0, completed=0)
             if not specs_shown:
                 # Printed once; Rich Live renders this above the live region.
                 console.print(_batch_specs(state, system_rows))
@@ -317,7 +312,6 @@ def run_batch_directory(
                 console.print(event.message)
             refresh_dashboard()
         elif event.kind in {EventKind.FILE_SUCCEEDED, EventKind.FILE_FAILED, EventKind.FILE_STOPPED}:
-            progress.advance(task_id, 1)
             state["completed"] = int(event.completed or (int(state.get("completed") or 0) + 1))
             state["active_workers"] = max(0, int(state.get("active_workers") or 0) - 1)
             elapsed = f"{(event.elapsed_seconds or 0.0):.1f}s" if event.elapsed_seconds else "-"
@@ -349,10 +343,11 @@ def run_batch_directory(
 
     if use_live_progress:
         with _live_logging(console), Live(
-            _batch_dashboard(state, progress, completed_rows),
+            _batch_dashboard(state, completed_rows),
             console=console,
             refresh_per_second=8,
             transient=False,
+            vertical_overflow="crop",
         ) as live_ctx:
             live = live_ctx
             result = jobs.run_batch_directory_job(

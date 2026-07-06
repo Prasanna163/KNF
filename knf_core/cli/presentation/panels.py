@@ -3,6 +3,7 @@ from __future__ import annotations
 from rich.align import Align
 from rich.console import Group, RenderableType
 from rich.panel import Panel
+from rich.progress_bar import ProgressBar
 from rich.rule import Rule
 from rich.table import Table
 from rich.text import Text
@@ -140,10 +141,43 @@ def stat_tiles(metrics: list[tuple[str, str, str]], *, title: str = "Live Stats"
     )
 
 
-def progress_panel(progress: RenderableType) -> Panel:
+def progress_panel(completed: int, total: int, *, detail: str = "", pulse: bool = False) -> Panel:
+    """A single static progress line: bar on the left, counts/detail on the right.
+
+    Rendered from ``completed``/``total`` on every frame rather than from a live
+    :class:`rich.progress.Progress` object — a static ``ProgressBar`` has a fixed
+    one-line height, so Rich's Live can measure it exactly and repaint it in place
+    (an animated Progress rendered one line taller than Live measured, which made
+    the panel header stack on every refresh). ``pulse=True`` gives an
+    indeterminate shimmer for the single-file case.
+    """
     arrow = glyph("➤", ">")
+    total_safe = max(int(total or 0), 0)
+    completed = max(int(completed or 0), 0)
+    bar = ProgressBar(
+        total=total_safe or 1,
+        completed=min(completed, total_safe) if total_safe else 0,
+        width=None,
+        pulse=pulse or not total_safe,
+        complete_style=ACCENT,
+        finished_style="green",
+        pulse_style=ACCENT,
+        style=MUTED,
+    )
+    if pulse or not total_safe:
+        counts = f"[{MUTED}]{detail or 'working…'}[/]"
+    else:
+        pct = (completed / total_safe) * 100.0
+        counts = f"[bold]{completed}/{total_safe}[/]  [{ACCENT}]{pct:.0f}%[/]"
+        if detail:
+            counts += f"  [{MUTED}]{detail}[/]"
+
+    row = Table.grid(expand=True, padding=(0, 2))
+    row.add_column(ratio=1)
+    row.add_column(justify="right", no_wrap=True)
+    row.add_row(bar, counts)
     return Panel(
-        progress,
+        row,
         title=f"[{ACCENT_BOLD}]{arrow} Progress[/]",
         title_align="left",
         border_style=ACCENT,
