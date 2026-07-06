@@ -14,6 +14,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     NCIFORGE_IN_DOCKER=1 \
     KUID_IN_DOCKER=1 \
     KNF_IN_DOCKER=1 \
+    NCIFORGE_API_WORKERS=1 \
+    NCIFORGE_DEFAULT_XTB_ENGINE=xtb \
     MULTIWFN_HOME=/opt/Multiwfn \
     NCIFORGE_MULTIWFN_PATH=/opt/Multiwfn/Multiwfn \
     KUID_MULTIWFN_PATH=/opt/Multiwfn/Multiwfn \
@@ -56,7 +58,7 @@ RUN wget "${MULTIWFN_URL}" -O Multiwfn.zip \
 WORKDIR /app
 COPY . /app
 
-RUN pip install --no-cache-dir . \
+RUN pip install --no-cache-dir ".[api,plots]" \
     && pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch
 
 RUN sed -i 's/\r$//' /app/scripts/docker-entrypoint.sh \
@@ -65,8 +67,10 @@ RUN sed -i 's/\r$//' /app/scripts/docker-entrypoint.sh \
 
 USER mambauser
 
+EXPOSE 8000
+
 HEALTHCHECK --interval=60s --timeout=10s --start-period=30s --retries=3 \
-  CMD bash -lc "command -v nciforge && command -v knf && command -v xtb && command -v obabel && command -v Multiwfn && python -c 'import torch, matplotlib'"
+  CMD bash -lc "command -v nciforge && command -v knf && command -v geoinit && command -v nciforge-api && command -v xtb && command -v obabel && command -v Multiwfn && python -c 'import torch, matplotlib, fastapi, uvicorn'"
 
 ENTRYPOINT ["/usr/bin/tini", "--", "/app/scripts/docker-entrypoint.sh"]
 CMD ["--help"]

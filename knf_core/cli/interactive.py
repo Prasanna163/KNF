@@ -4,14 +4,13 @@ import logging
 import os
 import sys
 
-from rich.console import Console
-
 from .. import first_run, utils
 from ..engine.dependencies import probe_missing_dependencies
 from ..engine.gpu import resolve_cpu_backend_when_torch_missing
 from ..engine.types import RunOptions
 from . import commands
 from .dependency_report import print_missing_tools_warning
+from .presentation.formatting import build_console
 from .presentation.panels import brand_panel
 
 
@@ -21,7 +20,7 @@ def run_interactive() -> None:
         format="%(asctime)s - %(levelname)s - %(message)s",
         datefmt="%H:%M:%S",
     )
-    Console().print(brand_panel())
+    build_console().print(brand_panel())
     print()
 
     while True:

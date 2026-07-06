@@ -1,6 +1,7 @@
 import os
 import shutil
 import logging
+import json
 from pathlib import Path
 from rdkit import Chem
 
@@ -41,6 +42,7 @@ class KNFPipeline:
         preopt_engine: str = "geoinit",
         xtb_engine: str = "xtbx",
         xtb_gpu_atom_cutoff: int = 350,
+        sp_only: bool = False,
     ):
         self.input_file = utils.resolve_artifacted_path(input_file)
         self.charge = charge
@@ -68,6 +70,7 @@ class KNFPipeline:
         self.preopt_engine = (preopt_engine or "geoinit").strip().lower()
         self.xtb_engine = (xtb_engine or "xtbx").strip().lower()
         self.xtb_gpu_atom_cutoff = int(xtb_gpu_atom_cutoff)
+        self.sp_only = bool(sp_only)
 
         self.base_name = Path(self.input_file).stem
         default_output_root = os.path.join(os.path.dirname(self.input_file), "Results")
@@ -140,11 +143,31 @@ class KNFPipeline:
             logging.info(f"[{index}/5] {name}")
 
     def _xtb_artifacts_ready(self) -> tuple[bool, list[str]]:
-        required = ["xtbopt.xyz", "wbo", "molden.input", "xtb.log"]
+        required = ["wbo", "molden.input", "xtb.log"]
+        if not self.sp_only:
+            required.insert(0, "xtbopt.xyz")
         missing = [
             name for name in required if not os.path.exists(os.path.join(self.results_dir, name))
         ]
+        if not missing and not self._existing_xtb_mode_matches():
+            missing.append("matching xtb_sp_only metadata")
         return len(missing) == 0, missing
+
+    def _existing_xtb_mode_matches(self) -> bool:
+        for name in (_final_output_name("knf.json", self.water), "knf.json"):
+            path = os.path.join(self.results_dir, name)
+            if not os.path.exists(path):
+                continue
+            try:
+                with open(path, "r", encoding="utf-8") as handle:
+                    payload = json.load(handle)
+                metadata = payload.get("metadata") if isinstance(payload, dict) else {}
+                if isinstance(metadata, dict) and "xtb_sp_only" in metadata:
+                    return bool(metadata.get("xtb_sp_only")) == self.sp_only
+            except Exception:
+                return False
+        # Legacy results predate the mode marker and came from the optimized path.
+        return not self.sp_only
 
     @staticmethod
     def _atom_count_xyz(xyz_path: str) -> int:
@@ -336,12 +359,17 @@ class KNFPipeline:
         xtb_ready, xtb_missing = self._xtb_artifacts_ready()
         if xtb_ready and not self.force:
             logging.info(
-                "Reusing existing xTB artifacts for %s (skipping UFF/xTB): %s",
+                "Reusing existing xTB artifacts for %s (skipping xTB stages): %s",
                 self.base_name,
                 self.results_dir,
             )
 
-        if not os.path.exists(optimized_xyz) or self.force:
+        if self.sp_only:
+            logging.info(
+                "SP-only mode enabled for %s: skipping pre-optimisation and xTB geometry optimisation.",
+                self.base_name,
+            )
+        elif not os.path.exists(optimized_xyz) or self.force:
             uhf = self.spin - 1
             # ---- pre-optimisation (GeoInit by default, UFF available as fallback) ----
             preopt_label = (
@@ -359,6 +387,7 @@ class KNFPipeline:
             )
 
 
+        sp_geometry = work_xyz if self.sp_only else optimized_xyz
         wbo_file = os.path.join(self.results_dir, 'wbo')
         molden_file = os.path.join(self.results_dir, 'molden.input')
         xtb_log = os.path.join(self.results_dir, 'xtb.log')
@@ -369,10 +398,10 @@ class KNFPipeline:
             or self.force
         ):
             uhf = self.spin - 1
-            sp_cmd = self._resolve_xtb_cmd(optimized_xyz)
+            sp_cmd = self._resolve_xtb_cmd(sp_geometry)
             self._stage(4, f"xTB SP [{sp_cmd}]")
             wrapper.run_xtb_sp(
-                optimized_xyz, self.charge, uhf, use_water=self.water, xtb_cmd=sp_cmd
+                sp_geometry, self.charge, uhf, use_water=self.water, xtb_cmd=sp_cmd
             )
         elif not xtb_ready:
             logging.info(
@@ -422,24 +451,24 @@ class KNFPipeline:
 
         if len(fragments) >= 2:
             f2_mol = Chem.Mol(mol)
-            if os.path.exists(optimized_xyz):
+            if os.path.exists(sp_geometry):
                 try:
-                    optimized_mol = geometry.load_molecule(optimized_xyz)
-                    if optimized_mol.GetNumAtoms() == mol.GetNumAtoms():
-                        src_conf = optimized_mol.GetConformer()
+                    sp_mol = geometry.load_molecule(sp_geometry)
+                    if sp_mol.GetNumAtoms() == mol.GetNumAtoms():
+                        src_conf = sp_mol.GetConformer()
                         dst_conf = f2_mol.GetConformer()
                         for atom_idx in range(mol.GetNumAtoms()):
                             p = src_conf.GetAtomPosition(atom_idx)
                             dst_conf.SetAtomPosition(atom_idx, (float(p.x), float(p.y), float(p.z)))
                     else:
                         logging.warning(
-                            "Optimized geometry atom count (%s) does not match input (%s); "
+                            "xTB descriptor geometry atom count (%s) does not match input (%s); "
                             "falling back to input geometry for f2.",
-                            optimized_mol.GetNumAtoms(),
+                            sp_mol.GetNumAtoms(),
                             mol.GetNumAtoms(),
                         )
                 except Exception as e:
-                    logging.warning("Failed to load optimized geometry for f2 weighting: %s", e)
+                    logging.warning("Failed to load xTB descriptor geometry for f2 weighting: %s", e)
 
             wbo_pair_map = {}
             try:
@@ -499,6 +528,8 @@ class KNFPipeline:
             "cosmo_file": cosmo_file,
             "pair_indices": pair_indices,
             "fragment_count": len(fragments),
+            "xtb_sp_only": self.sp_only,
+            "xtb_geometry_file": sp_geometry,
         }
 
     def run_post_nci_stage(self, context: dict):
@@ -524,6 +555,8 @@ class KNFPipeline:
         cosmo_file = context["cosmo_file"]
         pair_indices = context["pair_indices"]
         fragment_count = int(context["fragment_count"])
+        xtb_sp_only = bool(context.get("xtb_sp_only", False))
+        xtb_geometry_file = context.get("xtb_geometry_file")
 
         nci_grid_file = os.path.join(self.results_dir, 'output.txt')
         final_grid_text_path = os.path.join(self.results_dir, 'nci_grid.txt')
@@ -619,6 +652,8 @@ class KNFPipeline:
                 'wbo_mode': wbo_mode,
                 'preopt_engine': self.preopt_engine,
                 'xtb_engine': self.xtb_engine,
+                'xtb_sp_only': xtb_sp_only,
+                'xtb_geometry_file': xtb_geometry_file,
                 'xtb_water': self.water,
                 'nci_backend': self.nci_backend,
                 'nci_status': 'success' if nci_success else 'skipped',

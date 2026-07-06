@@ -70,8 +70,11 @@ class RunOptions(BaseModel):
     scdi_var_max: Optional[float] = None
     wbo_mode: Literal["native", "xtb"] = "native"
     preopt: Literal["uff", "geoinit"] = "geoinit"
-    xtb_engine: Literal["xtb", "xtbx", "auto"] = "xtbx"
+    xtb_engine: Literal["xtb", "xtbx", "auto"] = Field(
+        default_factory=lambda: os.environ.get("NCIFORGE_DEFAULT_XTB_ENGINE", "xtbx")
+    )
     xtb_gpu_atoms: int = 350
+    sp: bool = False
     output_dir: Optional[str] = None
     multiwfn_path: Optional[str] = None
 
@@ -126,6 +129,7 @@ def _to_engine_options(options: RunOptions) -> EngineRunOptions:
         preopt=options.preopt,
         xtb_engine=options.xtb_engine,
         xtb_gpu_atoms=options.xtb_gpu_atoms,
+        sp=bool(options.sp),
         output_dir=options.output_dir,
         multiwfn_path=options.multiwfn_path,
     )

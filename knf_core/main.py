@@ -10,6 +10,7 @@ from .cli import app as cli_app
 from .cli import commands as cli_commands
 from .cli import interactive as cli_interactive
 from .cli.dependency_report import print_missing_tools_warning
+from .cli.presentation.formatting import configure_terminal as _configure_terminal
 from .engine.constants import CLI_NAME, CLI_SUBTITLE, CLI_TITLE, CLI_VERSION, STOP_KEY, VALID_INPUT_EXTS
 from .engine.dependencies import (
     _DEPENDENCY_CHECK_CACHE,
@@ -50,14 +51,11 @@ def _clear_terminal() -> None:
 
 
 def _ensure_utf8_stdout() -> None:
-    for stream_name in ("stdout", "stderr"):
-        stream = getattr(sys, stream_name, None)
-        reconfigure = getattr(stream, "reconfigure", None)
-        if callable(reconfigure):
-            try:
-                reconfigure(encoding="utf-8", errors="replace")
-            except Exception:
-                pass
+    # Delegate to the shared terminal setup so the CLI renders clean Unicode
+    # boxes and real ANSI colors instead of ASCII fallbacks / raw escape codes.
+    # On Windows this also switches the console to the UTF-8 code page and
+    # enables virtual-terminal processing.
+    _configure_terminal()
 
 
 def _show_startup_splash() -> None:
@@ -113,7 +111,6 @@ run_batch_directory_batched = cli_commands.run_batch_directory_batched
 def main():
     _ensure_utf8_stdout()
     _clear_terminal()
-    _show_startup_splash()
     if len(sys.argv) == 1:
         return cli_interactive.run_interactive()
     return cli_app.main(sys.argv[1:], prog_name=os.path.basename(sys.argv[0]) or CLI_NAME.lower())

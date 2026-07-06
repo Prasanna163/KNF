@@ -1,71 +1,216 @@
 from __future__ import annotations
 
+import logging
 import os
+import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-from rich import box
-from rich.console import Console
-from rich.panel import Panel
-from rich.progress import BarColumn, Progress, TaskProgressColumn, TextColumn, TimeElapsedColumn, TimeRemainingColumn
-from rich.table import Table
+from rich.console import Console, Group
+from rich.live import Live
+from rich.logging import RichHandler
+from rich.progress import (
+    BarColumn,
+    MofNCompleteColumn,
+    Progress,
+    SpinnerColumn,
+    TaskProgressColumn,
+    TextColumn,
+    TimeRemainingColumn,
+)
 
 from ..engine import jobs
 from ..engine.discovery import _BATCH_LEGACY_CSV_NAMES, _BATCH_PRIMARY_CSV_NAME
 from ..engine.events import EventKind, JobEvent
 from ..engine.naming import _final_output_name
-from .presentation.formatting import display_name, display_path, fmt_elapsed, supports_unicode_terminal
-from .presentation.panels import brand_panel, calculation_results_panel, failed_files_table, key_value_panel
+from .presentation import sysinfo
+from .presentation.formatting import (
+    ACCENT,
+    FAIL_STYLE,
+    MUTED,
+    OK_STYLE,
+    build_console,
+    display_name,
+    display_path,
+    fmt_elapsed,
+)
+from .presentation.panels import (
+    brand_banner,
+    failed_files_table,
+    progress_panel,
+    recent_jobs_panel,
+    specs_columns,
+    stat_tiles,
+    status_label,
+    summary_panel,
+)
 
 
-def _print_process_complete(console: Console, rows: list[tuple[str, str]], *, success: bool = True) -> None:
-    table = Table.grid(padding=(0, 2))
-    table.add_column(style="bold")
-    table.add_column()
-    for key, value in rows:
-        table.add_row(str(key), str(value))
-    console.print(
-        Panel(
-            table,
-            title="PROCESS COMPLETE",
-            title_align="left",
-            border_style=("green" if success else "red"),
-            padding=(0, 1),
-            box=(box.ROUNDED if supports_unicode_terminal() else box.ASCII),
+def _make_console() -> Console:
+    """Build a Console that renders clean, continuous Unicode boxes and colors.
+
+    Delegates terminal setup to :func:`build_console`, which forces Rich's modern
+    VT renderer so the dashboard shows rounded frames and repaints its live region
+    in place — even when this checkout's ``main()`` was bypassed (e.g. a shadowing
+    ``knf_core``).
+    """
+    return build_console()
+
+
+def _live_progress_supported(console: Console) -> bool:
+    if os.environ.get("NCIFORGE_FORCE_LIVE", "").strip().lower() in {"1", "true", "yes", "on"}:
+        return True
+    if os.environ.get("NCIFORGE_NO_LIVE", "").strip().lower() in {"1", "true", "yes", "on"}:
+        return False
+    if not bool(getattr(sys.stdout, "isatty", lambda: False)()):
+        return False
+    if not bool(getattr(console, "is_terminal", False)):
+        return False
+    if bool(getattr(console, "is_dumb_terminal", False)):
+        return False
+    if os.name == "nt":
+        ansi_env = (
+            os.environ.get("WT_SESSION")
+            or os.environ.get("TERM_PROGRAM")
+            or os.environ.get("ANSICON")
+            or os.environ.get("ConEmuANSI", "").strip().lower() == "on"
+            # build_console forces the modern renderer; trust it when it wins.
+            # Default to legacy when the attribute is absent (conservative).
+            or not bool(getattr(console, "legacy_windows", True))
         )
-    )
+        if not ansi_env:
+            return False
+    return True
 
 
-def run_single_file(file_path: str, args):
-    console = Console()
-    t0 = time.perf_counter()
-    progress = Progress(
-        TextColumn("[bold cyan]{task.description}"),
-        BarColumn(bar_width=30),
+class _live_logging:
+    """Route logging through the live console so records render *above* the
+    dashboard instead of tearing through its repainting region.
+
+    A ``StreamHandler`` created by ``logging.basicConfig`` holds the pre-Live
+    ``sys.stderr`` and writes straight past Rich's cursor control, which is a
+    classic source of duplicated/garbled live output. For the duration of the
+    ``with`` block we swap the root handlers for a :class:`RichHandler` bound to
+    the live console, then restore the originals.
+    """
+
+    def __init__(self, console: Console):
+        self._console = console
+        self._saved_handlers = None
+        self._saved_level = None
+
+    def __enter__(self) -> "_live_logging":
+        root = logging.getLogger()
+        self._saved_handlers = root.handlers[:]
+        self._saved_level = root.level
+        handler = RichHandler(
+            console=self._console,
+            show_path=False,
+            markup=False,
+            rich_tracebacks=True,
+            log_time_format="[%H:%M:%S]",
+        )
+        root.handlers = [handler]
+        return self
+
+    def __exit__(self, *exc) -> None:
+        root = logging.getLogger()
+        if self._saved_handlers is not None:
+            root.handlers = self._saved_handlers
+        if self._saved_level is not None:
+            root.setLevel(self._saved_level)
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Live batch dashboard
+# ---------------------------------------------------------------------------
+def _make_progress() -> Progress:
+    return Progress(
+        SpinnerColumn(style=ACCENT),
+        TextColumn("[bold]{task.description}"),
+        BarColumn(bar_width=None, complete_style=ACCENT, finished_style="green", pulse_style=ACCENT),
+        MofNCompleteColumn(),
         TaskProgressColumn(),
-        TimeElapsedColumn(),
-    )
-    task_id = progress.add_task("Single Job", total=1)
-
-    console.print(brand_panel())
-    console.print(
-        key_value_panel(
-            [
-                ("Mode", "single"),
-                ("File", display_name(file_path)),
-                ("Output", display_path(jobs.resolve_results_root(file_path, getattr(args, "output_dir", None)))),
-            ],
-            title="SYSTEM INITIALIZATION",
-        )
+        TimeRemainingColumn(compact=True),
+        expand=True,
     )
 
-    with progress:
-        with ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(jobs.run_single_file_job, file_path, args)
-            while not future.done():
-                time.sleep(0.2)
-            result = future.result()
-            progress.advance(task_id, 1)
+
+def _stat_metrics(state: dict) -> list[tuple[str, str, str]]:
+    elapsed = time.perf_counter() - float(state.get("started_at") or time.perf_counter())
+    completed = int(state.get("completed") or 0)
+    total = int(state.get("total") or 0)
+    done = int(state.get("succeeded") or 0)
+    failed = int(state.get("failed") or 0)
+    running = max(0, int(state.get("active_workers") or 0))
+    jobs_per_min = (completed / elapsed) * 60 if completed and elapsed > 0 else 0.0
+    avg = (elapsed / completed) if completed else None
+    remaining = max(0, total - completed)
+    eta = (remaining * avg) if avg else None
+    return [
+        ("Done", str(done), OK_STYLE),
+        ("Failed", str(failed), FAIL_STYLE if failed else MUTED),
+        ("Running", str(running), ACCENT),
+        ("Elapsed", fmt_elapsed(elapsed), "bold"),
+        ("ETA", fmt_elapsed(eta) if eta is not None else "--:--", f"bold {ACCENT}"),
+        ("Throughput", f"{jobs_per_min:.1f}/min", "bold"),
+    ]
+
+
+def _batch_specs(state, system_rows):
+    config_rows = sysinfo.run_config_rows(
+        state.get("args"),
+        mode=state.get("mode"),
+        workers=state.get("workers"),
+        results_root=state.get("results_root"),
+    )
+    return specs_columns(config_rows, system_rows)
+
+
+def _batch_dashboard(state, progress, completed_rows) -> Group:
+    """Compact, bounded live region (progress + stats + recent jobs).
+
+    Static context (brand + specs) is printed once *above* the live region so
+    this stays comfortably shorter than the terminal, which is what keeps Rich's
+    Live repainting in place instead of stacking frames.
+    """
+    return Group(
+        progress_panel(progress),
+        stat_tiles(_stat_metrics(state)),
+        recent_jobs_panel(completed_rows, limit=8),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Single file
+# ---------------------------------------------------------------------------
+def run_single_file(file_path: str, args):
+    console = _make_console()
+    t0 = time.perf_counter()
+    use_live_progress = _live_progress_supported(console)
+
+    results_root = jobs.resolve_results_root(file_path, getattr(args, "output_dir", None))
+    console.print(brand_banner())
+    config_rows = sysinfo.run_config_rows(args, mode="single", results_root=results_root)
+    config_rows.insert(0, ("File", display_name(file_path)))
+    console.print(specs_columns(config_rows, sysinfo.system_rows(args)))
+
+    if use_live_progress:
+        progress = _make_progress()
+        task_id = progress.add_task("Processing", total=1)
+        with _live_logging(console), Live(
+            progress_panel(progress), console=console, refresh_per_second=8, transient=False
+        ):
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(jobs.run_single_file_job, file_path, args)
+                while not future.done():
+                    time.sleep(0.1)
+                result = future.result()
+                progress.advance(task_id, 1)
+    else:
+        console.print(f"Running single job: {display_name(file_path)}")
+        result = jobs.run_single_file_job(file_path, args)
 
     total_time = result.elapsed_seconds if result.elapsed_seconds > 0 else (time.perf_counter() - t0)
     throughput = ((1 / total_time) * 3600) if (result.success and total_time > 0) else 0.0
@@ -78,7 +223,7 @@ def run_single_file(file_path: str, args):
         ("Throughput", f"{throughput:.1f} jobs/hour" if result.success else "n/a"),
     ]
     if result.output_root:
-        summary_rows.append(("Output", result.output_root))
+        summary_rows.append(("Output", display_path(result.output_root)))
     if result.success and isinstance(result.kuid_summary, dict):
         if result.kuid_summary.get("updated"):
             summary_rows.append(("KUID", str(result.kuid_summary.get("kuid", ""))))
@@ -95,48 +240,131 @@ def run_single_file(file_path: str, args):
             if issue:
                 summary_rows.append(("KUID", f"not updated ({issue})"))
 
-    _print_process_complete(console, summary_rows, success=result.success)
+    console.print(
+        summary_panel(
+            summary_rows,
+            title="Process Complete" if result.success else "Process Failed",
+            tone="ok" if result.success else "fail",
+        )
+    )
     if not result.success:
         console.print(failed_files_table([(os.path.basename(file_path), str(result.error))]))
     return result
 
 
+# ---------------------------------------------------------------------------
+# Batch directory
+# ---------------------------------------------------------------------------
 def run_batch_directory(
     directory: str,
     args,
     file_paths: list[str] | None = None,
     results_root_override: str | None = None,
 ):
-    console = Console()
+    console = _make_console()
     completed_rows: list[tuple[str, str, str]] = []
     failures: list[tuple[str, str]] = []
-    task_id = None
+    use_live_progress = _live_progress_supported(console)
+    system_rows = sysinfo.system_rows(args)
+    state = {
+        "args": args,
+        "started_at": time.perf_counter(),
+        "total": 0,
+        "completed": 0,
+        "succeeded": 0,
+        "failed": 0,
+        "stopped": 0,
+        "active_workers": 0,
+        "mode": getattr(args, "processing", "auto"),
+        "workers": getattr(args, "workers", None),
+        "results_root": "",
+    }
+    progress = _make_progress()
+    task_id = progress.add_task("Processing", total=1)
+    live: Live | None = None
+    specs_shown = False
 
-    progress = Progress(
-        TextColumn("[bold cyan]{task.description}"),
-        BarColumn(bar_width=30),
-        TaskProgressColumn(),
-        TimeRemainingColumn(),
-    )
+    console.print(brand_banner())
+
+    def refresh_dashboard() -> None:
+        if live is not None:
+            live.update(_batch_dashboard(state, progress, completed_rows))
 
     def on_event(event: JobEvent) -> None:
-        nonlocal task_id
+        nonlocal specs_shown
         if event.kind == EventKind.BATCH_STARTED:
-            task_id = progress.add_task("Overall", total=event.total or 0)
+            payload = event.payload or {}
+            state["started_at"] = time.perf_counter()
+            state["total"] = int(event.total or 0)
+            state["mode"] = payload.get("mode", state["mode"])
+            state["workers"] = payload.get("workers", state["workers"])
+            state["results_root"] = payload.get("results_root", "")
+            state["active_workers"] = 0
+            progress.update(task_id, total=event.total or 0, completed=0)
+            if not specs_shown:
+                # Printed once; Rich Live renders this above the live region.
+                console.print(_batch_specs(state, system_rows))
+                specs_shown = True
+            if live is None:
+                console.print(
+                    f"Batch started: {event.total or 0} file(s), "
+                    f"mode={state['mode']}, workers={state['workers']}"
+                )
+            refresh_dashboard()
+        elif event.kind == EventKind.FILE_STARTED:
+            state["active_workers"] = int(state.get("active_workers") or 0) + 1
+            if live is None and event.message:
+                console.print(event.message)
+            refresh_dashboard()
         elif event.kind in {EventKind.FILE_SUCCEEDED, EventKind.FILE_FAILED, EventKind.FILE_STOPPED}:
-            if task_id is not None:
-                progress.advance(task_id, 1)
+            progress.advance(task_id, 1)
+            state["completed"] = int(event.completed or (int(state.get("completed") or 0) + 1))
+            state["active_workers"] = max(0, int(state.get("active_workers") or 0) - 1)
             elapsed = f"{(event.elapsed_seconds or 0.0):.1f}s" if event.elapsed_seconds else "-"
             if event.kind == EventKind.FILE_SUCCEEDED:
-                completed_rows.append((display_name(event.input_file or ""), elapsed, "[green]OK[/green]"))
+                state["succeeded"] = int(state.get("succeeded") or 0) + 1
+                completed_rows.append((display_name(event.input_file or ""), elapsed, status_label("success")))
+                if live is None:
+                    console.print(
+                        f"[{event.completed or len(completed_rows)}/{event.total or '?'}] "
+                        f"OK {display_name(event.input_file or '')} ({elapsed})"
+                    )
             elif event.kind == EventKind.FILE_FAILED:
-                completed_rows.append((display_name(event.input_file or ""), elapsed, "[red]FAIL[/red]"))
+                state["failed"] = int(state.get("failed") or 0) + 1
+                completed_rows.append((display_name(event.input_file or ""), elapsed, status_label("failed")))
                 failures.append((os.path.basename(event.input_file or ""), event.message or "failed"))
+                if live is None:
+                    console.print(
+                        f"[{event.completed or len(completed_rows)}/{event.total or '?'}] "
+                        f"FAIL {display_name(event.input_file or '')} ({elapsed})"
+                    )
             else:
-                completed_rows.append((display_name(event.input_file or ""), elapsed, "[yellow]STOP[/yellow]"))
+                state["stopped"] = int(state.get("stopped") or 0) + 1
+                completed_rows.append((display_name(event.input_file or ""), elapsed, status_label("stopped")))
+                if live is None:
+                    console.print(event.message or "Stop requested.")
+            refresh_dashboard()
+        elif live is None and event.kind == EventKind.FILE_SKIPPED and event.message:
+            console.print(event.message)
 
-    console.print(brand_panel())
-    with progress:
+    if use_live_progress:
+        with _live_logging(console), Live(
+            _batch_dashboard(state, progress, completed_rows),
+            console=console,
+            refresh_per_second=8,
+            transient=False,
+        ) as live_ctx:
+            live = live_ctx
+            result = jobs.run_batch_directory_job(
+                directory=directory,
+                options=args,
+                file_paths=file_paths,
+                results_root_override=results_root_override,
+                on_event=on_event,
+            )
+            refresh_dashboard()
+        live = None
+    else:
         result = jobs.run_batch_directory_job(
             directory=directory,
             options=args,
@@ -155,7 +383,8 @@ def run_batch_directory(
     throughput = (completed_non_stopped / result.total_time_seconds) * 3600 if result.total_time_seconds > 0 else 0.0
     avg_per_molecule = result.total_time_seconds / completed_non_stopped if completed_non_stopped else 0.0
 
-    console.print(calculation_results_panel(completed_rows))
+    if not use_live_progress:
+        console.print(recent_jobs_panel(completed_rows, limit=15))
     summary_rows = [
         ("Total files", str(len(result.records))),
         ("Success", str(success_count)),
@@ -164,24 +393,26 @@ def run_batch_directory(
         ("Total time", fmt_elapsed(result.total_time_seconds)),
         ("Avg per molecule", f"{avg_per_molecule:.1f}s" if completed_non_stopped else "n/a"),
         ("Throughput", f"{throughput:.1f} jobs/hour" if completed_non_stopped else "n/a"),
-        ("Batch JSON", result.aggregate_json_path or "n/a"),
-        ("Batch CSV", result.aggregate_csv_path or "n/a"),
+        ("Batch JSON", display_path(result.aggregate_json_path or "n/a")),
+        ("Batch CSV", display_path(result.aggregate_csv_path or "n/a")),
     ]
     if result.skipped_existing:
         summary_rows.insert(4, ("Skipped existing", str(result.skipped_existing)))
     if result.batch_delta_json_path:
-        summary_rows.append(("Batch Delta JSON", result.batch_delta_json_path))
+        summary_rows.append(("Batch Delta JSON", display_path(result.batch_delta_json_path)))
     if result.batch_delta_txt_path:
-        summary_rows.append(("Batch Delta TXT", result.batch_delta_txt_path))
+        summary_rows.append(("Batch Delta TXT", display_path(result.batch_delta_txt_path)))
     quadrant_payload = result.quadrant_payload or {}
     if quadrant_payload.get("quadrant_plot_png"):
-        summary_rows.append(("Quadrant Plot", quadrant_payload["quadrant_plot_png"]))
+        summary_rows.append(("Quadrant Plot", display_path(quadrant_payload["quadrant_plot_png"])))
     elif quadrant_payload.get("plot_error"):
         summary_rows.append(("Quadrant Plot", f"not generated ({quadrant_payload['plot_error']})"))
     if quadrant_payload.get("quadrant_json"):
-        summary_rows.append(("Quadrant JSON", quadrant_payload["quadrant_json"]))
+        summary_rows.append(("Quadrant JSON", display_path(quadrant_payload["quadrant_json"])))
 
-    _print_process_complete(console, summary_rows, success=(failed_count == 0))
+    tone = "ok" if (failed_count == 0 and result.stopped_count == 0) else ("warn" if failed_count == 0 else "fail")
+    title = "Batch Completed" if failed_count == 0 else "Batch Completed With Failures"
+    console.print(summary_panel(summary_rows, title=title, tone=tone))
     if failures:
         console.print(failed_files_table(failures))
     return result

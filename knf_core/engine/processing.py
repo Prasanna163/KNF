@@ -69,6 +69,7 @@ def _build_pipeline(file_path: str, args, output_root: str = None) -> KNFPipelin
         preopt_engine=getattr(args, "preopt", "geoinit"),
         xtb_engine=getattr(args, "xtb_engine", "xtbx"),
         xtb_gpu_atom_cutoff=getattr(args, "xtb_gpu_atoms", 350),
+        sp_only=bool(getattr(args, "sp", False)),
     )
 
 

@@ -36,6 +36,7 @@ from typer.testing import CliRunner
 from knf_core.engine import jobs as engine_jobs
 from knf_core.engine.types import RunOptions
 from knf_core.cli import app as cli_app
+from knf_core.cli import commands as cli_commands
 from knf_core.cli import interactive as cli_interactive
 from knf_core.cli.argv_preprocess import normalize_argv
 from knf_core.cli.options import apply_execution_shortcuts, build_run_options, validate_flag_combinations
@@ -323,6 +324,33 @@ def test_live_repaint_env_overrides(monkeypatch):
     assert core_main._live_repaint_supported(ConsoleStub()) is False
 
 
+def test_cli_progress_uses_plain_output_for_unsupported_windows_terminal(monkeypatch):
+    class ConsoleStub:
+        is_terminal = True
+        is_dumb_terminal = False
+
+    monkeypatch.setattr(cli_commands.os, "name", "nt")
+    monkeypatch.setattr(cli_commands.sys.stdout, "isatty", lambda: True)
+    monkeypatch.delenv("NCIFORGE_FORCE_LIVE", raising=False)
+    monkeypatch.delenv("NCIFORGE_NO_LIVE", raising=False)
+    monkeypatch.delenv("WT_SESSION", raising=False)
+    monkeypatch.delenv("TERM_PROGRAM", raising=False)
+    monkeypatch.delenv("ANSICON", raising=False)
+    monkeypatch.delenv("ConEmuANSI", raising=False)
+
+    assert cli_commands._live_progress_supported(ConsoleStub()) is False
+
+
+def test_cli_progress_force_live_override(monkeypatch):
+    class ConsoleStub:
+        is_terminal = False
+        is_dumb_terminal = True
+
+    monkeypatch.setenv("NCIFORGE_FORCE_LIVE", "1")
+
+    assert cli_commands._live_progress_supported(ConsoleStub()) is True
+
+
 def test_engine_run_options_match_current_cli_defaults():
     defaults = {field.name: field.default for field in fields(RunOptions)}
     assert defaults == {
@@ -368,6 +396,7 @@ def test_engine_run_options_match_current_cli_defaults():
         "preopt": "geoinit",
         "xtb_engine": "xtbx",
         "xtb_gpu_atoms": 350,
+        "sp": False,
         "refresh_first_run": False,
         "multiwfn_path": None,
         "knf": False,
@@ -443,7 +472,11 @@ def test_main_cli_dispatches_single_file_to_cli_commands(monkeypatch, tmp_path):
 
     monkeypatch.setattr(core_main, "_ensure_utf8_stdout", lambda: None)
     monkeypatch.setattr(core_main, "_clear_terminal", lambda: None)
-    monkeypatch.setattr(core_main, "_show_startup_splash", lambda: None)
+    monkeypatch.setattr(
+        core_main,
+        "_show_startup_splash",
+        lambda: (_ for _ in ()).throw(AssertionError("CLI mode should not print the plain startup splash")),
+    )
     monkeypatch.setattr(cli_app, "resolve_cpu_backend_when_torch_missing", lambda args: None)
     monkeypatch.setattr(cli_app.first_run, "ensure_first_run_setup", lambda **kwargs: True)
     monkeypatch.setattr(cli_app, "probe_missing_dependencies", lambda **kwargs: [])
@@ -501,6 +534,8 @@ def test_typer_help_shows_nci_backend_section():
     assert result.exit_code == 0
     assert "--charge" in result.output
     assert "--xtb-engine" in result.output
+    assert "xTB options" in result.output
+    assert "--sp" in result.output
     assert "NCI backend options" in result.output
     assert "--nci-backend" in result.output
     assert "--nci-grid-spacing" in result.output
@@ -608,6 +643,62 @@ def test_resolve_xtb_cmd_auto_gate(tmp_path):
     pipe = _pipeline_for(tmp_path, small, xtb_engine="auto", xtb_gpu_atom_cutoff=350)
     assert pipe._resolve_xtb_cmd(small) == "xtb"     # below cutoff -> native
     assert pipe._resolve_xtb_cmd(big) == "xtbx"      # at/above cutoff -> GPU front-end
+
+
+def test_sp_only_pipeline_skips_preopt_and_xtb_optimization(monkeypatch, tmp_path):
+    xyz = _write_xyz(tmp_path / "dimer.xyz")
+    calls = []
+
+    def fail_preopt(*args, **kwargs):
+        raise AssertionError("preopt should not run in SP-only mode")
+
+    def fail_opt(*args, **kwargs):
+        raise AssertionError("xTB optimization should not run in SP-only mode")
+
+    def fake_sp(filepath, charge=0, uhf=0, use_water=False, xtb_cmd="xtb"):
+        calls.append((Path(filepath).name, charge, uhf, use_water, xtb_cmd))
+        cwd = Path(filepath).parent
+        (cwd / "xtb.log").write_text("fake xtb log", encoding="utf-8")
+        (cwd / "wbo").write_text("1 2 0.123\n", encoding="utf-8")
+        (cwd / "molden.input").write_text("[Molden Format]\n", encoding="utf-8")
+
+    monkeypatch.setattr(wrapper, "run_preopt", fail_preopt)
+    monkeypatch.setattr(wrapper, "run_xtb_opt", fail_opt)
+    monkeypatch.setattr(wrapper, "run_xtb_sp", fake_sp)
+    monkeypatch.setattr(KNFPipeline, "_resolve_xtb_cmd", lambda self, path: "xtb")
+    monkeypatch.setattr(
+        "knf_core.pipeline.xtb.parse_xtb_log",
+        lambda path: {"f4": 1.0, "f5": 2.0},
+    )
+    monkeypatch.setattr(
+        "knf_core.pipeline.xtb.compute_wbo_from_molden_details",
+        lambda *args, **kwargs: {
+            "max_inter_wbo": 0.3,
+            "max_wbo_global": 0.4,
+            "inter_pair_count": 1,
+            "inter_max_pair": {"atom_i_1based": 1, "atom_j_1based": 2, "wbo": 0.3},
+            "overlap_model": "test",
+            "n_ao": 2,
+        },
+    )
+    monkeypatch.setattr(
+        "knf_core.pipeline.xtb.parse_wbo_pair_map",
+        lambda *args, **kwargs: {(1, 2): 0.123},
+    )
+
+    pipe = KNFPipeline(
+        input_file=xyz,
+        output_root=str(tmp_path / "Results"),
+        force=True,
+        xtb_engine="xtb",
+        sp_only=True,
+    )
+    context = pipe.run_pre_nci_stage()
+
+    assert calls == [("input.xyz", 0, 0, False, "xtb")]
+    assert context["xtb_sp_only"] is True
+    assert Path(context["xtb_geometry_file"]).name == "input.xyz"
+    assert not (Path(pipe.results_dir) / "xtbopt.xyz").exists()
 
 
 # ---------------------------------------------------------------------------

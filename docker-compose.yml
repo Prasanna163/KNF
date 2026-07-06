@@ -8,6 +8,8 @@ services:
     working_dir: /work
     stdin_open: true
     tty: true
+    ports:
+      - "8000:8000"
     volumes:
       - ./:/work
       - nciforge-cache:/home/mambauser/.knf
@@ -15,12 +17,13 @@ services:
       NCIFORGE_MULTIWFN_PATH: /opt/Multiwfn/Multiwfn
       KUID_MULTIWFN_PATH: /opt/Multiwfn/Multiwfn
       KNF_MULTIWFN_PATH: /opt/Multiwfn/Multiwfn
+      NCIFORGE_DEFAULT_XTB_ENGINE: xtb
       XTBHOME: /opt/conda
       MPLBACKEND: Agg
       OMP_NUM_THREADS: "4"
       OPENBLAS_NUM_THREADS: "4"
       MKL_NUM_THREADS: "4"
-    command: ["example.mol", "--charge", "0", "--force"]
+    command: ["example.mol", "--charge", "0", "--force", "--xtb-engine", "xtb"]
 
 volumes:
   nciforge-cache:

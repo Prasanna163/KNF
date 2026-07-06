@@ -148,6 +148,14 @@ can route small work to its CPU binary and GPU work to the CUDA build. Use
 nciforge example.mol --xtb-engine xtb
 ```
 
+To process external datasets with fixed geometries, use single-point-only mode.
+This skips GeoInit/UFF pre-optimisation and xTB geometry optimisation, then runs
+the descriptor single-point calculation on the input geometry:
+
+```bash
+nciforge example.mol --sp
+```
+
 NCIForge ships its own `xtbx` command and compact Windows xTB runtime. The
 normal CPU route works from the package. Explicit GPU xTB runs need the large
 NVIDIA CUDA redistributable DLLs from a full `xtb-win-release` folder. Configure

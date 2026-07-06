@@ -19,6 +19,7 @@ from .dependency_report import print_missing_tools_warning
 from .options import apply_execution_shortcuts, build_run_options, validate_flag_combinations
 
 NCI_HELP_PANEL = "NCI backend options"
+XTB_HELP_PANEL = "xTB options"
 
 app = typer.Typer(
     add_completion=False,
@@ -35,6 +36,7 @@ def cli(
         False,
         "--water",
         help="Use xTB '--alpb water' for optimization and single-point instead of the default '--cosmo water'.",
+        rich_help_panel=XTB_HELP_PANEL,
     ),
     force: bool = typer.Option(False, "--force", help="Force recomputation"),
     clean: bool = typer.Option(False, "--clean", help="Clean results"),
@@ -208,6 +210,7 @@ def cli(
         "geoinit",
         "--preopt",
         help="Pre-optimisation engine before xTB: 'geoinit' (default, basin-safe warm-start) or 'uff' (RDKit UFF fallback).",
+        rich_help_panel=XTB_HELP_PANEL,
     ),
     xtb_engine: str = typer.Option(
         "xtbx",
@@ -216,6 +219,7 @@ def cli(
             "xTB launcher for opt + single-point: 'xtbx' (default, unified native Windows CPU/GPU front-end), "
             "'xtb' (stock CPU build), or 'auto' (size-gate to xtbx at/above --xtb-gpu-atoms, otherwise stock xtb)."
         ),
+        rich_help_panel=XTB_HELP_PANEL,
     ),
     xtb_gpu_atoms: int = typer.Option(
         350,
@@ -224,6 +228,13 @@ def cli(
             "Atom-count cutoff for '--xtb-engine auto': systems with at least this many atoms route to xtbx (GPU). "
             "Default 350."
         ),
+        rich_help_panel=XTB_HELP_PANEL,
+    ),
+    sp: bool = typer.Option(
+        False,
+        "--sp",
+        help="Single-point-only xTB mode: skip pre-optimisation and geometry optimisation, then run descriptor SP on the input geometry.",
+        rich_help_panel=XTB_HELP_PANEL,
     ),
     refresh_first_run: bool = typer.Option(
         False,
@@ -280,6 +291,7 @@ def cli(
         preopt=preopt,
         xtb_engine=xtb_engine,
         xtb_gpu_atoms=xtb_gpu_atoms,
+        sp=sp,
         refresh_first_run=refresh_first_run,
         multiwfn_path=multiwfn_path,
         knf=knf,

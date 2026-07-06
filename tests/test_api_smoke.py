@@ -42,6 +42,7 @@ def test_api_path_job_happy_path(monkeypatch, tmp_path):
         return None
 
     def fake_process_file(file_path, runtime_args, output_root=None):
+        assert runtime_args.sp is True
         result_dir = Path(output_root) / Path(file_path).stem
         result_dir.mkdir(parents=True, exist_ok=True)
         (result_dir / "knf.json").write_text(
@@ -61,6 +62,7 @@ def test_api_path_job_happy_path(monkeypatch, tmp_path):
             "input_path": input_path,
             "output_dir": str(output_root),
             "force": True,
+            "sp": True,
         },
     )
 

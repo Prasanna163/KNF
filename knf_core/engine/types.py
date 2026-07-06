@@ -48,6 +48,7 @@ class RunOptions:
     preopt: Literal["uff", "geoinit"] = "geoinit"
     xtb_engine: Literal["xtb", "xtbx", "auto"] = "xtbx"
     xtb_gpu_atoms: int = 350
+    sp: bool = False
     refresh_first_run: bool = False
     multiwfn_path: str | None = None
     knf: bool = False
