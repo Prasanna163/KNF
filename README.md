@@ -157,9 +157,21 @@ nciforge example.mol --sp
 ```
 
 NCIForge ships its own `xtbx` command and compact Windows xTB runtime. The
-normal CPU route works from the package. Explicit GPU xTB runs need the large
-NVIDIA CUDA redistributable DLLs from a full `xtb-win-release` folder. Configure
-that once with the interactive setup command:
+normal CPU route works from the package. For explicit GPU xTB runs, `xtbx`
+first scans configured paths, `PATH`, and common xTB/CUDA locations. If it finds
+a full `xtb-win-release`, it registers that runtime. If it only finds CUDA DLLs
+from CUDA Toolkit or a CUDA-enabled Torch install, it creates a managed
+NCIForge runtime by combining those DLLs with the bundled xTB files. If no local
+runtime can be assembled, it downloads the pinned runtime archive from:
+
+```text
+https://github.com/Prasanna163/xtb/releases/download/nciforge-xtbx-runtime-v1/nciforge-xtbx-runtime-v1.zip
+```
+
+The archive is SHA256-verified before extraction and installed under the
+NCIForge config directory.
+
+You can also force setup explicitly:
 
 ```powershell
 xtbx --setup-gpu
@@ -178,7 +190,8 @@ xtbx --gpu-runtime "E:\Prasanna\xTB\xtb\xtb-win-release" molecule.xyz --gpu
 ```
 
 If `xtbx --gpu ...` is run before a full runtime is configured, an interactive
-terminal will offer to run setup with a `y/N` prompt.
+terminal will offer to run setup with a `y/N` prompt; non-interactive runs try
+the same scan/materialize path before failing.
 
 Batch run:
 

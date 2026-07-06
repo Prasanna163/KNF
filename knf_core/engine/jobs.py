@@ -455,7 +455,7 @@ def run_batch_directory_job(
 
             file_path = queue.get()
             _emit(on_event, JobEvent(EventKind.FILE_STARTED, input_file=file_path, completed=completed, total=total))
-            success, error, elapsed = process_file(file_path, options, output_root=results_root)
+            success, error, elapsed = process_file(file_path, options, output_root=results_root, batch_size=total)
             if success:
                 add_success(file_path, elapsed)
             else:
@@ -464,7 +464,7 @@ def run_batch_directory_job(
     elif use_gpu_overlap:
         with ThreadPoolExecutor(max_workers=workers) as cpu_executor, ThreadPoolExecutor(max_workers=1) as gpu_executor:
             pre_futures = {
-                cpu_executor.submit(process_file_pre_nci, file_path, options, results_root): file_path
+                cpu_executor.submit(process_file_pre_nci, file_path, options, results_root, total): file_path
                 for file_path in files
             }
             for file_path in files:
@@ -548,7 +548,7 @@ def run_batch_directory_job(
             futures = {}
             for file_path in files:
                 _emit(on_event, JobEvent(EventKind.FILE_STARTED, input_file=file_path, completed=completed, total=total))
-                futures[executor.submit(process_file, file_path, options, results_root)] = file_path
+                futures[executor.submit(process_file, file_path, options, results_root, total)] = file_path
             cancellation_applied = False
 
             while futures:

@@ -26,6 +26,7 @@ import os
 import shutil
 import sys
 import csv
+import zipfile
 from dataclasses import fields
 from pathlib import Path
 from types import SimpleNamespace
@@ -34,6 +35,7 @@ import pytest
 from typer.testing import CliRunner
 
 from knf_core.engine import jobs as engine_jobs
+from knf_core.engine import processing as engine_processing
 from knf_core.engine.types import RunOptions
 from knf_core.cli import app as cli_app
 from knf_core.cli import commands as cli_commands
@@ -174,6 +176,24 @@ def test_xtb_invocation_resolves_real_xtb():
     assert "xtb" in argv[-1].lower()
 
 
+def test_xtb_wrapper_can_force_xtbx_gpu(monkeypatch, tmp_path):
+    xyz = _write_xyz(tmp_path / "m.xyz")
+    calls = []
+
+    monkeypatch.setattr(wrapper, "_xtb_invocation", lambda xtb_cmd="xtb": ["xtbx-runner"])
+
+    def fake_run(cmd, cwd=None, stdout=None, stderr=None, text=None, errors=None, check=None):
+        calls.append(list(cmd))
+        Path(cwd, "xtbopt.xyz").write_text("6\nfake opt\n", encoding="utf-8")
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(wrapper.subprocess, "run", fake_run)
+    wrapper.run_xtb_opt(xyz, xtb_cmd="xtbx", force_gpu=True)
+
+    assert "--gpu" in calls[0]
+    assert calls[0][0] == "xtbx-runner"
+
+
 # ---------------------------------------------------------------------------
 # 2. Pre-opt dispatch
 # ---------------------------------------------------------------------------
@@ -225,6 +245,84 @@ def test_xtbx_gpu_requires_full_runtime(monkeypatch):
 
     with pytest.raises(xtbx_cli.XtbxUnavailable, match="explicit GPU"):
         xtbx_cli.resolve_runtime(["--gpu"])
+
+
+def test_xtbx_setup_detects_full_runtime_on_path(monkeypatch, tmp_path):
+    from nciforge_xtbx import cli as xtbx_cli
+
+    config = tmp_path / "config" / "xtbx_runtime.json"
+    runtime = _make_fake_xtbx_runtime(tmp_path / "external" / "xtb-win-release", full_gpu=True)
+    monkeypatch.setenv("NCIFORGE_XTBX_CONFIG", str(config))
+    monkeypatch.delenv("NCIFORGE_XTBX_RUNTIME", raising=False)
+    monkeypatch.delenv("XTB_GPU_PKG", raising=False)
+    monkeypatch.setenv("PATH", str(runtime / "bin"))
+
+    assert xtbx_cli.setup_gpu_runtime(interactive=False) == 0
+    payload = json.loads(config.read_text(encoding="utf-8"))
+    assert Path(payload["gpu_runtime"]) == runtime.resolve()
+
+
+def test_xtbx_setup_materializes_managed_runtime_from_cuda_dlls(monkeypatch, tmp_path):
+    from nciforge_xtbx import cli as xtbx_cli
+
+    fake_package = tmp_path / "pkg" / "nciforge_xtbx"
+    _make_fake_xtbx_runtime(fake_package / "runtime" / "xtb-win-release")
+
+    cuda_bin = tmp_path / "cuda" / "bin"
+    cuda_bin.mkdir(parents=True)
+    for name in xtbx_cli.CUDA_RUNTIME_DLLS:
+        (cuda_bin / name).write_text("cuda", encoding="utf-8")
+
+    config = tmp_path / "config" / "xtbx_runtime.json"
+    monkeypatch.setenv("NCIFORGE_XTBX_CONFIG", str(config))
+    monkeypatch.delenv("NCIFORGE_XTBX_RUNTIME", raising=False)
+    monkeypatch.delenv("XTB_GPU_PKG", raising=False)
+    monkeypatch.setenv("PATH", "")
+    monkeypatch.setattr(xtbx_cli, "package_dir", lambda: fake_package)
+    monkeypatch.setattr(xtbx_cli, "_cuda_dll_source_dirs", lambda: [cuda_bin])
+    monkeypatch.setattr(xtbx_cli, "_known_xtb_runtime_roots", lambda: [])
+
+    assert xtbx_cli.setup_gpu_runtime(interactive=False) == 0
+    payload = json.loads(config.read_text(encoding="utf-8"))
+    runtime = Path(payload["gpu_runtime"])
+
+    assert runtime == (config.parent / "xtbx-runtime" / "xtb-win-release").resolve()
+    assert xtbx_cli.resolve_runtime(["--gpu"]) == runtime
+    for rel in ("bin/xtb.exe", "bin/xtb-cpu.exe", "params/param_gfn2-xtb.txt"):
+        assert (runtime / rel).exists()
+    for name in xtbx_cli.CUDA_RUNTIME_DLLS:
+        assert (runtime / "lib" / name).exists()
+
+
+def test_xtbx_setup_downloads_verified_runtime(monkeypatch, tmp_path):
+    from nciforge_xtbx import cli as xtbx_cli
+
+    source = _make_fake_xtbx_runtime(tmp_path / "source" / "xtb-win-release", full_gpu=True)
+    archive = tmp_path / "nciforge-xtbx-runtime-v1.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        for file in source.rglob("*"):
+            if file.is_file():
+                zf.write(file, Path("xtb-win-release") / file.relative_to(source))
+
+    config = tmp_path / "config" / "xtbx_runtime.json"
+    monkeypatch.setenv("NCIFORGE_XTBX_CONFIG", str(config))
+    monkeypatch.setenv("NCIFORGE_XTBX_RUNTIME_URL", archive.as_uri())
+    monkeypatch.setenv("NCIFORGE_XTBX_RUNTIME_SHA256", xtbx_cli._sha256_file(archive))
+    monkeypatch.delenv("NCIFORGE_XTBX_RUNTIME", raising=False)
+    monkeypatch.delenv("XTB_GPU_PKG", raising=False)
+    monkeypatch.setenv("PATH", "")
+    monkeypatch.setattr(xtbx_cli, "_cuda_dll_source_dirs", lambda: [])
+    monkeypatch.setattr(xtbx_cli, "_known_xtb_runtime_roots", lambda: [])
+
+    assert xtbx_cli.setup_gpu_runtime(interactive=False) == 0
+    payload = json.loads(config.read_text(encoding="utf-8"))
+    runtime = Path(payload["gpu_runtime"])
+
+    assert runtime == (config.parent / "xtbx-runtime" / "xtb-win-release").resolve()
+    assert xtbx_cli.resolve_runtime(["--gpu"]) == runtime
+    assert (runtime / "bin" / "xtb.exe").exists()
+    for name in xtbx_cli.CUDA_RUNTIME_DLLS:
+        assert (runtime / "lib" / name).exists()
 
 
 def test_xtbx_setup_gpu_runtime_persists_full_runtime(monkeypatch, tmp_path):
@@ -411,7 +509,7 @@ def test_engine_batch_job_matches_legacy_batch_outputs(monkeypatch, tmp_path):
     for idx in range(1, 3):
         _write_xyz(input_dir / f"mol_{idx}.xyz")
 
-    def fake_process_file(file_path, args, output_root=None):
+    def fake_process_file(file_path, args, output_root=None, batch_size=1):
         file_name = Path(file_path).name
         index = int(Path(file_path).stem.split("_")[-1])
         result_dir = Path(output_root) / Path(file_path).stem
@@ -645,6 +743,81 @@ def test_resolve_xtb_cmd_auto_gate(tmp_path):
     assert pipe._resolve_xtb_cmd(big) == "xtbx"      # at/above cutoff -> GPU front-end
 
 
+def test_pipeline_route_small_single_stays_cpu(tmp_path):
+    small = _write_xyz(tmp_path / "small.xyz")  # 6 atoms
+
+    # GPU in play (CUDA NCI), but a single small molecule must stay on CPU.
+    pipe = _pipeline_for(
+        tmp_path, small, xtb_engine="xtbx", xtb_gpu_available=True, xtb_batch_size=1
+    )
+    route = pipe._resolve_xtb_route(small)
+    assert route.launcher == "xtbx"
+    assert route.use_gpu is False
+
+    # Explicit --gpu on a single small molecule is honored.
+    forced = _pipeline_for(
+        tmp_path,
+        small,
+        xtb_engine="xtbx",
+        xtb_gpu_available=True,
+        xtb_explicit_gpu=True,
+        xtb_batch_size=1,
+    )
+    assert forced._resolve_xtb_route(small).use_gpu is True
+
+    # Explicit stock xtb never uses the GPU, even with an explicit preference.
+    stock = _pipeline_for(
+        tmp_path,
+        small,
+        xtb_engine="xtb",
+        xtb_gpu_available=True,
+        xtb_explicit_gpu=True,
+    )
+    stock_route = stock._resolve_xtb_route(small)
+    assert stock_route.launcher == "xtb"
+    assert stock_route.use_gpu is False
+
+
+def test_build_pipeline_decouples_xtb_gpu_from_nci_cuda(tmp_path):
+    small = _write_xyz(tmp_path / "small.xyz")  # 6 atoms
+    big_header = "400\nbig\n" + "H 0.0 0.0 0.0\n" * 400
+    big = _write_xyz(tmp_path / "big.xyz", big_header)
+
+    # NCI on CUDA makes the GPU AVAILABLE to the xtb router, but does not force it.
+    cuda_args = RunOptions(nci_backend="torch", nci_device="cuda", xtb_engine="xtbx")
+    cuda_pipe = engine_processing._build_pipeline(
+        small, cuda_args, output_root=str(tmp_path / "ResultsCuda")
+    )
+    assert cuda_pipe.xtb_gpu_available is True
+    assert cuda_pipe.xtb_explicit_gpu is False
+    # Single small molecule on a CUDA run: xtb stays on CPU (no forced --gpu)...
+    assert cuda_pipe._resolve_xtb_route(small).use_gpu is False
+    # ...but a large molecule on the same run routes to the GPU.
+    assert cuda_pipe._resolve_xtb_route(big).use_gpu is True
+
+    # A pure-CPU NCI run never makes the GPU available to the xtb stage.
+    cpu_args = RunOptions(nci_backend="torch", nci_device="cpu", xtb_engine="xtbx")
+    cpu_pipe = engine_processing._build_pipeline(
+        small, cpu_args, output_root=str(tmp_path / "ResultsCpu")
+    )
+    assert cpu_pipe.xtb_gpu_available is False
+    assert cpu_pipe._resolve_xtb_route(big).use_gpu is False
+
+    # The --gpu shortcut sets an explicit GPU preference for the xtb stage too.
+    gpu_args = RunOptions(nci_backend="torch", nci_device="cuda", xtb_engine="xtbx", gpu=True)
+    gpu_pipe = engine_processing._build_pipeline(
+        small, gpu_args, output_root=str(tmp_path / "ResultsGpu")
+    )
+    assert gpu_pipe.xtb_explicit_gpu is True
+    assert gpu_pipe._resolve_xtb_route(small).use_gpu is True  # single small + --gpu -> GPU
+
+    # Many small molecules under --gpu: batch-aware -> stay on CPU per molecule.
+    batch_pipe = engine_processing._build_pipeline(
+        small, gpu_args, output_root=str(tmp_path / "ResultsBatch"), batch_size=50
+    )
+    assert batch_pipe._resolve_xtb_route(small).use_gpu is False
+
+
 def test_sp_only_pipeline_skips_preopt_and_xtb_optimization(monkeypatch, tmp_path):
     xyz = _write_xyz(tmp_path / "dimer.xyz")
     calls = []
@@ -655,8 +828,8 @@ def test_sp_only_pipeline_skips_preopt_and_xtb_optimization(monkeypatch, tmp_pat
     def fail_opt(*args, **kwargs):
         raise AssertionError("xTB optimization should not run in SP-only mode")
 
-    def fake_sp(filepath, charge=0, uhf=0, use_water=False, xtb_cmd="xtb"):
-        calls.append((Path(filepath).name, charge, uhf, use_water, xtb_cmd))
+    def fake_sp(filepath, charge=0, uhf=0, use_water=False, xtb_cmd="xtb", force_gpu=False):
+        calls.append((Path(filepath).name, charge, uhf, use_water, xtb_cmd, force_gpu))
         cwd = Path(filepath).parent
         (cwd / "xtb.log").write_text("fake xtb log", encoding="utf-8")
         (cwd / "wbo").write_text("1 2 0.123\n", encoding="utf-8")
@@ -695,7 +868,7 @@ def test_sp_only_pipeline_skips_preopt_and_xtb_optimization(monkeypatch, tmp_pat
     )
     context = pipe.run_pre_nci_stage()
 
-    assert calls == [("input.xyz", 0, 0, False, "xtb")]
+    assert calls == [("input.xyz", 0, 0, False, "xtb", False)]
     assert context["xtb_sp_only"] is True
     assert Path(context["xtb_geometry_file"]).name == "input.xyz"
     assert not (Path(pipe.results_dir) / "xtbopt.xyz").exists()

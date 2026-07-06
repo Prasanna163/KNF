@@ -243,6 +243,7 @@ def run_xtb_opt(
     uhf: int = 0,
     use_water: bool = False,
     xtb_cmd: str = "xtb",
+    force_gpu: bool = False,
 ) -> str:
     cwd = os.path.dirname(os.path.abspath(filepath))
     filename = os.path.basename(filepath)
@@ -253,6 +254,8 @@ def run_xtb_opt(
         '--cycles',
         '50',
     ]
+    if force_gpu and (xtb_cmd or "").strip().lower() == "xtbx":
+        cmd.append('--gpu')
     cmd.extend(_solvent_args(use_water))
     cmd.extend(['--charge', str(charge), '--uhf', str(uhf)])
 
@@ -290,11 +293,14 @@ def run_xtb_sp(
     uhf: int = 0,
     use_water: bool = False,
     xtb_cmd: str = "xtb",
+    force_gpu: bool = False,
 ):
     cwd = os.path.dirname(os.path.abspath(filepath))
     filename = os.path.basename(filepath)
 
     cmd = _xtb_invocation(xtb_cmd) + [filename, '--esp', '--molden', '--hess', '--wbo']
+    if force_gpu and (xtb_cmd or "").strip().lower() == "xtbx":
+        cmd.append('--gpu')
     cmd.extend(_solvent_args(use_water))
     cmd.extend(['--charge', str(charge), '--uhf', str(uhf)])
     

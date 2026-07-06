@@ -6,6 +6,7 @@ from pathlib import Path
 from rdkit import Chem
 
 from . import utils, geometry, xtb, multiwfn, snci, scdi, knf_vector, converter, wrapper
+from .engine.xtb_routing import route_xtb
 
 
 def _final_output_name(filename: str, water: bool) -> str:
@@ -42,6 +43,9 @@ class KNFPipeline:
         preopt_engine: str = "geoinit",
         xtb_engine: str = "xtbx",
         xtb_gpu_atom_cutoff: int = 350,
+        xtb_gpu_available: bool = False,
+        xtb_explicit_gpu: bool = False,
+        xtb_batch_size: int = 1,
         sp_only: bool = False,
     ):
         self.input_file = utils.resolve_artifacted_path(input_file)
@@ -70,6 +74,11 @@ class KNFPipeline:
         self.preopt_engine = (preopt_engine or "geoinit").strip().lower()
         self.xtb_engine = (xtb_engine or "xtbx").strip().lower()
         self.xtb_gpu_atom_cutoff = int(xtb_gpu_atom_cutoff)
+        self.xtb_gpu_available = bool(xtb_gpu_available)
+        self.xtb_explicit_gpu = bool(xtb_explicit_gpu)
+        self.xtb_batch_size = max(1, int(xtb_batch_size))
+        # Records each xTB stage's routing decision for logging + knf.json metadata.
+        self.xtb_routing_log: list[dict] = []
         self.sp_only = bool(sp_only)
 
         self.base_name = Path(self.input_file).stem
@@ -178,25 +187,46 @@ class KNFPipeline:
         except Exception:
             return 0
 
-    def _resolve_xtb_cmd(self, xyz_path: str) -> str:
-        """Resolves which xTB launcher to use for this molecule.
+    def _resolve_xtb_route(self, xyz_path: str, stage: str = "xtb"):
+        """Resolve the launcher + GPU decision for one xTB stage of this molecule.
 
-        'xtb'/'xtbx' are used verbatim. 'auto' size-gates on atom count: the
-        xtbx can route to CPU or GPU internally. 'auto' remains available for
-        older mixed setups where small systems should stay on stock xtb.
+        Delegates to the pure ``route_xtb`` policy (throughput-aware: single small
+        -> CPU, large -> GPU, many small -> CPU in parallel with the GPU reserved
+        for the NCI stage, explicit --gpu honored). Logs the decision and records
+        it for knf.json metadata.
         """
-        engine = self.xtb_engine
-        if engine != "auto":
-            return engine
         n = self._atom_count_xyz(xyz_path)
-        chosen = "xtbx" if (n and n >= self.xtb_gpu_atom_cutoff) else "xtb"
-        logging.info(
-            "xTB engine auto-gate: %s atoms vs cutoff %s -> %s",
-            n or "unknown",
-            self.xtb_gpu_atom_cutoff,
-            chosen,
+        decision = route_xtb(
+            engine=self.xtb_engine,
+            atom_count=n,
+            batch_size=self.xtb_batch_size,
+            explicit_gpu=self.xtb_explicit_gpu,
+            gpu_available=self.xtb_gpu_available,
+            large_atom_cutoff=self.xtb_gpu_atom_cutoff,
         )
-        return chosen
+        logging.info(
+            "xTB routing [%s]: %s atoms, batch=%s -> %s%s (%s)",
+            stage,
+            n or "unknown",
+            self.xtb_batch_size,
+            decision.launcher,
+            " --gpu" if decision.use_gpu else "",
+            decision.reason,
+        )
+        self.xtb_routing_log.append(
+            {
+                "stage": stage,
+                "atom_count": n,
+                "launcher": decision.launcher,
+                "use_gpu": decision.use_gpu,
+                "reason": decision.reason,
+            }
+        )
+        return decision
+
+    def _resolve_xtb_cmd(self, xyz_path: str) -> str:
+        """Backward-compatible helper returning just the launcher name."""
+        return self._resolve_xtb_route(xyz_path).launcher
 
     def _run_torch_nci_with_adaptive_fallback(
         self,
@@ -380,10 +410,15 @@ class KNFPipeline:
             self._stage(2, preopt_label)
             wrapper.run_preopt(work_xyz, engine=self.preopt_engine)
 
-            opt_cmd = self._resolve_xtb_cmd(work_xyz)
-            self._stage(3, f"xTB Opt [{opt_cmd}]")
+            opt_route = self._resolve_xtb_route(work_xyz, stage="opt")
+            self._stage(3, f"xTB Opt [{opt_route.launcher}{' gpu' if opt_route.use_gpu else ''}]")
             wrapper.run_xtb_opt(
-                work_xyz, self.charge, uhf, use_water=self.water, xtb_cmd=opt_cmd
+                work_xyz,
+                self.charge,
+                uhf,
+                use_water=self.water,
+                xtb_cmd=opt_route.launcher,
+                force_gpu=opt_route.use_gpu,
             )
 
 
@@ -398,10 +433,15 @@ class KNFPipeline:
             or self.force
         ):
             uhf = self.spin - 1
-            sp_cmd = self._resolve_xtb_cmd(sp_geometry)
-            self._stage(4, f"xTB SP [{sp_cmd}]")
+            sp_route = self._resolve_xtb_route(sp_geometry, stage="sp")
+            self._stage(4, f"xTB SP [{sp_route.launcher}{' gpu' if sp_route.use_gpu else ''}]")
             wrapper.run_xtb_sp(
-                sp_geometry, self.charge, uhf, use_water=self.water, xtb_cmd=sp_cmd
+                sp_geometry,
+                self.charge,
+                uhf,
+                use_water=self.water,
+                xtb_cmd=sp_route.launcher,
+                force_gpu=sp_route.use_gpu,
             )
         elif not xtb_ready:
             logging.info(
@@ -652,6 +692,10 @@ class KNFPipeline:
                 'wbo_mode': wbo_mode,
                 'preopt_engine': self.preopt_engine,
                 'xtb_engine': self.xtb_engine,
+                'xtb_gpu_available': self.xtb_gpu_available,
+                'xtb_explicit_gpu': self.xtb_explicit_gpu,
+                'xtb_batch_size': self.xtb_batch_size,
+                'xtb_routing': list(self.xtb_routing_log),
                 'xtb_sp_only': xtb_sp_only,
                 'xtb_geometry_file': xtb_geometry_file,
                 'xtb_water': self.water,

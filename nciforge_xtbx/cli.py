@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
 import subprocess
 import sys
+import urllib.request
+import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
@@ -18,6 +21,16 @@ CUDA_RUNTIME_DLLS = (
     "cublas64_12.dll",
     "cublasLt64_12.dll",
     "cusolver64_11.dll",
+)
+
+XTBX_RUNTIME_RELEASE_TAG = "nciforge-xtbx-runtime-v1"
+XTBX_RUNTIME_ARCHIVE_NAME = "nciforge-xtbx-runtime-v1.zip"
+XTBX_RUNTIME_DOWNLOAD_URL = (
+    "https://github.com/Prasanna163/xtb/releases/download/"
+    f"{XTBX_RUNTIME_RELEASE_TAG}/{XTBX_RUNTIME_ARCHIVE_NAME}"
+)
+XTBX_RUNTIME_DOWNLOAD_SHA256 = (
+    "8b5f4dbb4adbd3073bccaf505c72c55bd9b36c53ed42f31a134d7e2dd2e8d418"
 )
 
 
@@ -66,6 +79,97 @@ def _env_runtime() -> Path | None:
     return None
 
 
+def _candidate_xtb_roots_from_path() -> list[Path]:
+    candidates: list[Path] = []
+    for raw in os.environ.get("PATH", "").split(os.pathsep):
+        if not raw:
+            continue
+        entry = Path(raw).expanduser()
+        if (entry / "xtb.exe").exists():
+            candidates.append(entry.parent if entry.name.lower() == "bin" else entry)
+    return candidates
+
+
+def _known_xtb_runtime_roots() -> list[Path]:
+    candidates: list[Path] = []
+    for name in ("XTBX_RUNTIME", "XTBHOME", "XTB_ROOT", "XTBPATH"):
+        value = os.environ.get(name)
+        if value:
+            candidates.append(Path(value).expanduser())
+    candidates.extend(_candidate_xtb_roots_from_path())
+    candidates.append(Path(r"E:\Prasanna\xTB\xtb\xtb-win-release"))
+    return _unique_paths(candidates)
+
+
+def _cuda_dll_source_dirs() -> list[Path]:
+    candidates: list[Path] = []
+
+    for name in ("CUDA_PATH", "CUDA_HOME", "CUDA_ROOT"):
+        value = os.environ.get(name)
+        if value:
+            root = Path(value).expanduser()
+            candidates.extend([root / "bin", root / "lib" / "x64"])
+
+    program_files = [
+        os.environ.get("ProgramFiles"),
+        os.environ.get("ProgramW6432"),
+    ]
+    for root_value in program_files:
+        if not root_value:
+            continue
+        cuda_root = Path(root_value) / "NVIDIA GPU Computing Toolkit" / "CUDA"
+        if cuda_root.exists():
+            candidates.extend(sorted(cuda_root.glob("v*"), reverse=True))
+
+    conda_prefix = os.environ.get("CONDA_PREFIX")
+    if conda_prefix:
+        candidates.append(Path(conda_prefix) / "Library" / "bin")
+
+    candidates.extend(
+        [
+            Path(sys.prefix) / "Library" / "bin",
+            Path(sys.prefix) / "Lib" / "site-packages" / "torch" / "lib",
+        ]
+    )
+
+    for raw in os.environ.get("PATH", "").split(os.pathsep):
+        if raw:
+            candidates.append(Path(raw).expanduser())
+
+    expanded: list[Path] = []
+    for candidate in candidates:
+        expanded.append(candidate)
+        if candidate.name.lower() != "bin":
+            expanded.append(candidate / "bin")
+    return _unique_paths(expanded)
+
+
+def _find_cuda_dll_source_dir() -> Path | None:
+    for candidate in _cuda_dll_source_dirs():
+        if all((candidate / name).exists() for name in CUDA_RUNTIME_DLLS):
+            return candidate
+    return None
+
+
+def _runtime_download_url() -> str:
+    return os.environ.get("NCIFORGE_XTBX_RUNTIME_URL", XTBX_RUNTIME_DOWNLOAD_URL)
+
+
+def _runtime_download_sha256() -> str:
+    return os.environ.get(
+        "NCIFORGE_XTBX_RUNTIME_SHA256", XTBX_RUNTIME_DOWNLOAD_SHA256
+    ).strip().lower()
+
+
+def _downloads_disabled() -> bool:
+    return os.environ.get("NCIFORGE_XTBX_NO_DOWNLOAD", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
 def _load_config() -> dict:
     path = config_path()
     if not path.exists():
@@ -111,13 +215,17 @@ def _runtime_candidates(args: Iterable[str]) -> list[Path]:
             candidates.append(configured)
         candidates.append(dev_full)
 
+    return _unique_paths(candidates)
+
+
+def _unique_paths(paths: Iterable[Path]) -> list[Path]:
     seen: set[str] = set()
     unique: list[Path] = []
-    for candidate in candidates:
-        key = str(candidate)
+    for path in paths:
+        key = os.path.normcase(str(path))
         if key not in seen:
             seen.add(key)
-            unique.append(candidate)
+            unique.append(path)
     return unique
 
 
@@ -195,19 +303,150 @@ def _save_gpu_runtime(path: Path) -> None:
 
 
 def _detected_full_runtime() -> Path | None:
-    candidates = []
+    candidates: list[Path] = []
     env_runtime = _env_runtime()
     configured = _configured_runtime()
     if env_runtime is not None:
         candidates.append(env_runtime)
     if configured is not None:
         candidates.append(configured)
-    candidates.append(Path(r"E:\Prasanna\xTB\xtb\xtb-win-release"))
+    candidates.extend(_known_xtb_runtime_roots())
 
     for candidate in candidates:
         if _is_full_gpu_runtime(candidate):
             return candidate
     return None
+
+
+def _managed_runtime_root() -> Path:
+    return config_path().parent / "xtbx-runtime" / "xtb-win-release"
+
+
+def _copy_runtime_tree(src_root: Path, dst_root: Path) -> None:
+    for src in src_root.rglob("*"):
+        if not src.is_file():
+            continue
+        rel = src.relative_to(src_root)
+        dst = dst_root / rel
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dst)
+
+
+def _materialize_managed_gpu_runtime(cuda_dll_dir: Path) -> Path | None:
+    bundled = package_dir() / "runtime" / "xtb-win-release"
+    if not _is_runtime(bundled):
+        return None
+
+    target = _managed_runtime_root()
+    _copy_runtime_tree(bundled, target)
+    lib = target / "lib"
+    lib.mkdir(parents=True, exist_ok=True)
+    for name in CUDA_RUNTIME_DLLS:
+        shutil.copy2(cuda_dll_dir / name, lib / name)
+
+    if _is_full_gpu_runtime(target):
+        return target
+    return None
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _verify_archive_hash(path: Path) -> bool:
+    expected = _runtime_download_sha256()
+    if not expected:
+        return True
+    return _sha256_file(path).lower() == expected
+
+
+def _download_runtime_archive() -> Path | None:
+    if _downloads_disabled():
+        return None
+
+    url = _runtime_download_url().strip()
+    if not url:
+        return None
+
+    download_dir = config_path().parent / "downloads"
+    download_dir.mkdir(parents=True, exist_ok=True)
+    archive = download_dir / XTBX_RUNTIME_ARCHIVE_NAME
+    if archive.exists() and _verify_archive_hash(archive):
+        return archive
+    if archive.exists():
+        archive.unlink()
+
+    partial = archive.with_suffix(archive.suffix + ".part")
+    if partial.exists():
+        partial.unlink()
+
+    print(f"Downloading xtbx GPU runtime from {url}")
+    try:
+        with urllib.request.urlopen(url, timeout=60) as response, partial.open("wb") as out:
+            shutil.copyfileobj(response, out, length=1024 * 1024)
+        partial.replace(archive)
+    except Exception as exc:
+        partial.unlink(missing_ok=True)
+        raise XtbxUnavailable(f"could not download xtbx GPU runtime: {exc}") from exc
+
+    if not _verify_archive_hash(archive):
+        archive.unlink(missing_ok=True)
+        raise XtbxUnavailable(
+            "downloaded xtbx runtime failed SHA256 verification. "
+            "Set NCIFORGE_XTBX_RUNTIME_URL/NCIFORGE_XTBX_RUNTIME_SHA256 to a "
+            "trusted archive or configure a local runtime with --setup-gpu."
+        )
+    return archive
+
+
+def _safe_extract_zip(archive: Path, destination: Path) -> None:
+    destination.mkdir(parents=True, exist_ok=True)
+    root = destination.resolve()
+    with zipfile.ZipFile(archive) as zf:
+        for member in zf.infolist():
+            target = (root / member.filename).resolve()
+            if target != root and root not in target.parents:
+                raise XtbxUnavailable(
+                    f"unsafe path in xtbx runtime archive: {member.filename}"
+                )
+        zf.extractall(root)
+
+
+def _download_and_install_gpu_runtime() -> Path | None:
+    archive = _download_runtime_archive()
+    if archive is None:
+        return None
+
+    target = _managed_runtime_root()
+    extract_root = target.parent
+    if target.exists():
+        shutil.rmtree(target)
+    _safe_extract_zip(archive, extract_root)
+
+    if _is_full_gpu_runtime(target):
+        _save_gpu_runtime(target)
+        return target
+    return None
+
+
+def _auto_configure_gpu_runtime() -> Path | None:
+    detected = _detected_full_runtime()
+    if detected is not None:
+        _save_gpu_runtime(detected)
+        return detected
+
+    cuda_dll_dir = _find_cuda_dll_source_dir()
+    if cuda_dll_dir is None:
+        return None
+
+    managed = _materialize_managed_gpu_runtime(cuda_dll_dir)
+    if managed is not None:
+        _save_gpu_runtime(managed)
+    return managed
 
 
 def setup_gpu_runtime(runtime_path: str | None = None, *, interactive: bool = True) -> int:
@@ -233,6 +472,16 @@ def setup_gpu_runtime(runtime_path: str | None = None, *, interactive: bool = Tr
             else:
                 path = detected
 
+    if path is None:
+        path = _auto_configure_gpu_runtime()
+        if path is not None:
+            print(f"Auto-configured xtbx GPU runtime: {path.resolve()}")
+
+    if path is None:
+        path = _download_and_install_gpu_runtime()
+        if path is not None:
+            print(f"Downloaded xtbx GPU runtime: {path.resolve()}")
+
     while path is None and interactive and sys.stdin and sys.stdin.isatty():
         try:
             raw = input(
@@ -248,7 +497,8 @@ def setup_gpu_runtime(runtime_path: str | None = None, *, interactive: bool = Tr
 
     if path is None:
         print(
-            "No full runtime path was provided. Run again with:\n"
+            "No full runtime path was found. Install CUDA Toolkit or provide a full "
+            "xtb-win-release folder, then run:\n"
             "  xtbx --setup-gpu C:\\path\\to\\xtb-win-release"
         )
         return 1
@@ -342,6 +592,11 @@ def _resolve_runtime_or_prompt(args: list[str]) -> Path:
     except XtbxUnavailable as exc:
         if not _wants_gpu(args):
             raise
+        provisioned = _auto_configure_gpu_runtime()
+        if provisioned is None:
+            provisioned = _download_and_install_gpu_runtime()
+        if provisioned is not None:
+            return resolve_runtime(args)
         if sys.stdin and sys.stdin.isatty():
             print(f"xtbx: {exc}", file=sys.stderr)
             yn = _prompt_yes_no("Configure the full xtbx GPU runtime now?", default="n")

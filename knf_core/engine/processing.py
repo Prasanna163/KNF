@@ -43,7 +43,18 @@ def _is_oom_error(exc: Exception) -> bool:
     return any(m in msg for m in markers)
 
 
-def _build_pipeline(file_path: str, args, output_root: str = None) -> KNFPipeline:
+def _build_pipeline(file_path: str, args, output_root: str = None, batch_size: int = 1) -> KNFPipeline:
+    xtb_engine = str(getattr(args, "xtb_engine", "xtbx") or "xtbx").strip().lower()
+    # The GPU is "available" to the xTB router when this run is configured to use
+    # CUDA for the NCI grid (only set once a CUDA-capable GPU is detected). This
+    # decouples the per-molecule xTB GPU decision from the NCI device: the
+    # throughput-aware router (route_xtb) decides whether xtb actually uses it,
+    # rather than blindly forcing --gpu on every molecule of a CUDA run.
+    xtb_gpu_available = (
+        str(getattr(args, "nci_backend", "") or "").strip().lower() == "torch"
+        and str(getattr(args, "nci_device", "") or "").strip().lower() == "cuda"
+    )
+    xtb_explicit_gpu = bool(getattr(args, "gpu", False))
     return KNFPipeline(
         input_file=file_path,
         charge=args.charge,
@@ -67,20 +78,23 @@ def _build_pipeline(file_path: str, args, output_root: str = None) -> KNFPipelin
         scdi_var_max=args.scdi_var_max,
         wbo_mode=getattr(args, "wbo_mode", "native"),
         preopt_engine=getattr(args, "preopt", "geoinit"),
-        xtb_engine=getattr(args, "xtb_engine", "xtbx"),
+        xtb_engine=xtb_engine,
         xtb_gpu_atom_cutoff=getattr(args, "xtb_gpu_atoms", 350),
+        xtb_gpu_available=xtb_gpu_available,
+        xtb_explicit_gpu=xtb_explicit_gpu,
+        xtb_batch_size=batch_size,
         sp_only=bool(getattr(args, "sp", False)),
     )
 
 
-def process_file(file_path: str, args, output_root: str = None):
+def process_file(file_path: str, args, output_root: str = None, batch_size: int = 1):
     """Runs the pipeline for a single file and returns status."""
     start = time.perf_counter()
     attempts = 3
     last_error = None
     for attempt in range(1, attempts + 1):
         try:
-            pipeline = _build_pipeline(file_path, args, output_root=output_root)
+            pipeline = _build_pipeline(file_path, args, output_root=output_root, batch_size=batch_size)
             pipeline.run()
             return True, None, time.perf_counter() - start
         except Exception as e:
@@ -101,14 +115,14 @@ def process_file(file_path: str, args, output_root: str = None):
     return False, str(last_error), time.perf_counter() - start
 
 
-def process_file_pre_nci(file_path: str, args, output_root: str = None):
+def process_file_pre_nci(file_path: str, args, output_root: str = None, batch_size: int = 1):
     """Runs pre-NCI stages only (geometry + xTB) and returns pipeline context."""
     start = time.perf_counter()
     attempts = 3
     last_error = None
     for attempt in range(1, attempts + 1):
         try:
-            pipeline = _build_pipeline(file_path, args, output_root=output_root)
+            pipeline = _build_pipeline(file_path, args, output_root=output_root, batch_size=batch_size)
             context = pipeline.run_pre_nci_stage()
             return True, None, time.perf_counter() - start, pipeline, context
         except Exception as e:
