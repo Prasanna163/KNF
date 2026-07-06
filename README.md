@@ -76,6 +76,15 @@ Compatibility alias (still supported):
 
 - `knf`
 
+## Internal Layout
+
+The runtime is split between a CLI layer and an engine layer:
+
+- `knf_core/cli/`: Typer argument parsing, interactive prompts, Rich terminal output, and command presentation.
+- `knf_core/engine/`: computation-oriented orchestration, dependency/GPU probes, batch discovery, KUID/atlas/export helpers, and job runners.
+- `knf_core/api.py`: FastAPI wrapper that builds engine `RunOptions` and calls the same engine processing path as the CLI.
+- `knf_core/main.py`: thin compatibility entry point for `python -m knf_core.main`, console scripts, and legacy imports.
+
 ## HTTP API
 
 If you want the pipeline reachable over HTTP, install the API extra:
@@ -138,6 +147,30 @@ can route small work to its CPU binary and GPU work to the CUDA build. Use
 ```bash
 nciforge example.mol --xtb-engine xtb
 ```
+
+NCIForge ships its own `xtbx` command and compact Windows xTB runtime. The
+normal CPU route works from the package. Explicit GPU xTB runs need the large
+NVIDIA CUDA redistributable DLLs from a full `xtb-win-release` folder. Configure
+that once with the interactive setup command:
+
+```powershell
+xtbx --setup-gpu
+```
+
+or provide the folder directly:
+
+```powershell
+xtbx --setup-gpu "E:\Prasanna\xTB\xtb\xtb-win-release"
+```
+
+For one command without saving config:
+
+```powershell
+xtbx --gpu-runtime "E:\Prasanna\xTB\xtb\xtb-win-release" molecule.xyz --gpu
+```
+
+If `xtbx --gpu ...` is run before a full runtime is configured, an interactive
+terminal will offer to run setup with a `y/N` prompt.
 
 Batch run:
 

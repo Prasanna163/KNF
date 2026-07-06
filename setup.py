@@ -21,7 +21,18 @@ setup(
             'nciforge=nciforge_cli:main',
             'knf=nciforge_cli:main',
             'geoinit=nciforge_cli:geoinit_main',
+            'xtbx=nciforge_xtbx.cli:main',
             'nciforge-api=nciforge_cli:api_main',
+        ],
+    },
+    package_data={
+        'nciforge_xtbx': [
+            'xtbx_run.sh',
+            'xtbg.conf',
+            'runtime/README.md',
+            'runtime/xtb-win-release/bin/*.exe',
+            'runtime/xtb-win-release/lib/*.dll',
+            'runtime/xtb-win-release/params/*',
         ],
     },
     install_requires=[
@@ -30,6 +41,7 @@ setup(
         'rich',
         'psutil',
         'rdkit',
+        'typer>=0.12',
     ],
     extras_require={
         'api': ['fastapi', 'uvicorn[standard]', 'python-multipart'],

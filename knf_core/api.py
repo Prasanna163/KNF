@@ -10,7 +10,6 @@ from contextlib import asynccontextmanager
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
@@ -18,10 +17,16 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
-from . import main as core_main
+from . import first_run, utils
+from .engine import dependencies as engine_dependencies
+from .engine import gpu as engine_gpu
+from .engine.constants import CLI_VERSION
+from .engine.discovery import resolve_results_root
+from .engine.processing import process_file
+from .engine.types import RunOptions as EngineRunOptions
 
 API_TITLE = "NCIForge API"
-API_VERSION = getattr(core_main, "CLI_VERSION", "v1")
+API_VERSION = CLI_VERSION
 JOB_STATUS_QUEUED = "queued"
 JOB_STATUS_RUNNING = "running"
 JOB_STATUS_SUCCEEDED = "succeeded"
@@ -85,13 +90,20 @@ def _normalize_path(path: Optional[str]) -> Optional[str]:
     return os.path.abspath(os.path.expanduser(path))
 
 
-def _runtime_args(options: RunOptions) -> SimpleNamespace:
+def _model_dump(model: BaseModel, **kwargs) -> Dict[str, Any]:
+    dump = getattr(model, "model_dump", None)
+    if callable(dump):
+        return dump(**kwargs)
+    return model.dict(**kwargs)
+
+
+def _to_engine_options(options: RunOptions) -> EngineRunOptions:
     backend = (options.nci_backend or "torch").strip().lower()
     device = (options.nci_device or "cpu").strip().lower()
     if backend == "multiwfn":
         device = "cpu"
 
-    return SimpleNamespace(
+    return EngineRunOptions(
         charge=options.charge,
         spin=options.spin,
         water=bool(options.water),
@@ -114,18 +126,19 @@ def _runtime_args(options: RunOptions) -> SimpleNamespace:
         preopt=options.preopt,
         xtb_engine=options.xtb_engine,
         xtb_gpu_atoms=options.xtb_gpu_atoms,
+        output_dir=options.output_dir,
         multiwfn_path=options.multiwfn_path,
     )
 
 
-def _preflight(runtime_args: SimpleNamespace) -> None:
+def _preflight(runtime_args: EngineRunOptions) -> None:
     try:
-        core_main._resolve_cpu_backend_when_torch_missing(runtime_args)
+        engine_gpu.resolve_cpu_backend_when_torch_missing(runtime_args)
     except RuntimeError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     try:
-        core_main.first_run.ensure_first_run_setup(
+        first_run.ensure_first_run_setup(
             force=False,
             multiwfn_path=getattr(runtime_args, "multiwfn_path", None),
             require_multiwfn=(runtime_args.nci_backend == "multiwfn"),
@@ -136,23 +149,17 @@ def _preflight(runtime_args: SimpleNamespace) -> None:
             detail=f"First-run setup failed: {exc}",
         ) from exc
 
-    core_main.check_dependencies(
-        multiwfn_path=getattr(runtime_args, "multiwfn_path", None),
-        nci_backend=runtime_args.nci_backend,
-        xtb_engine=getattr(runtime_args, "xtb_engine", "xtbx"),
-    )
-
     missing_tools: List[str] = []
-    core_main.utils.ensure_external_tools_in_path(persist=False)
-    if not core_main.utils.resolve_external_tool_command("obabel"):
+    utils.ensure_external_tools_in_path(persist=False)
+    if not utils.resolve_external_tool_command("obabel"):
         missing_tools.append("obabel")
     xtb_engine = getattr(runtime_args, "xtb_engine", "xtbx")
-    if xtb_engine in ("xtb", "auto") and not core_main.utils.resolve_external_tool_command("xtb"):
+    if xtb_engine in ("xtb", "auto") and not utils.resolve_external_tool_command("xtb"):
         missing_tools.append("xtb")
-    if xtb_engine in ("xtbx", "auto") and not shutil.which("xtbx"):
+    if xtb_engine in ("xtbx", "auto") and not engine_dependencies.xtbx_available():
         missing_tools.append("xtbx")
     if runtime_args.nci_backend == "multiwfn":
-        core_main.utils.ensure_multiwfn_in_path(explicit_path=getattr(runtime_args, "multiwfn_path", None))
+        utils.ensure_multiwfn_in_path(explicit_path=getattr(runtime_args, "multiwfn_path", None))
         if not shutil.which("Multiwfn") and not shutil.which("Multiwfn.exe"):
             missing_tools.append("Multiwfn")
 
@@ -164,7 +171,7 @@ def _preflight(runtime_args: SimpleNamespace) -> None:
 
     if runtime_args.nci_backend == "torch" and runtime_args.nci_device == "cuda":
         try:
-            core_main._ensure_cuda_runtime_for_gpu_mode(allow_prompt=False)
+            engine_gpu.ensure_cuda_runtime_for_gpu_mode(allow_prompt=False)
         except RuntimeError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
 
@@ -275,11 +282,11 @@ def _update_job(job_id: str, **patch: Any) -> None:
 def _run_job(job_id: str, input_path: str, output_root: str, options: RunOptions) -> None:
     started_at = _utc_now()
     _update_job(job_id, status=JOB_STATUS_RUNNING, started_at=started_at)
-    runtime_args = _runtime_args(options)
+    runtime_args = _to_engine_options(options)
 
     try:
         _preflight(runtime_args)
-        success, error, elapsed = core_main.process_file(input_path, runtime_args, output_root=output_root)
+        success, error, elapsed = process_file(input_path, runtime_args, output_root=output_root)
         result_dir = _result_dir(output_root, input_path)
         summary = _job_summary(
             {
@@ -295,7 +302,7 @@ def _run_job(job_id: str, input_path: str, output_root: str, options: RunOptions
                 "result_dir": result_dir,
                 "managed_workspace": _get_job(job_id).get("managed_workspace", False),
                 "error": error,
-                "options": options.dict(),
+                "options": _model_dump(options),
             }
         )
         if not success:
@@ -340,7 +347,7 @@ def _submit_job(
         "managed_workspace": managed_workspace,
         "error": None,
         "result": None,
-        "options": options.dict(),
+        "options": _model_dump(options),
         "workspace": os.path.dirname(output_root) if managed_workspace else None,
     }
     _store_job(record)
@@ -358,7 +365,7 @@ def _options_from_payload(payload: Dict[str, Any]) -> RunOptions:
 def _resolve_path_job_output_root(input_path: str, output_dir: Optional[str]) -> str:
     if output_dir:
         return _normalize_path(output_dir) or output_dir
-    return core_main.resolve_results_root(input_path, None)
+    return resolve_results_root(input_path, None)
 
 
 @asynccontextmanager
@@ -454,7 +461,7 @@ def submit_path_job(request: PathRunRequest) -> Dict[str, Any]:
         kind="path",
         input_path=input_path,
         output_root=output_root,
-        options=RunOptions(**request.dict(exclude={"input_path"})),
+        options=RunOptions(**_model_dump(request, exclude={"input_path"})),
         managed_workspace=False,
     )
 
@@ -496,7 +503,7 @@ async def submit_upload_job(
         "managed_workspace": True,
         "error": None,
         "result": None,
-        "options": options.dict(),
+        "options": _model_dump(options),
         "workspace": workspace,
     }
     _store_job(record)

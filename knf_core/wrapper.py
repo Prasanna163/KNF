@@ -27,6 +27,16 @@ def _xtb_invocation(xtb_cmd: str = "xtb") -> list[str]:
     FileNotFoundError
         If the requested launcher cannot be resolved on PATH.
     """
+    if (xtb_cmd or "").strip().lower() == "xtbx":
+        try:
+            from nciforge_xtbx.cli import subprocess_invocation
+
+            return subprocess_invocation()
+        except Exception as e:
+            logging.warning(
+                "Bundled xtbx launcher unavailable (%s); falling back to PATH.", e
+            )
+
     resolved = shutil.which(xtb_cmd)
     if resolved is None and xtb_cmd == "xtb":
         # Reuse KNF-CORE's conda/registered-path discovery for the stock build.
