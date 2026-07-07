@@ -480,9 +480,17 @@ class KNFPipeline:
             )
 
         try:
-            xtb_data = xtb.parse_xtb_log(xtb_log)
+            xtb_data = xtb.parse_xtb_log(xtb_log, require_polarizability=False)
             f4 = xtb_data.get('f4', 0.0)
-            f5 = xtb_data.get('f5', 0.0)
+            f5 = xtb_data.get('f5')
+            f5_available = bool(xtb_data.get("f5_available", f5 is not None))
+            f5_unavailable_reason = xtb_data.get("f5_unavailable_reason")
+            if f5 is None:
+                logging.warning(
+                    "xTB polarizability f5 unavailable for %s; continuing with f5=null. Reason: %s",
+                    self.base_name,
+                    f5_unavailable_reason or "not present in xtb.log",
+                )
             if self.wbo_mode == "native":
                 wbo_native = xtb.compute_wbo_from_molden_details(
                     molden_file,
@@ -575,6 +583,9 @@ class KNFPipeline:
             "f3": f3,
             "f4": f4,
             "f5": f5,
+            "f5_available": f5_available,
+            "f5_source": "xtb.log" if f5_available else None,
+            "f5_unavailable_reason": f5_unavailable_reason,
             "wbo_max_global": wbo_max_global,
             "wbo_inter_pair_count": wbo_native["inter_pair_count"],
             "wbo_inter_max_pair": wbo_native["inter_max_pair"],
@@ -602,6 +613,9 @@ class KNFPipeline:
         f3 = context["f3"]
         f4 = context["f4"]
         f5 = context["f5"]
+        f5_available = bool(context.get("f5_available", f5 is not None))
+        f5_source = context.get("f5_source")
+        f5_unavailable_reason = context.get("f5_unavailable_reason")
         wbo_max_global = context.get("wbo_max_global")
         wbo_inter_pair_count = context.get("wbo_inter_pair_count")
         wbo_inter_max_pair = context.get("wbo_inter_max_pair")
@@ -701,6 +715,9 @@ class KNFPipeline:
                 'f2_undefined_reason': f2_undefined_reason,
                 'f2_weight_model': f2_weight_model,
                 'f2_top_triplets': f2_top_triplets,
+                'f5_available': f5_available,
+                'f5_source': f5_source,
+                'f5_unavailable_reason': f5_unavailable_reason,
                 'wbo_max_global': wbo_max_global,
                 'wbo_inter_pair_count': wbo_inter_pair_count,
                 'wbo_inter_max_pair': wbo_inter_max_pair,

@@ -43,7 +43,7 @@ from knf_core.cli import commands as cli_commands
 from knf_core.cli import interactive as cli_interactive
 from knf_core.cli.argv_preprocess import normalize_argv
 from knf_core.cli.options import apply_execution_shortcuts, build_run_options, validate_flag_combinations
-from knf_core import wrapper
+from knf_core import knf_vector, wrapper, xtb
 from knf_core import main as core_main
 from knf_core.pipeline import KNFPipeline
 
@@ -906,7 +906,7 @@ def test_sp_only_pipeline_skips_preopt_and_xtb_optimization(monkeypatch, tmp_pat
     monkeypatch.setattr(KNFPipeline, "_resolve_xtb_cmd", lambda self, path: "xtb")
     monkeypatch.setattr(
         "knf_core.pipeline.xtb.parse_xtb_log",
-        lambda path: {"f4": 1.0, "f5": 2.0},
+        lambda path, **kwargs: {"f4": 1.0, "f5": 2.0},
     )
     monkeypatch.setattr(
         "knf_core.pipeline.xtb.compute_wbo_from_molden_details",
@@ -937,6 +937,66 @@ def test_sp_only_pipeline_skips_preopt_and_xtb_optimization(monkeypatch, tmp_pat
     assert context["xtb_sp_only"] is True
     assert Path(context["xtb_geometry_file"]).name == "input.xyz"
     assert not (Path(pipe.results_dir) / "xtbopt.xyz").exists()
+
+
+def test_xtb_log_parser_can_mark_missing_f5_unavailable(tmp_path):
+    log_path = tmp_path / "xtb.log"
+    log_path.write_text(
+        """
+molecular dipole:
+                 x           y           z       tot (Debye)
+ q only:        0.000       0.000       0.000
+   full:        0.100       0.200       0.300       1.234
+
+normal termination of xtb
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(xtb.MissingPolarizabilityError):
+        xtb.parse_xtb_log(str(log_path))
+
+    parsed = xtb.parse_xtb_log(str(log_path), require_polarizability=False)
+    assert parsed["f4"] == pytest.approx(1.234)
+    assert parsed["f5"] is None
+    assert parsed["f5_available"] is False
+    assert "Polarizability" in parsed["f5_unavailable_reason"]
+
+
+def test_xtb_log_parser_reads_mojibaked_alpha_polarizability(tmp_path):
+    log_path = tmp_path / "xtb.log"
+    log_path.write_bytes(
+        b"""
+molecular dipole:
+                 x           y           z       tot (Debye)
+ q only:        0.000       0.000       0.000
+   full:        0.100       0.200       0.300       1.234
+
+ Mol. \xc3\x8e\xc2\xb1(0) /au        :         94.392756
+
+normal termination of xtb
+"""
+    )
+
+    parsed = xtb.parse_xtb_log(str(log_path))
+    assert parsed["f4"] == pytest.approx(1.234)
+    assert parsed["f5"] == pytest.approx(94.392756)
+    assert parsed["f5_available"] is True
+
+
+def test_output_txt_writes_na_for_missing_f5(tmp_path):
+    result = knf_vector.KNFResult(
+        SNCI=0.1,
+        SCDI=None,
+        SCDI_variance=0.0,
+        KNF_vector=[1.0, 2.0, 0.3, 1.234, None, 4.0, 0.01, 0.02, 0.03],
+        metadata={"f5_available": False},
+    )
+
+    output_path = tmp_path / "output.txt"
+    knf_vector.write_output_txt(str(output_path), result)
+
+    assert "f5 (Pol):       n/a au" in output_path.read_text(encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -974,7 +1034,14 @@ def _assert_valid_knf_json(results_dir):
     vector = payload.get("KNF_vector")
     assert isinstance(vector, list) and len(vector) == 9
     import math
-    assert all(isinstance(v, (int, float)) and math.isfinite(v) for v in vector)
+    assert all(
+        isinstance(v, (int, float)) and math.isfinite(v)
+        for idx, v in enumerate(vector)
+        if idx != 4
+    )
+    assert vector[4] is None or (
+        isinstance(vector[4], (int, float)) and math.isfinite(vector[4])
+    )
 
 
 @pytest.mark.skipif(not (_RUN_XTB and _XTB_AVAILABLE), reason="set KNF_RUN_XTB_TESTS=1 and have xtb on PATH")
