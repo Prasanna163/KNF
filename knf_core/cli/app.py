@@ -67,6 +67,14 @@ def cli(
             "to force N batches, or '--batches' for auto batch count."
         ),
     ),
+    compile_existing: bool = typer.Option(
+        False,
+        "--compile-existing",
+        help=(
+            "Compile final batch CSV/JSON files from existing per-molecule result folders "
+            "without running more molecules."
+        ),
+    ),
     universal_kuid: bool = typer.Option(
         False,
         "--universal-kuid",
@@ -261,6 +269,7 @@ def cli(
         workers=workers,
         output_dir=output_dir,
         batches=batches,
+        compile_existing=compile_existing,
         universal_kuid=universal_kuid,
         merge_master_csv=merge_master_csv,
         merge_new_csv=merge_new_csv,
@@ -321,7 +330,7 @@ def cli(
     except RuntimeError as exc:
         raise typer.BadParameter(str(exc)) from exc
 
-    atlas_from_existing = try_write_atlas_bundle_from_existing_outputs(args)
+    atlas_from_existing = None if args.compile_existing else try_write_atlas_bundle_from_existing_outputs(args)
     if atlas_from_existing:
         if args.atlas_bundle:
             cleanup_root = atlas_from_existing.get("source_results_root") or os.path.dirname(
@@ -339,7 +348,7 @@ def cli(
         return
 
     merge_mode = bool(args.merge_master_csv and args.merge_new_csv)
-    if not args.universal_kuid and not merge_mode:
+    if not args.universal_kuid and not args.compile_existing and not merge_mode:
         first_ok = first_run.ensure_first_run_setup(
             force=args.refresh_first_run,
             multiwfn_path=args.multiwfn_path,
@@ -374,13 +383,17 @@ def cli(
         if merge_result.get("master_csv_updated"):
             print(f"Updated master CSV:  {merge_result['master_csv_updated']}")
     elif os.path.isdir(input_path):
-        if args.universal_kuid:
+        if args.compile_existing:
+            commands.run_compile_existing_results(input_path, args)
+        elif args.universal_kuid:
             commands.run_universal_kuid(input_path, args)
         elif args.batches is not None:
             commands.run_batch_directory_batched(input_path, args)
         else:
             commands.run_batch_directory(input_path, args)
     else:
+        if args.compile_existing:
+            raise typer.BadParameter("--compile-existing requires a directory input path.")
         if args.universal_kuid:
             raise typer.BadParameter("--universal-kuid requires a directory input path.")
         if args.batches is not None:

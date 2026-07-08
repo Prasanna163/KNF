@@ -18,6 +18,7 @@ class RunOptions:
     workers: int | None = None
     output_dir: str | None = None
     batches: int | None = None
+    compile_existing: bool = False
     universal_kuid: bool = False
     merge_master_csv: str | None = None
     merge_new_csv: str | None = None

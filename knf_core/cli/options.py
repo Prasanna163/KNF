@@ -27,8 +27,14 @@ def validate_flag_combinations(options: RunOptions) -> str | None:
         return "--batches must be a positive integer, or provided without a value for auto mode."
     if options.batches is not None and options.universal_kuid:
         return "Use either --batches or --universal-kuid, not both in the same command."
+    if options.compile_existing and options.batches is not None:
+        return "Use either --compile-existing or --batches, not both in the same command."
+    if options.compile_existing and options.universal_kuid:
+        return "Use either --compile-existing or --universal-kuid, not both in the same command."
     if bool(options.merge_master_csv) ^ bool(options.merge_new_csv):
         return "Use both --merge-master-csv and --merge-new-csv together."
+    if options.compile_existing and (options.merge_master_csv or options.merge_new_csv):
+        return "--compile-existing cannot be combined with --merge-master-csv/--merge-new-csv."
     if (options.batches is not None or options.universal_kuid) and (
         options.merge_master_csv or options.merge_new_csv
     ):

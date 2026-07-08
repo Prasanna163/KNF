@@ -500,6 +500,7 @@ def test_engine_run_options_match_current_cli_defaults():
         "workers": None,
         "output_dir": None,
         "batches": None,
+        "compile_existing": False,
         "universal_kuid": False,
         "merge_master_csv": None,
         "merge_new_csv": None,
@@ -537,6 +538,33 @@ def test_engine_run_options_match_current_cli_defaults():
         "project_root": None,
     }
     assert "input_path" not in defaults
+
+
+def test_compile_existing_results_from_water_result_folders(tmp_path):
+    results_root = tmp_path / "Water-Results"
+    for idx in range(1, 3):
+        result_dir = results_root / f"mol_{idx}_water_cluster"
+        result_dir.mkdir(parents=True)
+        (result_dir / "knf_water.json").write_text(
+            json.dumps(_fake_knf_payload(idx), indent=2),
+            encoding="utf-8",
+        )
+        (result_dir / "output_water.txt").write_text("ok", encoding="utf-8")
+
+    args = RunOptions(water=True)
+    result = engine_jobs.run_compile_existing_results_job(str(results_root), args)
+
+    assert result is not None
+    assert result.mode == "compile_existing"
+    assert [record.status for record in result.records] == ["success", "success"]
+    assert Path(result.aggregate_json_path).name == "batch_knf_water.json"
+    assert Path(result.aggregate_csv_path).name == "batch_knf_unified_water.csv"
+    assert Path(result.batch_delta_json_path).name == "batch_delta_water.json"
+
+    with open(result.aggregate_csv_path, newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    assert [row["File"] for row in rows] == ["mol_1_water_cluster", "mol_2_water_cluster"]
+    assert rows[0]["f1"] == "1.1"
 
 
 def test_engine_batch_job_matches_legacy_batch_outputs(monkeypatch, tmp_path):
@@ -684,6 +712,9 @@ def test_typer_options_validate_and_apply_shortcuts():
     opts = build_run_options(batches=0, universal_kuid=True)
     assert validate_flag_combinations(opts) == "Use either --batches or --universal-kuid, not both in the same command."
 
+    opts = build_run_options(compile_existing=True, batches=0)
+    assert validate_flag_combinations(opts) == "Use either --compile-existing or --batches, not both in the same command."
+
     opts = build_run_options(single=True, gpu=True)
     assert validate_flag_combinations(opts) is None
     apply_execution_shortcuts(opts)
@@ -731,6 +762,37 @@ def test_main_typer_dispatches_full_bare_batches(monkeypatch, tmp_path):
 
     assert Path(called["directory"]) == input_dir
     assert called["args"].batches == 0
+
+
+def test_main_typer_dispatches_compile_existing_without_first_run(monkeypatch, tmp_path):
+    results_root = tmp_path / "Results"
+    results_root.mkdir()
+    called = {}
+
+    monkeypatch.setattr(core_main, "_ensure_utf8_stdout", lambda: None)
+    monkeypatch.setattr(core_main, "_clear_terminal", lambda: None)
+    monkeypatch.setattr(core_main, "_show_startup_splash", lambda: None)
+    monkeypatch.setattr(cli_app, "resolve_cpu_backend_when_torch_missing", lambda args: None)
+    monkeypatch.setattr(
+        cli_app.first_run,
+        "ensure_first_run_setup",
+        lambda **kwargs: pytest.fail("compile-only mode should not run first-run setup"),
+    )
+    monkeypatch.setattr(cli_app, "probe_missing_dependencies", lambda **kwargs: [])
+    monkeypatch.setattr(cli_app, "try_write_atlas_bundle_from_existing_outputs", lambda args: None)
+    monkeypatch.setattr(cli_app, "maybe_write_atlas_bundle", lambda args: None)
+
+    def fake_compile(directory, args):
+        called["directory"] = directory
+        called["args"] = args
+
+    monkeypatch.setattr(core_main.cli_commands, "run_compile_existing_results", fake_compile)
+    monkeypatch.setattr(core_main.sys, "argv", ["knf", str(results_root), "--compile-existing"])
+
+    core_main.main()
+
+    assert Path(called["directory"]) == results_root
+    assert called["args"].compile_existing is True
 
 
 def test_main_typer_mutual_exclusion_errors(monkeypatch, tmp_path):

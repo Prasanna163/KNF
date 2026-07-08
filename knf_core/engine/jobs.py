@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import json
 import inspect
 import logging
 import os
@@ -240,6 +241,116 @@ def _batch_file_record_from_dict(record: dict) -> BatchFileRecord:
         elapsed_seconds=float(record.get("elapsed_seconds") or 0.0),
         error=record.get("error"),
         knf=record.get("knf") if isinstance(record.get("knf"), dict) else None,
+    )
+
+
+def _candidate_compile_roots(path: str, output_dir: str | None) -> list[str]:
+    candidates = []
+    if output_dir:
+        candidates.append(os.path.abspath(output_dir))
+    candidates.append(os.path.abspath(path))
+    if os.path.isdir(path):
+        candidates.append(resolve_results_root(path, None))
+
+    seen = set()
+    roots = []
+    for candidate in candidates:
+        norm = os.path.normcase(os.path.abspath(candidate))
+        if norm in seen:
+            continue
+        seen.add(norm)
+        roots.append(os.path.abspath(candidate))
+    return roots
+
+
+def _compile_records_from_result_dirs(results_root: str, water: bool) -> list[dict]:
+    knf_name = _final_output_name("knf.json", water)
+    records = []
+    if not os.path.isdir(results_root):
+        return records
+
+    for entry in sorted(os.scandir(results_root), key=lambda item: item.name.lower()):
+        if not entry.is_dir():
+            continue
+        knf_path = os.path.join(entry.path, knf_name)
+        if not os.path.exists(knf_path):
+            continue
+
+        record = {
+            "input_file": os.path.abspath(entry.path),
+            "status": "success",
+            "elapsed_seconds": 0.0,
+            "error": None,
+        }
+        try:
+            with open(knf_path, "r", encoding="utf-8") as f:
+                record["knf"] = json.load(f)
+        except Exception as exc:
+            record["status"] = "failed"
+            record["error"] = f"Failed to read {knf_name}: {exc}"
+        records.append(record)
+    return records
+
+
+def run_compile_existing_results_job(directory: str, options) -> BatchResult | None:
+    """Compile aggregate files from existing per-molecule result directories."""
+    requested_water = bool(getattr(options, "water", False))
+    output_dir = getattr(options, "output_dir", None)
+    selected_root = None
+    selected_records = []
+    selected_water = requested_water
+
+    for root in _candidate_compile_roots(directory, output_dir):
+        records = _compile_records_from_result_dirs(root, water=requested_water)
+        if records:
+            selected_root = root
+            selected_records = records
+            selected_water = requested_water
+            break
+
+    if not selected_records and not requested_water:
+        for root in _candidate_compile_roots(directory, output_dir):
+            records = _compile_records_from_result_dirs(root, water=True)
+            if records:
+                selected_root = root
+                selected_records = records
+                selected_water = True
+                break
+
+    if not selected_records or selected_root is None:
+        return None
+
+    mode = "compile_existing"
+    workers = 1
+    aggregate_total_time = _sum_elapsed_seconds(selected_records)
+    aggregate_json_path, aggregate_csv_path, quadrant_payload, batch_delta_json_path, batch_delta_txt_path = write_batch_aggregate_json(
+        directory=directory,
+        results_root=selected_root,
+        records=selected_records,
+        mode=mode,
+        workers=workers,
+        total_time=aggregate_total_time,
+        water=selected_water,
+        interactive_quadrant_plot=bool(getattr(options, "interactive_quadrant_plot", False)),
+    )
+
+    return BatchResult(
+        input_directory=os.path.abspath(directory),
+        results_root=selected_root,
+        records=[_batch_file_record_from_dict(record) for record in selected_records],
+        mode=mode,
+        workers=workers,
+        total_time_seconds=aggregate_total_time,
+        aggregate_json_path=aggregate_json_path,
+        aggregate_csv_path=aggregate_csv_path,
+        batch_delta_json_path=batch_delta_json_path,
+        batch_delta_txt_path=batch_delta_txt_path,
+        quadrant_payload=quadrant_payload,
+        failures=[
+            (os.path.basename(record.get("input_file") or ""), str(record.get("error")))
+            for record in selected_records
+            if record.get("status") == "failed"
+        ],
     )
 
 

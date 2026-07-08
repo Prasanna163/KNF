@@ -495,6 +495,33 @@ def run_universal_kuid(directory: str, args):
     return result
 
 
+def run_compile_existing_results(directory: str, args):
+    result = jobs.run_compile_existing_results_job(directory, args)
+    if result is None:
+        water_mode = bool(getattr(args, "water", False))
+        print(
+            f"No per-molecule {_final_output_name('knf.json', water_mode)} files found in {directory} "
+            "or its resolved Results directory."
+        )
+        return None
+
+    success_count = sum(1 for record in result.records if record.status == "success")
+    failed_count = sum(1 for record in result.records if record.status == "failed")
+    print("\nCompiled existing result folders (no recomputation).")
+    print(f"Results root: {result.results_root}")
+    print(f"Success:      {success_count}")
+    print(f"Failed:       {failed_count}")
+    print(f"Batch JSON:   {result.aggregate_json_path}")
+    print(f"Batch CSV:    {result.aggregate_csv_path}")
+    if result.batch_delta_json_path:
+        print(f"Delta JSON:   {result.batch_delta_json_path}")
+    if result.batch_delta_txt_path:
+        print(f"Delta TXT:    {result.batch_delta_txt_path}")
+    if result.failures:
+        print(f"Failed result folders: {len(result.failures)}")
+    return result
+
+
 def run_batch_directory_batched(directory: str, args):
     result = jobs.run_batch_directory_batched_job(directory, args)
     if result is None:
