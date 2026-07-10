@@ -2,6 +2,7 @@ import os
 import shutil
 import logging
 import json
+import time
 from pathlib import Path
 from rdkit import Chem
 
@@ -22,6 +23,7 @@ class KNFPipeline:
         charge: int = 0,
         spin: int = 1,
         water: bool = False,
+        hydration_fragment_mode: bool = False,
         force: bool = False,
         clean: bool = False,
         debug: bool = False,
@@ -53,6 +55,7 @@ class KNFPipeline:
         self.charge = charge
         self.spin = spin
         self.water = bool(water)
+        self.hydration_fragment_mode = bool(hydration_fragment_mode)
         self.force = force
         self.clean = clean
         self.debug = debug
@@ -82,6 +85,9 @@ class KNFPipeline:
         self.xtb_routing_log: list[dict] = []
         self.sp_only = bool(sp_only)
         self.progress_callback = progress_callback
+        self.stage_timings_seconds: dict[str, float] = {}
+        self._active_stage_name: str | None = None
+        self._active_stage_started: float | None = None
 
         self.base_name = Path(self.input_file).stem
         default_output_root = os.path.join(os.path.dirname(self.input_file), "Results")
@@ -150,8 +156,21 @@ class KNFPipeline:
         )
 
     def _stage(self, index: int, name: str):
+        self._finish_stage_timing()
+        self._active_stage_name = str(name)
+        self._active_stage_started = time.perf_counter()
         if self.debug:
             logging.info(f"[{index}/5] {name}")
+
+    def _finish_stage_timing(self) -> None:
+        if self._active_stage_name is None or self._active_stage_started is None:
+            return
+        elapsed = max(0.0, time.perf_counter() - self._active_stage_started)
+        self.stage_timings_seconds[self._active_stage_name] = (
+            self.stage_timings_seconds.get(self._active_stage_name, 0.0) + elapsed
+        )
+        self._active_stage_name = None
+        self._active_stage_started = None
 
     def _emit_progress(self, payload: dict) -> None:
         if self.progress_callback is None:
@@ -345,10 +364,34 @@ class KNFPipeline:
 
 
         mol = geometry.load_molecule(target_xyz)
-        fragments = geometry.detect_fragments(mol)
+        raw_fragments = geometry.detect_fragments(mol)
+        hydration_fragment_diagnostics = {
+            "enabled": bool(self.hydration_fragment_mode),
+            "active": False,
+            "reason": "disabled",
+            "raw_fragment_count": len(raw_fragments),
+        }
+        fragments = raw_fragments
+        if self.hydration_fragment_mode:
+            fragments, hydration_fragment_diagnostics = geometry.group_hydration_fragments(
+                mol,
+                raw_fragments,
+            )
+            if not hydration_fragment_diagnostics.get("active"):
+                raise RuntimeError(
+                    "--hydration-fragment-mode requires a non-water solute and at least one explicit H2O fragment."
+                )
+            logging.info(
+                "Hydration grouping: %s raw fragments -> solute (%s atoms) + water cluster (%s waters, %s atoms).",
+                len(raw_fragments),
+                hydration_fragment_diagnostics.get("solute_atom_count"),
+                hydration_fragment_diagnostics.get("water_count"),
+                hydration_fragment_diagnostics.get("water_atom_count"),
+            )
 
         # Promote intermolecular contact for 2-fragment donor/acceptor systems.
-        if len(fragments) == 2:
+        # Explicit hydration clusters must retain their supplied coordinates.
+        if len(fragments) == 2 and not self.hydration_fragment_mode:
             hb_seed = geometry.promote_hbond_interaction(mol, fragments[0], fragments[1])
             if hb_seed.get("applied"):
                 logging.info(
@@ -442,6 +485,19 @@ class KNFPipeline:
         wbo_file = os.path.join(self.results_dir, 'wbo')
         molden_file = os.path.join(self.results_dir, 'molden.input')
         xtb_log = os.path.join(self.results_dir, 'xtb.log')
+        xtb_include_esp = False
+        if not xtb_include_esp:
+            for stale_name in ("xtb_esp.dat", "xtb_esp_profile.dat", "xtb_esp.cosmo", "xtb.cosmo"):
+                stale_path = os.path.join(self.results_dir, stale_name)
+                if os.path.exists(stale_path):
+                    try:
+                        os.remove(stale_path)
+                    except Exception as cleanup_error:
+                        logging.warning(
+                            "Could not remove stale ESP artifact %s: %s",
+                            stale_path,
+                            cleanup_error,
+                        )
         if (
             not os.path.exists(wbo_file)
             or not os.path.exists(molden_file)
@@ -458,6 +514,8 @@ class KNFPipeline:
                 use_water=self.water,
                 xtb_cmd=sp_route.launcher,
                 force_gpu=sp_route.use_gpu,
+                include_hess=not self.sp_only,
+                include_esp=xtb_include_esp,
                 progress_callback=self._emit_progress,
             )
         elif not xtb_ready:
@@ -469,7 +527,9 @@ class KNFPipeline:
 
         cosmo_files = sorted(f for f in os.listdir(self.results_dir) if f.endswith('.cosmo'))
         cosmo_file = None
-        if "xtb.cosmo" in cosmo_files:
+        if self.sp_only or not xtb_include_esp:
+            cosmo_file = None
+        elif "xtb.cosmo" in cosmo_files:
             cosmo_file = os.path.join(self.results_dir, "xtb.cosmo")
         elif cosmo_files:
             cosmo_file = os.path.join(self.results_dir, cosmo_files[0])
@@ -596,7 +656,12 @@ class KNFPipeline:
             "cosmo_file": cosmo_file,
             "pair_indices": pair_indices,
             "fragment_count": len(fragments),
+            "raw_fragment_count": len(raw_fragments),
+            "hydration_fragment_mode": bool(self.hydration_fragment_mode),
+            "hydration_fragment_diagnostics": hydration_fragment_diagnostics,
             "xtb_sp_only": self.sp_only,
+            "xtb_sp_include_esp": bool(xtb_include_esp),
+            "xtb_sp_include_hess": not self.sp_only,
             "xtb_geometry_file": sp_geometry,
         }
 
@@ -626,6 +691,9 @@ class KNFPipeline:
         cosmo_file = context["cosmo_file"]
         pair_indices = context["pair_indices"]
         fragment_count = int(context["fragment_count"])
+        raw_fragment_count = int(context.get("raw_fragment_count", fragment_count))
+        hydration_fragment_mode = bool(context.get("hydration_fragment_mode", False))
+        hydration_fragment_diagnostics = context.get("hydration_fragment_diagnostics") or {}
         xtb_sp_only = bool(context.get("xtb_sp_only", False))
         xtb_geometry_file = context.get("xtb_geometry_file")
 
@@ -698,6 +766,7 @@ class KNFPipeline:
             except Exception as e:
                 logging.error(f"SCDI computation failed: {e}")
 
+        self._finish_stage_timing()
         vector = knf_vector.assemble_knf_vector(f1, f2, f3, f4, f5, f6, f7, f8, f9)
         result = knf_vector.KNFResult(
             SNCI=snci_val,
@@ -708,6 +777,12 @@ class KNFPipeline:
                 'charge': self.charge,
                 'spin': self.spin,
                 'fragments': fragment_count,
+                'raw_fragments': raw_fragment_count,
+                'hydration_fragment_mode': hydration_fragment_mode,
+                'hydration_fragment_diagnostics': hydration_fragment_diagnostics,
+                'system_type': 'solute_water_cluster' if hydration_fragment_mode else None,
+                'fragment_A': 'solute' if hydration_fragment_mode else None,
+                'fragment_B': 'water_cluster' if hydration_fragment_mode else None,
                 'geometry_fragment_pair': pair_indices,
                 'f2_defined': f2_defined,
                 'f2_triplet_count': f2_triplet_count,
@@ -731,12 +806,19 @@ class KNFPipeline:
                 'xtb_batch_size': self.xtb_batch_size,
                 'xtb_routing': list(self.xtb_routing_log),
                 'xtb_sp_only': xtb_sp_only,
+                'xtb_sp_include_esp': bool(context.get("xtb_sp_include_esp", False)),
+                'xtb_sp_include_hess': bool(context.get("xtb_sp_include_hess", not xtb_sp_only)),
                 'xtb_geometry_file': xtb_geometry_file,
                 'xtb_water': self.water,
                 'nci_backend': self.nci_backend,
+                'nci_spatial_mode': 'volumetric_3d',
                 'nci_status': 'success' if nci_success else 'skipped',
                 'nci_data_path': nci_data_path,
                 'nci_engine_metadata': nci_engine_metadata,
+                'stage_timings_seconds': {
+                    key: round(value, 6)
+                    for key, value in self.stage_timings_seconds.items()
+                },
             }
         )
 

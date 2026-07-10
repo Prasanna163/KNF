@@ -38,6 +38,15 @@ def cli(
         help="Use xTB '--alpb water' for optimization and single-point instead of the default '--cosmo water'.",
         rich_help_panel=XTB_HELP_PANEL,
     ),
+    hydration_fragment_mode: bool = typer.Option(
+        False,
+        "--hydration-fragment-mode",
+        help=(
+            "Group explicit H2O components into one water-cluster fragment B and all "
+            "non-water components into solute fragment A. The NCI calculation remains volumetric 3D."
+        ),
+        rich_help_panel=NCI_HELP_PANEL,
+    ),
     force: bool = typer.Option(False, "--force", help="Force recomputation"),
     clean: bool = typer.Option(False, "--clean", help="Clean results"),
     debug: bool = typer.Option(False, "--debug", help="Debug logging"),
@@ -260,6 +269,7 @@ def cli(
         charge=charge,
         spin=spin,
         water=water,
+        hydration_fragment_mode=hydration_fragment_mode,
         force=force,
         clean=clean,
         debug=debug,

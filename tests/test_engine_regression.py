@@ -489,9 +489,10 @@ def test_engine_run_options_match_current_cli_defaults():
     defaults = {field.name: field.default for field in fields(RunOptions)}
     assert defaults == {
         "charge": 0,
-        "spin": 1,
-        "water": False,
-        "force": False,
+            "spin": 1,
+            "water": False,
+            "hydration_fragment_mode": False,
+            "force": False,
         "clean": False,
         "debug": False,
         "processing": "auto",
@@ -955,8 +956,18 @@ def test_sp_only_pipeline_skips_preopt_and_xtb_optimization(monkeypatch, tmp_pat
     def fail_opt(*args, **kwargs):
         raise AssertionError("xTB optimization should not run in SP-only mode")
 
-    def fake_sp(filepath, charge=0, uhf=0, use_water=False, xtb_cmd="xtb", force_gpu=False, progress_callback=None):
-        calls.append((Path(filepath).name, charge, uhf, use_water, xtb_cmd, force_gpu))
+    def fake_sp(
+        filepath,
+        charge=0,
+        uhf=0,
+        use_water=False,
+        xtb_cmd="xtb",
+        force_gpu=False,
+        include_hess=True,
+        include_esp=False,
+        progress_callback=None,
+    ):
+        calls.append((Path(filepath).name, charge, uhf, use_water, xtb_cmd, force_gpu, include_hess, include_esp))
         cwd = Path(filepath).parent
         (cwd / "xtb.log").write_text("fake xtb log", encoding="utf-8")
         (cwd / "wbo").write_text("1 2 0.123\n", encoding="utf-8")
@@ -995,10 +1006,52 @@ def test_sp_only_pipeline_skips_preopt_and_xtb_optimization(monkeypatch, tmp_pat
     )
     context = pipe.run_pre_nci_stage()
 
-    assert calls == [("input.xyz", 0, 0, False, "xtb", False)]
+    assert calls == [("input.xyz", 0, 0, False, "xtb", False, False, False)]
     assert context["xtb_sp_only"] is True
+    assert context["xtb_sp_include_hess"] is False
+    assert context["xtb_sp_include_esp"] is False
     assert Path(context["xtb_geometry_file"]).name == "input.xyz"
     assert not (Path(pipe.results_dir) / "xtbopt.xyz").exists()
+
+
+def test_xtb_sp_can_skip_esp_and_hessian(monkeypatch, tmp_path):
+    xyz = tmp_path / "input.xyz"
+    xyz.write_text("1\n\nH 0 0 0\n", encoding="utf-8")
+    calls = []
+
+    def fake_run(cmd, cwd=None, stdout=None, stderr=None, text=None, errors=None, check=None):
+        calls.append(list(cmd))
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(wrapper.subprocess, "run", fake_run)
+
+    wrapper.run_xtb_sp(str(xyz), include_hess=False, include_esp=False)
+
+    assert calls
+    assert "--esp" not in calls[0]
+    assert "--hess" not in calls[0]
+    assert "--molden" in calls[0]
+    assert "--wbo" in calls[0]
+
+
+def test_xtb_sp_skips_esp_by_default(monkeypatch, tmp_path):
+    xyz = tmp_path / "input.xyz"
+    xyz.write_text("1\n\nH 0 0 0\n", encoding="utf-8")
+    calls = []
+
+    def fake_run(cmd, cwd=None, stdout=None, stderr=None, text=None, errors=None, check=None):
+        calls.append(list(cmd))
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(wrapper.subprocess, "run", fake_run)
+
+    wrapper.run_xtb_sp(str(xyz))
+
+    assert calls
+    assert "--esp" not in calls[0]
+    assert "--hess" in calls[0]
+    assert "--molden" in calls[0]
+    assert "--wbo" in calls[0]
 
 
 def test_xtb_log_parser_can_mark_missing_f5_unavailable(tmp_path):

@@ -456,12 +456,20 @@ def run_xtb_sp(
     use_water: bool = False,
     xtb_cmd: str = "xtb",
     force_gpu: bool = False,
+    include_hess: bool = True,
+    include_esp: bool = False,
     progress_callback: XtbProgressCallback | None = None,
 ):
     cwd = os.path.dirname(os.path.abspath(filepath))
     filename = os.path.basename(filepath)
 
-    cmd = _xtb_invocation(xtb_cmd) + [filename, '--esp', '--molden', '--hess', '--wbo']
+    cmd = _xtb_invocation(xtb_cmd) + [filename]
+    if include_esp:
+        cmd.append('--esp')
+    cmd.append('--molden')
+    if include_hess:
+        cmd.append('--hess')
+    cmd.append('--wbo')
     if force_gpu and (xtb_cmd or "").strip().lower() == "xtbx":
         cmd.append('--gpu')
     cmd.extend(_solvent_args(use_water))

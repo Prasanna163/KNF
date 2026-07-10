@@ -681,42 +681,71 @@ def run_batch_directory_job(
     elif use_gpu_overlap:
         with ThreadPoolExecutor(max_workers=workers) as cpu_executor, ThreadPoolExecutor(max_workers=1) as gpu_executor:
             pre_futures = {}
-            for file_path in files:
-                progress_callback = _make_file_progress_callback(
-                    on_event,
-                    file_path=file_path,
-                    total=total,
-                    completed_getter=lambda: completed,
-                )
-                future = cpu_executor.submit(
-                    _process_file_pre_nci_with_optional_progress,
-                    file_path,
-                    options,
-                    results_root,
-                    total,
-                    progress_callback,
-                )
-                pre_futures[future] = file_path
-            for file_path in files:
-                _emit(on_event, JobEvent(EventKind.FILE_STARTED, input_file=file_path, completed=completed, total=total))
             post_futures = {}
+            pending_files = iter(files)
+            pending_exhausted = False
+            max_post_backlog = 2  # one running on GPU, one prepared and queued
+
+            def fill_pre_slots() -> None:
+                nonlocal pending_exhausted
+                while (
+                    not pending_exhausted
+                    and not stop_requested
+                    and len(pre_futures) < workers
+                    and len(post_futures) < max_post_backlog
+                ):
+                    try:
+                        file_path = next(pending_files)
+                    except StopIteration:
+                        pending_exhausted = True
+                        break
+                    progress_callback = _make_file_progress_callback(
+                        on_event,
+                        file_path=file_path,
+                        total=total,
+                        completed_getter=lambda: completed,
+                    )
+                    future = cpu_executor.submit(
+                        _process_file_pre_nci_with_optional_progress,
+                        file_path,
+                        options,
+                        results_root,
+                        total,
+                        progress_callback,
+                    )
+                    pre_futures[future] = file_path
+                    _emit(
+                        on_event,
+                        JobEvent(
+                            EventKind.FILE_STARTED,
+                            input_file=file_path,
+                            completed=completed,
+                            total=total,
+                        ),
+                    )
+
+            fill_pre_slots()
             pre_cancel_applied = False
 
-            while pre_futures or post_futures:
+            while pre_futures or post_futures or not pending_exhausted:
                 maybe_request_stop()
                 if stop_requested and not pre_cancel_applied:
                     for future, file_path in list(pre_futures.items()):
                         if future.cancel():
                             pre_futures.pop(future, None)
                             add_stopped(file_path)
+                    for file_path in pending_files:
+                        add_stopped(file_path)
+                    pending_exhausted = True
                     pre_cancel_applied = True
 
                 done_pre = []
-                if pre_futures:
+                post_capacity = max(0, max_post_backlog - len(post_futures))
+                if pre_futures and post_capacity:
                     try:
                         for future in as_completed(pre_futures, timeout=0.2):
                             done_pre.append(future)
-                            if len(done_pre) >= workers:
+                            if len(done_pre) >= min(workers, post_capacity):
                                 break
                     except TimeoutError:
                         pass
@@ -773,6 +802,8 @@ def run_batch_directory_job(
                         add_success(file_path, total_elapsed_file)
                     else:
                         add_failure(file_path, error, total_elapsed_file)
+
+                fill_pre_slots()
     else:
         with ThreadPoolExecutor(max_workers=workers) as executor:
             futures = {}

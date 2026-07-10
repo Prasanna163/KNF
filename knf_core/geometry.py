@@ -47,6 +47,55 @@ def detect_fragments(mol: Chem.Mol) -> list[list[int]]:
     # frags is a tuple of tuples of indices
     return [list(frag) for frag in frags]
 
+
+def group_hydration_fragments(
+    mol: Chem.Mol,
+    fragments: list[list[int]],
+) -> tuple[list[list[int]], dict]:
+    """Group explicit waters into fragment B while preserving the geometry.
+
+    A water component is conservatively identified as exactly one oxygen and
+    two hydrogens. Every other component, including ions, remains in solute A.
+    """
+    raw = [sorted(int(idx) for idx in fragment) for fragment in fragments if fragment]
+    waters: list[list[int]] = []
+    solutes: list[list[int]] = []
+
+    for fragment in raw:
+        symbols = [mol.GetAtomWithIdx(idx).GetSymbol().upper() for idx in fragment]
+        is_water = (
+            len(symbols) == 3
+            and symbols.count("O") == 1
+            and symbols.count("H") == 2
+        )
+        (waters if is_water else solutes).append(fragment)
+
+    active = bool(waters and solutes)
+    diagnostics = {
+        "enabled": True,
+        "active": active,
+        "mode": "hydration_fragment_mode",
+        "raw_fragment_count": len(raw),
+        "solute_fragment_count": len(solutes),
+        "water_fragment_count": len(waters),
+        "water_count": len(waters),
+        "reason": "ok" if active else "requires_nonwater_solute_and_explicit_water",
+    }
+    if not active:
+        return raw, diagnostics
+
+    solute = sorted(idx for fragment in solutes for idx in fragment)
+    water_cluster = sorted(idx for fragment in waters for idx in fragment)
+    diagnostics.update(
+        {
+            "solute_atom_count": len(solute),
+            "water_atom_count": len(water_cluster),
+            "fragment_A": "solute",
+            "fragment_B": "water_cluster",
+        }
+    )
+    return [solute, water_cluster], diagnostics
+
 def compute_center_of_mass(mol: Chem.Mol, atom_indices: list[int]) -> np.ndarray:
     """Computes the Center of Mass (COM) for a given set of atoms."""
     conf = mol.GetConformer()

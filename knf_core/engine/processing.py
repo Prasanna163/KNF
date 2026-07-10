@@ -66,6 +66,7 @@ def _build_pipeline(
         charge=args.charge,
         spin=args.spin,
         water=bool(getattr(args, "water", False)),
+        hydration_fragment_mode=bool(getattr(args, "hydration_fragment_mode", False)),
         force=args.force,
         clean=args.clean,
         debug=args.debug,

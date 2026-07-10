@@ -53,6 +53,7 @@ class RunOptions(BaseModel):
     charge: int = 0
     spin: int = 1
     water: bool = False
+    hydration_fragment_mode: bool = False
     force: bool = False
     clean: bool = False
     debug: bool = False
@@ -110,6 +111,7 @@ def _to_engine_options(options: RunOptions) -> EngineRunOptions:
         charge=options.charge,
         spin=options.spin,
         water=bool(options.water),
+        hydration_fragment_mode=bool(options.hydration_fragment_mode),
         force=bool(options.force),
         clean=bool(options.clean),
         debug=bool(options.debug),

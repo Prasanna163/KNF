@@ -9,6 +9,7 @@ class RunOptions:
     charge: int = 0
     spin: int = 1
     water: bool = False
+    hydration_fragment_mode: bool = False
     force: bool = False
     clean: bool = False
     debug: bool = False
