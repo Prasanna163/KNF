@@ -1,5 +1,4 @@
-<img width="3000" height="3000" alt="NCIForge2_trans" src="https://github.com/user-attachments/assets/8b2a3809-7275-4aa2-8a7c-c3c1987aef84" />
-
+<img width="1672" height="941" alt="main loo" src="https://github.com/user-attachments/assets/5f6b0fe3-cc10-4798-b323-a91a45e1c037" />
 # NCIForge
 
 NCIForge is a physics-informed descriptor pipeline for non-covalent interactions.
