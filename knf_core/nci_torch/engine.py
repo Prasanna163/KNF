@@ -58,20 +58,81 @@ def _prepare_basis(
     return prepared
 
 
-def _evaluate_basis_chunk(
-    points: torch.Tensor, prepared_basis: List[PreparedBasisFunction]
-) -> torch.Tensor:
-    n_points = points.shape[0]
-    n_basis = len(prepared_basis)
-    out = torch.empty((n_points, n_basis), device=points.device, dtype=points.dtype)
+@dataclass
+class _BasisGroup:
+    """All basis functions sharing one (lx, ly, lz) power triple.
 
-    for col, bf in enumerate(prepared_basis):
-        dx = points[:, 0] - bf.center[0]
-        dy = points[:, 1] - bf.center[1]
-        dz = points[:, 2] - bf.center[2]
+    Grouping lets one basis function's worth of tensor ops cover every basis
+    function in the group at once (see ``_group_prepared_basis``).
+    """
+
+    powers: Tuple[int, int, int]
+    indices: List[int]
+    centers: torch.Tensor       # (m, 3)
+    exponents: torch.Tensor     # (m, max_primitives), zero-padded
+    coefficients: torch.Tensor  # (m, max_primitives), zero-padded
+
+
+def _group_prepared_basis(
+    prepared_basis: List[PreparedBasisFunction],
+) -> List[_BasisGroup]:
+    """Bucket basis functions by angular-momentum powers, once per molecule.
+
+    A molden basis expands each contracted shell into one basis function per
+    cartesian power triple (see ``molden._cartesian_powers``): an s shell
+    contributes 1, p contributes 3, d contributes 6, and so on. Across a whole
+    molecule there are only a handful of distinct triples (grouping is keyed
+    on the triple alone, not the shell, so e.g. every "(1, 0, 0)" p_x function
+    on every atom lands in one group) even when there are hundreds of basis
+    functions, because typical GFN-xTB basis sets stay at s/p/d. Padding
+    exponents/coefficients with zero is exact: exp(-r^2 * 0) * 0 == 0, so
+    padded primitive slots contribute nothing regardless of r.
+    """
+    buckets: dict[Tuple[int, int, int], List[int]] = {}
+    for idx, bf in enumerate(prepared_basis):
+        buckets.setdefault(bf.powers, []).append(idx)
+
+    groups: List[_BasisGroup] = []
+    for powers, indices in buckets.items():
+        group_basis = [prepared_basis[i] for i in indices]
+        device = group_basis[0].center.device
+        dtype = group_basis[0].center.dtype
+        max_prim = max(int(bf.exponents.shape[0]) for bf in group_basis)
+
+        centers = torch.stack([bf.center for bf in group_basis], dim=0)
+        exponents = torch.zeros((len(group_basis), max_prim), device=device, dtype=dtype)
+        coefficients = torch.zeros((len(group_basis), max_prim), device=device, dtype=dtype)
+        for row, bf in enumerate(group_basis):
+            n_prim = bf.exponents.shape[0]
+            exponents[row, :n_prim] = bf.exponents
+            coefficients[row, :n_prim] = bf.coefficients
+
+        groups.append(
+            _BasisGroup(
+                powers=powers,
+                indices=indices,
+                centers=centers,
+                exponents=exponents,
+                coefficients=coefficients,
+            )
+        )
+    return groups
+
+
+def _evaluate_basis_chunk(
+    points: torch.Tensor, basis_groups: List[_BasisGroup], n_basis: int
+) -> torch.Tensor:
+    out = torch.empty((points.shape[0], n_basis), device=points.device, dtype=points.dtype)
+
+    for group in basis_groups:
+        lx, ly, lz = group.powers
+        # (n_points, m_in_group) via broadcasting instead of one (n_points,)
+        # column per basis function.
+        dx = points[:, 0:1] - group.centers[None, :, 0]
+        dy = points[:, 1:2] - group.centers[None, :, 1]
+        dz = points[:, 2:3] - group.centers[None, :, 2]
         r2 = dx * dx + dy * dy + dz * dz
 
-        lx, ly, lz = bf.powers
         poly = torch.ones_like(r2)
         if lx:
             poly = poly * (dx**lx)
@@ -80,9 +141,12 @@ def _evaluate_basis_chunk(
         if lz:
             poly = poly * (dz**lz)
 
-        # Primitive contraction stays vectorized across all points.
-        prim = torch.exp(-r2[:, None] * bf.exponents[None, :]) * bf.coefficients[None, :]
-        out[:, col] = poly * prim.sum(dim=1)
+        # (n_points, m_in_group, max_primitives) -> summed over primitives.
+        prim = (
+            torch.exp(-r2[:, :, None] * group.exponents[None, :, :])
+            * group.coefficients[None, :, :]
+        )
+        out[:, group.indices] = poly * prim.sum(dim=2)
 
     return out
 
@@ -97,6 +161,8 @@ def compute_density(
 
     points = flatten_grid_points(grid, device=device, dtype=dtype)
     prepared_basis = _prepare_basis(wavefunction, device=device, dtype=dtype)
+    basis_groups = _group_prepared_basis(prepared_basis)
+    n_basis = len(prepared_basis)
 
     coeff = torch.as_tensor(wavefunction.mo_coefficients, device=device, dtype=dtype)
     occ = torch.as_tensor(wavefunction.occupations, device=device, dtype=dtype)
@@ -105,7 +171,7 @@ def compute_density(
     batch_size = max(1, int(config.batch_size))
     for start in range(0, points.shape[0], batch_size):
         end = min(points.shape[0], start + batch_size)
-        basis_values = _evaluate_basis_chunk(points[start:end], prepared_basis)
+        basis_values = _evaluate_basis_chunk(points[start:end], basis_groups, n_basis)
         psi = basis_values @ coeff
         rho[start:end] = torch.sum((psi * psi) * occ[None, :], dim=1)
 

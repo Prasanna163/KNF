@@ -324,6 +324,7 @@ def compute_wbo_from_molden_details(
     molden_path: str,
     fragments: list[list[int]] | None = None,
     use_identity_overlap: bool = True,
+    wavefunction=None,
 ) -> dict:
     """
     Computes AO- and atom-block WBO diagnostics directly from a Molden wavefunction.
@@ -334,13 +335,23 @@ def compute_wbo_from_molden_details(
     3) Build PS = P @ S (identity S by default for xTB minimal basis workflows)
     4) AO WBO-like matrix: W_ao = PS * PS.T  (elementwise product)
     5) Sum AO blocks by atom centers -> W_atom
+
+    ``wavefunction``, if given, is used as-is instead of re-parsing
+    ``molden_path`` (it must have been parsed with
+    ``apply_primitive_normalization=False`` to match this function's own
+    parsing). The parsed wavefunction is always returned under the
+    ``"wavefunction"`` key so callers running on the same molden file for a
+    later stage (e.g. the NCI grid stage) can reuse it instead of parsing the
+    same file a second time.
     """
     if not os.path.exists(molden_path):
         raise FileNotFoundError(f"Molden file not found: {molden_path}")
 
     from .nci_torch.molden import parse_molden
 
-    wf = parse_molden(molden_path, apply_primitive_normalization=False)
+    wf = wavefunction if wavefunction is not None else parse_molden(
+        molden_path, apply_primitive_normalization=False
+    )
     coeff = np.asarray(wf.mo_coefficients, dtype=np.float64)  # (n_ao, n_mo)
     occ = np.asarray(wf.occupations, dtype=np.float64)        # (n_mo,)
 
@@ -399,6 +410,7 @@ def compute_wbo_from_molden_details(
         "n_atoms": n_atoms,
         "n_ao": int(w_ao.shape[0]),
         "overlap_model": "identity" if use_identity_overlap else "explicit",
+        "wavefunction": wf,
     }
 
 

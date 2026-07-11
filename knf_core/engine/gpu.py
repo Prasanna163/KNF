@@ -19,6 +19,20 @@ GPU_RUNTIME_CACHE_MAX_AGE_SECONDS = 12 * 60 * 60
 # can't race each other into a double `pip install` or a torn state file.
 _GPU_STATE_LOCK = threading.Lock()
 
+# Serializes actual GPU *use* across the two independent subsystems that can
+# both touch the physical device in the same process: an `xtbx --gpu`
+# subprocess (launched from a CPU pre-nci worker thread for a large molecule,
+# per knf_core.engine.xtb_routing) and the in-process NCI-torch CUDA compute
+# (run on its own single-lane executor in knf_core.engine.jobs). Those two
+# lanes were never coordinated, so a large-molecule xTB GPU run and an NCI
+# grid GPU run could land on the device at the same time and slow each other
+# down -- the exact "xTB and NCI fighting for the GPU" contention this run
+# is meant to avoid for the common (small-molecule) case. Both call sites
+# acquire this lock only around the portion of work that actually touches
+# the GPU, so CPU-only xTB calls (the overwhelming majority in a batch) never
+# wait on it.
+GPU_DEVICE_LOCK = threading.Lock()
+
 
 def _gpu_state_key() -> str:
     try:

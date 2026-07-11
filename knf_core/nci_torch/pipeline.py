@@ -1,9 +1,11 @@
 import gc
 import time
+from contextlib import nullcontext
 from typing import Dict, Optional
 
 import torch
 
+from ..engine.gpu import GPU_DEVICE_LOCK
 from .engine import NCIConfig, run_nci_engine
 from .export import write_nci_grid_npz, write_nci_grid_text
 from .grid import build_grid
@@ -62,14 +64,22 @@ def run_nci_torch(
     output_units: str = "bohr",
     apply_primitive_normalization: bool = False,
     cpu_threads: Optional[int] = None,
+    wavefunction: Optional[object] = None,
 ) -> Dict[str, object]:
+    """``wavefunction``, if given, must already be parsed with the same
+    ``apply_primitive_normalization`` value passed here -- it is used as-is
+    instead of re-parsing ``molden_path`` (skips ``parse_molden`` entirely,
+    e.g. when the pre-nci WBO stage already parsed the same file). Passing a
+    mismatched wavefunction is a caller bug; this function does not validate
+    it against ``apply_primitive_normalization``.
+    """
     t0 = time.perf_counter()
     resolved_device = None
-    wavefunction = None
     grid = None
     fields = None
     cpu_threads_configured = None
     device_requested = (device or "auto").strip().lower()
+    succeeded = False
 
     if device_requested == "cpu" and cpu_threads:
         target_threads = max(1, int(cpu_threads))
@@ -79,12 +89,15 @@ def run_nci_torch(
         except Exception:
             cpu_threads_configured = None
 
+    wavefunction_reused = wavefunction is not None
+
     try:
         t_parse0 = time.perf_counter()
-        wavefunction = parse_molden(
-            molden_path,
-            apply_primitive_normalization=apply_primitive_normalization,
-        )
+        if wavefunction is None:
+            wavefunction = parse_molden(
+                molden_path,
+                apply_primitive_normalization=apply_primitive_normalization,
+            )
         t_parse1 = time.perf_counter()
 
         t_grid0 = time.perf_counter()
@@ -96,18 +109,25 @@ def run_nci_torch(
         t_grid1 = time.perf_counter()
 
         t_compute0 = time.perf_counter()
-        fields, resolved_device = run_nci_engine(
-            wavefunction=wavefunction,
-            grid=grid,
-            config=NCIConfig(
-                device=device,
-                dtype=dtype,
-                batch_size=batch_size,
-                eig_batch_size=eig_batch_size,
-                rho_floor=rho_floor,
-            ),
-        )
-        _sync_if_cuda(resolved_device)
+        # Serialize against any concurrent `xtbx --gpu` subprocess (see
+        # engine.gpu.GPU_DEVICE_LOCK) so a large molecule's GPU xTB run and
+        # this molecule's GPU NCI compute never contend for the same device.
+        # A "cpu" request never touches the GPU, so it skips the lock
+        # entirely rather than waiting behind an unrelated GPU user.
+        wants_gpu = device_requested == "auto" or device_requested.startswith("cuda")
+        with GPU_DEVICE_LOCK if wants_gpu else nullcontext():
+            fields, resolved_device = run_nci_engine(
+                wavefunction=wavefunction,
+                grid=grid,
+                config=NCIConfig(
+                    device=device,
+                    dtype=dtype,
+                    batch_size=batch_size,
+                    eig_batch_size=eig_batch_size,
+                    rho_floor=rho_floor,
+                ),
+            )
+            _sync_if_cuda(resolved_device)
         t_compute1 = time.perf_counter()
 
         t_export0 = time.perf_counter()
@@ -140,7 +160,7 @@ def run_nci_torch(
             gpu_meta["cuda_device_name"] = torch.cuda.get_device_name(resolved_device)
             gpu_meta["cuda_device_capability"] = list(torch.cuda.get_device_capability(resolved_device))
 
-        return {
+        result = {
             "device": str(resolved_device),
             "elapsed_seconds": elapsed,
             "timings_seconds": {
@@ -155,19 +175,33 @@ def run_nci_torch(
             "grid_shape": grid.shape,
             "n_grid_points": int(grid.n_points),
             "apply_primitive_normalization": bool(apply_primitive_normalization),
+            "wavefunction_reused": wavefunction_reused,
             "eig_batch_size": int(eig_batch_size),
             "cpu_threads_configured": cpu_threads_configured,
             "output_binary_path": output_path,
             "output_text_path": output_text_path,
         }
+        succeeded = True
+        return result
     finally:
         del fields
         del grid
         del wavefunction
         gc.collect()
-        if (resolved_device is not None and resolved_device.type == "cuda") or (
-            resolved_device is None
-            and (device_requested == "auto" or device_requested.startswith("cuda"))
-            and torch.cuda.is_available()
+        # Only force a CUDA allocator reset (sync + empty_cache + ipc_collect)
+        # when this call is unwinding from an exception (the OOM-retry path in
+        # pipeline.py's adaptive fallback already calls release_cuda_memory()
+        # explicitly for that case). Doing this unconditionally on every
+        # successful GPU molecule wiped the caching allocator's warm pool
+        # before every subsequent molecule, forcing fresh cudaMalloc calls
+        # instead of pool reuse -- pure per-molecule overhead with no benefit
+        # on the success path.
+        if not succeeded and (
+            (resolved_device is not None and resolved_device.type == "cuda")
+            or (
+                resolved_device is None
+                and (device_requested == "auto" or device_requested.startswith("cuda"))
+                and torch.cuda.is_available()
+            )
         ):
             release_cuda_memory(resolved_device)

@@ -66,6 +66,48 @@ def _load_grid_payload(grid_path: str) -> tuple[np.ndarray, float]:
         return np.array([], dtype=np.float64), 1.0
     return np.asarray(data[:, 3], dtype=np.float64), float(compute_delta_v(data))
 
+def _snci_from_attractive(attractive: np.ndarray, delta_v: float) -> float:
+    if attractive.size == 0:
+        return 0.0
+    return float(np.sum(-attractive * delta_v))
+
+
+def _nci_statistics_from_attractive(attractive: np.ndarray) -> dict:
+    stats = {'f6': 0, 'f7': 0.0, 'f8': 0.0, 'f9': 0.0}
+    if attractive.size == 0:
+        return stats
+
+    stats['f6'] = int(attractive.size)
+    stats['f7'] = float(np.mean(attractive))
+    stats['f8'] = float(np.std(attractive))
+    from scipy.stats import skew
+    stats['f9'] = float(skew(attractive))
+    return stats
+
+
+def compute_snci_and_statistics(grid_path: str) -> tuple[float, dict]:
+    """Computes SNCI and the f6-f9 statistics from a single grid-payload load.
+
+    Combines what used to be two independent calls (``compute_snci`` and
+    ``compute_nci_statistics``), each of which loaded and parsed the same
+    grid file on its own. For an NPZ grid this is a real, avoidable disk
+    read + array reconstruction repeated per molecule; this function loads
+    the payload once and derives both results from it.
+    """
+    stats = {'f6': 0, 'f7': 0.0, 'f8': 0.0, 'f9': 0.0}
+
+    if not os.path.exists(grid_path):
+        logging.warning(f"Grid file not found: {grid_path}")
+        return 0.0, stats
+
+    sl2rho, delta_v = _load_grid_payload(grid_path)
+    if sl2rho.size == 0:
+        return 0.0, stats
+
+    attractive = sl2rho[sl2rho < 0.0]
+    return _snci_from_attractive(attractive, delta_v), _nci_statistics_from_attractive(attractive)
+
+
 def compute_snci(grid_path: str) -> float:
     """
     Computes SNCI from grid file.
@@ -83,18 +125,14 @@ def compute_snci(grid_path: str) -> float:
         return 0.0
 
     attractive = sl2rho[sl2rho < 0.0]
-    if attractive.size == 0:
-        return 0.0
-
-    snci = np.sum(-attractive * delta_v)
-    return float(snci)
+    return _snci_from_attractive(attractive, delta_v)
 
 def compute_nci_statistics(grid_path: str) -> dict:
     """Computes f6-f9 statistics for attractive points."""
     stats = {
         'f6': 0, 'f7': 0.0, 'f8': 0.0, 'f9': 0.0
     }
-    
+
     if not os.path.exists(grid_path):
         return stats
 
@@ -103,13 +141,4 @@ def compute_nci_statistics(grid_path: str) -> dict:
         return stats
 
     attractive = sl2rho[sl2rho < 0.0]
-    if attractive.size == 0:
-        return stats
-
-    stats['f6'] = int(attractive.size)
-    stats['f7'] = float(np.mean(attractive))
-    stats['f8'] = float(np.std(attractive))
-    from scipy.stats import skew
-    stats['f9'] = float(skew(attractive))
-
-    return stats
+    return _nci_statistics_from_attractive(attractive)

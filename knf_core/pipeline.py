@@ -267,6 +267,7 @@ class KNFPipeline:
         molden_file: str,
         final_grid_binary_path: str,
         final_grid_text_path: str,
+        prefetched_wavefunction=None,
     ) -> dict:
         from .nci_torch import get_nci_router, is_cuda_oom_error, release_cuda_memory, run_nci_torch
 
@@ -299,6 +300,7 @@ class KNFPipeline:
                     output_units="bohr",
                     apply_primitive_normalization=self.nci_apply_primitive_norm,
                     cpu_threads=packet.cpu_threads,
+                    wavefunction=prefetched_wavefunction,
                 )
                 attempt_record["status"] = "success"
                 router.report_success(packet)
@@ -551,6 +553,7 @@ class KNFPipeline:
                     self.base_name,
                     f5_unavailable_reason or "not present in xtb.log",
                 )
+            prefetched_wavefunction = None
             if self.wbo_mode == "native":
                 wbo_native = xtb.compute_wbo_from_molden_details(
                     molden_file,
@@ -559,6 +562,13 @@ class KNFPipeline:
                 )
                 f3 = wbo_native["max_inter_wbo"]
                 wbo_max_global = wbo_native["max_wbo_global"]
+                # compute_wbo_from_molden_details always parses with
+                # apply_primitive_normalization=False; only hand this parsed
+                # wavefunction to the NCI stage if it would have parsed the
+                # same molden file the same way, so the NCI grid stage can
+                # skip re-parsing it (see run_post_nci_stage).
+                if self.nci_backend == "torch" and not self.nci_apply_primitive_norm:
+                    prefetched_wavefunction = wbo_native.get("wavefunction")
             elif self.wbo_mode == "xtb":
                 f3 = xtb.parse_interfragment_wbo(wbo_file, fragments, xtb_log_path=xtb_log)
                 wbo_max_global = xtb.parse_max_wbo(wbo_file, xtb_log_path=xtb_log)
@@ -663,6 +673,7 @@ class KNFPipeline:
             "xtb_sp_include_esp": bool(xtb_include_esp),
             "xtb_sp_include_hess": not self.sp_only,
             "xtb_geometry_file": sp_geometry,
+            "prefetched_wavefunction": prefetched_wavefunction,
         }
 
     def run_post_nci_stage(self, context: dict):
@@ -720,6 +731,7 @@ class KNFPipeline:
                     molden_file=molden_file,
                     final_grid_binary_path=final_grid_binary_path,
                     final_grid_text_path=final_grid_text_path,
+                    prefetched_wavefunction=context.get("prefetched_wavefunction"),
                 )
                 nci_success = os.path.exists(final_grid_binary_path)
                 if not nci_success:
@@ -743,8 +755,7 @@ class KNFPipeline:
         snci_val = 0.0
         if nci_success and os.path.exists(nci_data_path):
             try:
-                snci_val = snci.compute_snci(nci_data_path)
-                nci_stats = snci.compute_nci_statistics(nci_data_path)
+                snci_val, nci_stats = snci.compute_snci_and_statistics(nci_data_path)
                 f6 = nci_stats['f6']
                 f7 = nci_stats['f7']
                 f8 = nci_stats['f8']

@@ -6,12 +6,24 @@ import subprocess
 import threading
 import time
 import logging
+from contextlib import nullcontext
 from typing import Callable
 
 from . import utils
+from .engine.gpu import GPU_DEVICE_LOCK
 
 
 XtbProgressCallback = Callable[[dict], None]
+
+
+def _gpu_guard(active: bool):
+    """GPU_DEVICE_LOCK while an xtbx --gpu subprocess runs, else a no-op.
+
+    Keeps CPU-routed xTB calls (the common case for batches of small
+    molecules, per engine.xtb_routing) from ever touching the lock, so only
+    genuine GPU use is serialized against the NCI-torch CUDA stage.
+    """
+    return GPU_DEVICE_LOCK if active else nullcontext()
 
 _FLOAT_RE = r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[Ee][-+]?\d+)?"
 _CYCLE_WORD_RE = re.compile(r"\b(?:cycle|iter(?:ation)?)\s*[:=]?\s*(\d+)\b", re.IGNORECASE)
@@ -404,35 +416,37 @@ def run_xtb_opt(
         '--cycles',
         '50',
     ]
-    if force_gpu and (xtb_cmd or "").strip().lower() == "xtbx":
+    use_gpu = bool(force_gpu and (xtb_cmd or "").strip().lower() == "xtbx")
+    if use_gpu:
         cmd.append('--gpu')
     cmd.extend(_solvent_args(use_water))
     cmd.extend(['--charge', str(charge), '--uhf', str(uhf)])
 
     logging.info(f"Wrapper Executing xTB Opt: {cmd} in {cwd}")
     xtb_opt_log = os.path.join(cwd, 'xtb_opt.log')
-    if progress_callback is None:
-        with open(xtb_opt_log, 'w', encoding='utf-8', errors='replace') as log:
-            result = subprocess.run(
+    with _gpu_guard(use_gpu):
+        if progress_callback is None:
+            with open(xtb_opt_log, 'w', encoding='utf-8', errors='replace') as log:
+                result = subprocess.run(
+                    cmd,
+                    cwd=cwd,
+                    stdout=log,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    errors='replace',
+                    check=False,
+                )
+            return_code = result.returncode
+        else:
+            return_code = _run_xtb_streaming(
                 cmd,
                 cwd=cwd,
-                stdout=log,
-                stderr=subprocess.STDOUT,
-                text=True,
-                errors='replace',
-                check=False,
+                log_path=xtb_opt_log,
+                progress_callback=progress_callback,
+                stage="opt",
+                launcher=(xtb_cmd or "xtb").strip().lower(),
+                use_gpu=use_gpu,
             )
-        return_code = result.returncode
-    else:
-        return_code = _run_xtb_streaming(
-            cmd,
-            cwd=cwd,
-            log_path=xtb_opt_log,
-            progress_callback=progress_callback,
-            stage="opt",
-            launcher=(xtb_cmd or "xtb").strip().lower(),
-            use_gpu=bool(force_gpu and (xtb_cmd or "").strip().lower() == "xtbx"),
-        )
 
     output = os.path.join(cwd, 'xtbopt.xyz')
     if return_code != 0:
@@ -470,31 +484,33 @@ def run_xtb_sp(
     if include_hess:
         cmd.append('--hess')
     cmd.append('--wbo')
-    if force_gpu and (xtb_cmd or "").strip().lower() == "xtbx":
+    use_gpu = bool(force_gpu and (xtb_cmd or "").strip().lower() == "xtbx")
+    if use_gpu:
         cmd.append('--gpu')
     cmd.extend(_solvent_args(use_water))
     cmd.extend(['--charge', str(charge), '--uhf', str(uhf)])
-    
+
     logging.info(f"Wrapper Executing xTB SP: {cmd} in {cwd}")
 
     xtb_log = os.path.join(cwd, 'xtb.log')
-    if progress_callback is None:
-        with open(xtb_log, 'w', encoding='utf-8', errors='replace') as log:
-            try:
-                subprocess.run(cmd, cwd=cwd, stdout=log, stderr=subprocess.STDOUT, check=True)
-            except subprocess.CalledProcessError as e:
-                logging.error(f"Command failed with {e.returncode}. Check xtb.log in {cwd}")
-                raise e
-    else:
-        return_code = _run_xtb_streaming(
-            cmd,
-            cwd=cwd,
-            log_path=xtb_log,
-            progress_callback=progress_callback,
-            stage="sp",
-            launcher=(xtb_cmd or "xtb").strip().lower(),
-            use_gpu=bool(force_gpu and (xtb_cmd or "").strip().lower() == "xtbx"),
-        )
-        if return_code != 0:
-            logging.error(f"Command failed with {return_code}. Check xtb.log in {cwd}")
+    with _gpu_guard(use_gpu):
+        if progress_callback is None:
+            with open(xtb_log, 'w', encoding='utf-8', errors='replace') as log:
+                try:
+                    subprocess.run(cmd, cwd=cwd, stdout=log, stderr=subprocess.STDOUT, check=True)
+                except subprocess.CalledProcessError as e:
+                    logging.error(f"Command failed with {e.returncode}. Check xtb.log in {cwd}")
+                    raise e
+        else:
+            return_code = _run_xtb_streaming(
+                cmd,
+                cwd=cwd,
+                log_path=xtb_log,
+                progress_callback=progress_callback,
+                stage="sp",
+                launcher=(xtb_cmd or "xtb").strip().lower(),
+                use_gpu=use_gpu,
+            )
+            if return_code != 0:
+                logging.error(f"Command failed with {return_code}. Check xtb.log in {cwd}")
             raise subprocess.CalledProcessError(return_code, cmd)
