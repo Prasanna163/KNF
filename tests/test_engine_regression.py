@@ -224,6 +224,23 @@ def test_xtb_streaming_progress_writes_log_and_emits_events(tmp_path):
     assert "Energy -1.234 Eh" in output_events[-1]["message"]
 
 
+def test_xtb_sp_streaming_success_does_not_raise(monkeypatch, tmp_path):
+    """A successful streamed SP run must be accepted like the non-streamed path."""
+    xyz = _write_xyz(tmp_path / "input.xyz")
+    calls = []
+
+    def fake_streaming(cmd, **kwargs):
+        calls.append((list(cmd), kwargs))
+        return 0
+
+    monkeypatch.setattr(wrapper, "_run_xtb_streaming", fake_streaming)
+
+    wrapper.run_xtb_sp(str(xyz), progress_callback=lambda event: None)
+
+    assert len(calls) == 1
+    assert calls[0][1]["stage"] == "sp"
+
+
 def test_xtb_progress_parser_reads_cycle_table_energy():
     payload = wrapper._parse_xtb_progress_line("   12     -1493.782345     0.000123     0.00456")
     assert payload["cycle"] == 12

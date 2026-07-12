@@ -513,4 +513,4 @@ def run_xtb_sp(
             )
             if return_code != 0:
                 logging.error(f"Command failed with {return_code}. Check xtb.log in {cwd}")
-            raise subprocess.CalledProcessError(return_code, cmd)
+                raise subprocess.CalledProcessError(return_code, cmd)
