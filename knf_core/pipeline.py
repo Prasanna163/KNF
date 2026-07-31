@@ -41,7 +41,7 @@ class KNFPipeline:
         nci_apply_primitive_norm: bool = False,
         scdi_var_min: float = None,
         scdi_var_max: float = None,
-        wbo_mode: str = "native",
+        wbo_mode: str = "xtb",
         preopt_engine: str = "geoinit",
         xtb_engine: str = "xtbx",
         xtb_gpu_atom_cutoff: int = 350,
@@ -49,6 +49,7 @@ class KNFPipeline:
         xtb_explicit_gpu: bool = False,
         xtb_batch_size: int = 1,
         sp_only: bool = False,
+        seed_contact: bool = False,
         progress_callback=None,
     ):
         self.input_file = utils.resolve_artifacted_path(input_file)
@@ -74,7 +75,7 @@ class KNFPipeline:
         self.nci_apply_primitive_norm = bool(nci_apply_primitive_norm)
         self.scdi_var_min = scdi_var_min
         self.scdi_var_max = scdi_var_max
-        self.wbo_mode = (wbo_mode or "native").strip().lower()
+        self.wbo_mode = (wbo_mode or "xtb").strip().lower()
         self.preopt_engine = (preopt_engine or "geoinit").strip().lower()
         self.xtb_engine = (xtb_engine or "xtbx").strip().lower()
         self.xtb_gpu_atom_cutoff = int(xtb_gpu_atom_cutoff)
@@ -84,6 +85,7 @@ class KNFPipeline:
         # Records each xTB stage's routing decision for logging + knf.json metadata.
         self.xtb_routing_log: list[dict] = []
         self.sp_only = bool(sp_only)
+        self.seed_contact = bool(seed_contact)
         self.progress_callback = progress_callback
         self.stage_timings_seconds: dict[str, float] = {}
         self._active_stage_name: str | None = None
@@ -362,7 +364,7 @@ class KNFPipeline:
         self.setup_directories()
 
         self._stage(1, "Geometry")
-        target_xyz = converter.ensure_xyz(self.input_file, self.input_dir)
+        target_xyz = converter.ensure_xyz(self.input_file, self.input_dir, force=self.force)
 
 
         mol = geometry.load_molecule(target_xyz)
@@ -391,10 +393,19 @@ class KNFPipeline:
                 hydration_fragment_diagnostics.get("water_atom_count"),
             )
 
-        # Promote intermolecular contact for 2-fragment donor/acceptor systems.
-        # Explicit hydration clusters must retain their supplied coordinates.
-        if len(fragments) == 2 and not self.hydration_fragment_mode:
+        # Contact seeding is an explicit geometry-changing operation. Strict
+        # single-point mode always preserves the supplied coordinates.
+        contact_seed_info = {
+            "requested": bool(self.seed_contact),
+            "applied": False,
+            "reason": "not_requested",
+        }
+        if self.sp_only and self.seed_contact:
+            contact_seed_info["reason"] = "disabled_by_strict_sp"
+            logging.info("Contact seeding disabled because strict --sp mode is active.")
+        elif self.seed_contact and len(fragments) == 2 and not self.hydration_fragment_mode:
             hb_seed = geometry.promote_hbond_interaction(mol, fragments[0], fragments[1])
+            contact_seed_info = {"requested": True, **hb_seed}
             if hb_seed.get("applied"):
                 logging.info(
                     "Applied H-bond interaction seeding: D=%s H=%s A=%s",
@@ -404,6 +415,12 @@ class KNFPipeline:
                 )
             else:
                 logging.info("H-bond interaction seeding skipped: %s", hb_seed.get("reason"))
+        elif self.seed_contact:
+            contact_seed_info["reason"] = (
+                "hydration_coordinates_preserved"
+                if self.hydration_fragment_mode
+                else "requires_two_fragments"
+            )
         pair_indices = None
 
         if len(fragments) == 1:
@@ -443,8 +460,14 @@ class KNFPipeline:
         optimized_xyz = os.path.join(self.results_dir, 'xtbopt.xyz')
         work_xyz = os.path.join(self.results_dir, 'input.xyz')
         if not os.path.exists(work_xyz) or self.force:
-            # Persist potentially re-oriented fragment geometry for downstream UFF/xTB.
-            geometry.write_xyz(mol, work_xyz)
+            if self.sp_only:
+                # Strict SP must preserve the normalized Cartesian artifact
+                # byte-for-byte; routing it through RDKit's XYZ writer would
+                # round coordinates to six decimal places.
+                shutil.copyfile(target_xyz, work_xyz)
+            else:
+                # Persist either the supplied geometry or the explicitly seeded geometry.
+                geometry.write_xyz(mol, work_xyz)
 
         xtb_ready, xtb_missing = self._xtb_artifacts_ready()
         if xtb_ready and not self.force:
@@ -662,6 +685,12 @@ class KNFPipeline:
             "wbo_overlap_model": wbo_native["overlap_model"],
             "wbo_native_n_ao": wbo_native["n_ao"],
             "wbo_mode": self.wbo_mode,
+            "f3_definition": (
+                "parsed_xtb_interfragment_wiberg_bond_order"
+                if self.wbo_mode == "xtb"
+                else "identity_overlap_interfragment_density_coupling"
+            ),
+            "f3_status": "production" if self.wbo_mode == "xtb" else "experimental_approximate",
             "molden_file": molden_file,
             "cosmo_file": cosmo_file,
             "pair_indices": pair_indices,
@@ -670,6 +699,7 @@ class KNFPipeline:
             "hydration_fragment_mode": bool(self.hydration_fragment_mode),
             "hydration_fragment_diagnostics": hydration_fragment_diagnostics,
             "xtb_sp_only": self.sp_only,
+            "contact_seed": contact_seed_info,
             "xtb_sp_include_esp": bool(xtb_include_esp),
             "xtb_sp_include_hess": not self.sp_only,
             "xtb_geometry_file": sp_geometry,
@@ -698,6 +728,8 @@ class KNFPipeline:
         wbo_overlap_model = context.get("wbo_overlap_model")
         wbo_native_n_ao = context.get("wbo_native_n_ao")
         wbo_mode = context.get("wbo_mode")
+        f3_definition = context.get("f3_definition")
+        f3_status = context.get("f3_status")
         molden_file = context["molden_file"]
         cosmo_file = context["cosmo_file"]
         pair_indices = context["pair_indices"]
@@ -706,6 +738,7 @@ class KNFPipeline:
         hydration_fragment_mode = bool(context.get("hydration_fragment_mode", False))
         hydration_fragment_diagnostics = context.get("hydration_fragment_diagnostics") or {}
         xtb_sp_only = bool(context.get("xtb_sp_only", False))
+        contact_seed = context.get("contact_seed") or {}
         xtb_geometry_file = context.get("xtb_geometry_file")
 
         nci_grid_file = os.path.join(self.results_dir, 'output.txt')
@@ -763,7 +796,7 @@ class KNFPipeline:
             except Exception as e:
                 logging.error(f"SNCI computation failed: {e}")
 
-        scdi_var = 0.0
+        scdi_var = None
         scdi_value = None
         if cosmo_file:
             try:
@@ -810,6 +843,8 @@ class KNFPipeline:
                 'wbo_overlap_model': wbo_overlap_model,
                 'wbo_native_n_ao': wbo_native_n_ao,
                 'wbo_mode': wbo_mode,
+                'f3_definition': f3_definition,
+                'f3_status': f3_status,
                 'preopt_engine': self.preopt_engine,
                 'xtb_engine': self.xtb_engine,
                 'xtb_gpu_available': self.xtb_gpu_available,
@@ -817,6 +852,7 @@ class KNFPipeline:
                 'xtb_batch_size': self.xtb_batch_size,
                 'xtb_routing': list(self.xtb_routing_log),
                 'xtb_sp_only': xtb_sp_only,
+                'contact_seed': contact_seed,
                 'xtb_sp_include_esp': bool(context.get("xtb_sp_include_esp", False)),
                 'xtb_sp_include_hess': bool(context.get("xtb_sp_include_hess", not xtb_sp_only)),
                 'xtb_geometry_file': xtb_geometry_file,

@@ -219,9 +219,12 @@ def cli(
     scdi_var_min: float | None = typer.Option(None, "--scdi-var-min", help="Fixed global Var_min for SCDI normalization."),
     scdi_var_max: float | None = typer.Option(None, "--scdi-var-max", help="Fixed global Var_max for SCDI normalization."),
     wbo_mode: str = typer.Option(
-        "native",
+        "xtb",
         "--wbo-mode",
-        help="WBO computation mode: native (default, from molden.input) or xtb (from xTB wbo file).",
+        help=(
+            "f3 source: xtb (production default; parsed interfragment Wiberg bond order) "
+            "or native (experimental identity-overlap density-coupling estimate)."
+        ),
     ),
     preopt: str = typer.Option(
         "geoinit",
@@ -250,7 +253,19 @@ def cli(
     sp: bool = typer.Option(
         False,
         "--sp",
-        help="Single-point-only xTB mode: skip pre-optimisation and geometry optimisation, then run descriptor SP on the input geometry.",
+        help=(
+            "Strict single-point mode: preserve the supplied coordinates exactly, skip "
+            "contact seeding, pre-optimisation, and geometry optimisation."
+        ),
+        rich_help_panel=XTB_HELP_PANEL,
+    ),
+    seed_contact: bool = typer.Option(
+        False,
+        "--seed-contact",
+        help=(
+            "Opt in to donor-acceptor contact seeding before xTB. This can translate "
+            "fragment coordinates and is never implied by --sp."
+        ),
         rich_help_panel=XTB_HELP_PANEL,
     ),
     refresh_first_run: bool = typer.Option(
@@ -311,6 +326,7 @@ def cli(
         xtb_engine=xtb_engine,
         xtb_gpu_atoms=xtb_gpu_atoms,
         sp=sp,
+        seed_contact=seed_contact,
         refresh_first_run=refresh_first_run,
         multiwfn_path=multiwfn_path,
         knf=knf,

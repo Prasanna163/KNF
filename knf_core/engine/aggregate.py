@@ -137,6 +137,7 @@ def write_batch_aggregate_json(
         + [f"f{i}" for i in range(1, 10)]
         + [
             "f2_defined",
+            "f3_protocol",
             "KUID_raw",
             "KUID",
             "KUID_Cluster",
@@ -163,6 +164,10 @@ def write_batch_aggregate_json(
             row = {
                 "File": entry.get("input_file_name", ""),
                 "f2_defined": (metadata or {}).get("f2_defined", ""),
+                "f3_protocol": (metadata or {}).get(
+                    "f3_definition",
+                    (metadata or {}).get("wbo_mode", ""),
+                ),
                 "KUID_raw": entry.get("KUID_raw", ""),
                 "KUID": entry.get("KUID", ""),
                 "KUID_Cluster": entry.get("KUID_Cluster", ""),

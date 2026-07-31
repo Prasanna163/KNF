@@ -6,7 +6,7 @@ NCIForge is a physics-informed descriptor pipeline for non-covalent interactions
 It computes KNF descriptors, SNCI/SCDI metrics, and KUID-family indexing artifacts
 from molecular structure files using xTB + NCI backend + KNF post-processing.
 
-Current package version: `1.0.8`  
+Current package version: `1.0.9`
 Release milestone tag: `v1`
 
 ## What It Covers

@@ -46,11 +46,12 @@ class RunOptions:
     nci_apply_primitive_norm: bool = False
     scdi_var_min: float | None = None
     scdi_var_max: float | None = None
-    wbo_mode: Literal["native", "xtb"] = "native"
+    wbo_mode: Literal["native", "xtb"] = "xtb"
     preopt: Literal["uff", "geoinit"] = "geoinit"
     xtb_engine: Literal["xtb", "xtbx", "auto"] = "xtbx"
     xtb_gpu_atoms: int = 350
     sp: bool = False
+    seed_contact: bool = False
     refresh_first_run: bool = False
     multiwfn_path: str | None = None
     knf: bool = False

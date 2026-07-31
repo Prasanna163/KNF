@@ -107,6 +107,14 @@ def _build_entry_from_csv_row(source_batch: str, csv_path: str, row: dict) -> tu
             metadata["f2_defined"] = int(f2_defined_val)
         else:
             metadata["f2_defined"] = f2_defined_raw
+    f3_protocol = str(row.get("f3_protocol") or "").strip()
+    if f3_protocol:
+        if f3_protocol == "xtb":
+            metadata["wbo_mode"] = "xtb"
+        elif f3_protocol == "native":
+            metadata["wbo_mode"] = "native"
+        else:
+            metadata["f3_definition"] = f3_protocol
 
     knf_payload = {
         "SNCI": _safe_float(row.get("SNCI")),
@@ -248,6 +256,7 @@ def _write_combined_batch_outputs(
         "f8",
         "f9",
         "f2_defined",
+        "f3_protocol",
         "KUID_raw",
         "KUID",
         "KUID_Cluster",
@@ -274,6 +283,10 @@ def _write_combined_batch_outputs(
                 "source_batch": entry.get("source_batch", ""),
                 "File": entry.get("input_file_name", ""),
                 "f2_defined": (metadata or {}).get("f2_defined", ""),
+                "f3_protocol": (metadata or {}).get(
+                    "f3_definition",
+                    (metadata or {}).get("wbo_mode", ""),
+                ),
                 "KUID_raw": entry.get("KUID_raw", ""),
                 "KUID": entry.get("KUID", ""),
                 "KUID_Cluster": entry.get("KUID_Cluster", ""),

@@ -545,11 +545,12 @@ def test_engine_run_options_match_current_cli_defaults():
         "nci_apply_primitive_norm": False,
         "scdi_var_min": None,
         "scdi_var_max": None,
-        "wbo_mode": "native",
+        "wbo_mode": "xtb",
         "preopt": "geoinit",
         "xtb_engine": "xtbx",
         "xtb_gpu_atoms": 350,
         "sp": False,
+        "seed_contact": False,
         "refresh_first_run": False,
         "multiwfn_path": None,
         "knf": False,
@@ -973,6 +974,9 @@ def test_sp_only_pipeline_skips_preopt_and_xtb_optimization(monkeypatch, tmp_pat
     def fail_opt(*args, **kwargs):
         raise AssertionError("xTB optimization should not run in SP-only mode")
 
+    def fail_contact_seed(*args, **kwargs):
+        raise AssertionError("contact seeding should not run in strict SP-only mode")
+
     def fake_sp(
         filepath,
         charge=0,
@@ -993,6 +997,7 @@ def test_sp_only_pipeline_skips_preopt_and_xtb_optimization(monkeypatch, tmp_pat
     monkeypatch.setattr(wrapper, "run_preopt", fail_preopt)
     monkeypatch.setattr(wrapper, "run_xtb_opt", fail_opt)
     monkeypatch.setattr(wrapper, "run_xtb_sp", fake_sp)
+    monkeypatch.setattr("knf_core.pipeline.geometry.promote_hbond_interaction", fail_contact_seed)
     monkeypatch.setattr(KNFPipeline, "_resolve_xtb_cmd", lambda self, path: "xtb")
     monkeypatch.setattr(
         "knf_core.pipeline.xtb.parse_xtb_log",
@@ -1020,6 +1025,8 @@ def test_sp_only_pipeline_skips_preopt_and_xtb_optimization(monkeypatch, tmp_pat
         force=True,
         xtb_engine="xtb",
         sp_only=True,
+        seed_contact=True,
+        wbo_mode="native",
     )
     context = pipe.run_pre_nci_stage()
 
@@ -1028,7 +1035,18 @@ def test_sp_only_pipeline_skips_preopt_and_xtb_optimization(monkeypatch, tmp_pat
     assert context["xtb_sp_include_hess"] is False
     assert context["xtb_sp_include_esp"] is False
     assert Path(context["xtb_geometry_file"]).name == "input.xyz"
+    assert context["contact_seed"] == {
+        "requested": True,
+        "applied": False,
+        "reason": "disabled_by_strict_sp",
+    }
     assert not (Path(pipe.results_dir) / "xtbopt.xyz").exists()
+
+    def xyz_coordinates(path):
+        lines = Path(path).read_text(encoding="utf-8").splitlines()[2:]
+        return [[float(value) for value in line.split()[1:4]] for line in lines if line.strip()]
+
+    assert xyz_coordinates(context["xtb_geometry_file"]) == xyz_coordinates(xyz)
 
 
 def test_xtb_sp_can_skip_esp_and_hessian(monkeypatch, tmp_path):
@@ -1209,3 +1227,34 @@ def test_pipeline_end_to_end_geoinit_xtb(tmp_path):
         nci_device="cpu",
     ).run()
     _assert_valid_knf_json(results)
+
+
+@pytest.mark.skipif(
+    not (_RUN_XTB and _XTB_AVAILABLE),
+    reason="set KNF_RUN_XTB_TESTS=1 and have xtb on PATH",
+)
+def test_real_strict_sp_preserves_supplied_coordinates_and_uses_xtb_wbo(tmp_path):
+    xyz = _write_xyz(
+        tmp_path / "strict_sp_water_dimer.xyz",
+        WATER_DIMER_XYZ.replace("-1.551007", "-1.551007123456"),
+    )
+    pipeline = KNFPipeline(
+        input_file=xyz,
+        output_root=str(tmp_path / "ResultsStrictSP"),
+        force=True,
+        xtb_engine="xtb",
+        sp_only=True,
+    )
+    context = pipeline.run_pre_nci_stage()
+
+    def coordinates(path):
+        rows = Path(path).read_text(encoding="utf-8").splitlines()[2:]
+        return [[float(value) for value in row.split()[1:4]] for row in rows if row.strip()]
+
+    assert Path(context["xtb_geometry_file"]).read_bytes() == Path(xyz).read_bytes()
+    assert coordinates(context["xtb_geometry_file"]) == coordinates(xyz)
+    assert context["xtb_sp_only"] is True
+    assert context["contact_seed"]["applied"] is False
+    assert context["wbo_mode"] == "xtb"
+    assert context["f3_definition"] == "parsed_xtb_interfragment_wiberg_bond_order"
+    assert context["f3_status"] == "production"

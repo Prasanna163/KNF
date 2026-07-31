@@ -2,7 +2,7 @@ import os
 import logging
 from .utils import run_subprocess, normalized_extension, resolve_external_tool_command
 
-def ensure_xyz(input_path: str, output_dir: str) -> str:
+def ensure_xyz(input_path: str, output_dir: str, force: bool = False) -> str:
     """
     Ensures the input file is in XYZ format.
     If it's already .xyz, returns the path (copied to output_dir).
@@ -16,7 +16,7 @@ def ensure_xyz(input_path: str, output_dir: str) -> str:
     
     if ext == '.xyz':
         # Just copy if it's not already there
-        if not os.path.exists(target_xyz):
+        if force or not os.path.exists(target_xyz):
             # We assume the caller handles copying if needed, 
             # but here we can ensure it exists in output_dir
             # For simplicity, if input is already .xyz and matches target, done.

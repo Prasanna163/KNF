@@ -69,13 +69,14 @@ class RunOptions(BaseModel):
     nci_apply_primitive_norm: bool = False
     scdi_var_min: Optional[float] = None
     scdi_var_max: Optional[float] = None
-    wbo_mode: Literal["native", "xtb"] = "native"
+    wbo_mode: Literal["native", "xtb"] = "xtb"
     preopt: Literal["uff", "geoinit"] = "geoinit"
     xtb_engine: Literal["xtb", "xtbx", "auto"] = Field(
         default_factory=lambda: os.environ.get("NCIFORGE_DEFAULT_XTB_ENGINE", "xtbx")
     )
     xtb_gpu_atoms: int = 350
     sp: bool = False
+    seed_contact: bool = False
     output_dir: Optional[str] = None
     multiwfn_path: Optional[str] = None
 
@@ -132,6 +133,7 @@ def _to_engine_options(options: RunOptions) -> EngineRunOptions:
         xtb_engine=options.xtb_engine,
         xtb_gpu_atoms=options.xtb_gpu_atoms,
         sp=bool(options.sp),
+        seed_contact=bool(options.seed_contact),
         output_dir=options.output_dir,
         multiwfn_path=options.multiwfn_path,
     )

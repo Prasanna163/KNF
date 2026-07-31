@@ -125,8 +125,6 @@ def _build_knf_result_from_entry(entry: dict):
 
     scdi_val = _safe_float(knf_data.get("SCDI"))
     scdi_var = _safe_float(knf_data.get("SCDI_variance"))
-    if scdi_var is None:
-        scdi_var = 0.0
 
     metadata = knf_data.get("metadata")
     if not isinstance(metadata, dict):
@@ -135,10 +133,61 @@ def _build_knf_result_from_entry(entry: dict):
     return knf_vector.KNFResult(
         SNCI=float(snci_val),
         SCDI=scdi_val,
-        SCDI_variance=float(scdi_var),
+        SCDI_variance=None if scdi_var is None else float(scdi_var),
         KNF_vector=[float(v) for v in vector],
         metadata=metadata,
     )
+
+
+def _f3_protocol_from_entry(entry: dict) -> str:
+    knf_data = entry.get("knf") or {}
+    metadata = knf_data.get("metadata") if isinstance(knf_data, dict) else None
+    if not isinstance(metadata, dict):
+        return "unknown"
+    definition = str(metadata.get("f3_definition") or "").strip()
+    if definition:
+        return definition
+    mode = str(metadata.get("wbo_mode") or "").strip().lower()
+    if mode == "xtb":
+        return "parsed_xtb_interfragment_wiberg_bond_order"
+    if mode == "native":
+        return "identity_overlap_interfragment_density_coupling"
+    return "unknown"
+
+
+def _require_single_f3_protocol(entries: list[dict]) -> str:
+    protocols = {_f3_protocol_from_entry(entry) for entry in entries}
+    known = {value for value in protocols if value != "unknown"}
+    if len(known) > 1:
+        raise ValueError(
+            "KUID calibration refused: KNF rows mix incompatible f3 definitions "
+            f"({', '.join(sorted(known))}). Build separate calibrations per f3 protocol."
+        )
+    if known and "unknown" in protocols:
+        raise ValueError(
+            "KUID calibration refused: some KNF rows lack f3 protocol metadata while "
+            "others declare a protocol. Backfill metadata or calibrate the sets separately."
+        )
+    return next(iter(known), "unknown")
+
+
+def _require_single_csv_f3_protocol(rows: list[dict]) -> str:
+    values = {str(row.get("f3_protocol") or "").strip() or "unknown" for row in rows}
+    canonical = set()
+    for value in values:
+        if value == "xtb":
+            canonical.add("parsed_xtb_interfragment_wiberg_bond_order")
+        elif value == "native":
+            canonical.add("identity_overlap_interfragment_density_coupling")
+        else:
+            canonical.add(value)
+    known = {value for value in canonical if value != "unknown"}
+    if len(known) > 1 or (known and "unknown" in canonical):
+        raise ValueError(
+            "KUID calibration refused: source CSV rows do not share one declared f3 "
+            "protocol. Calibrate each protocol separately."
+        )
+    return next(iter(known), "unknown")
 
 
 def _build_kuid_section(calibration: dict, encoded: dict) -> dict:
@@ -154,6 +203,7 @@ def _build_kuid_section(calibration: dict, encoded: dict) -> dict:
         "cluster_display": encoded.get("cluster_display", ""),
         "bins": encoded["bins"],
         "normalized": encoded["normalized"],
+        "f3_protocol": calibration.get("f3_protocol"),
     }
 
 
@@ -170,6 +220,7 @@ def _build_kuid_intensive_section(calibration: dict, encoded: dict) -> dict:
         "cluster_display": encoded.get("cluster_display", ""),
         "bins": encoded["bins"],
         "normalized": encoded["normalized"],
+        "f3_protocol": calibration.get("f3_protocol"),
     }
 
 
@@ -689,6 +740,7 @@ def _run_kuid_for_single_result(
         }
 
     entry = {"knf": knf_payload, "result_dir": result_dir}
+    entry_f3_protocol = _f3_protocol_from_entry(entry)
     vector, f2_surrogate_needed = _extract_kuid_vector_from_entry(entry)
     if vector is None:
         return {
@@ -705,8 +757,17 @@ def _run_kuid_for_single_result(
             with open(calibration_path, "r", encoding="utf-8") as f:
                 existing = json.load(f)
             if isinstance(existing, dict):
+                existing_protocol = str(existing.get("f3_protocol") or "unknown")
+                if existing_protocol != entry_f3_protocol:
+                    raise ValueError(
+                        "Existing KUID calibration does not declare the same f3 "
+                        "protocol as this result. Use a separate results root or "
+                        "calibration file."
+                    )
                 calibration = existing
                 calibration_source = "existing"
+        except ValueError:
+            raise
         except Exception:
             calibration = None
 
@@ -714,6 +775,7 @@ def _run_kuid_for_single_result(
         calibration = kuid.build_calibration(
             [_kuid_vector_for_calibration(vector, f2_surrogate_needed)]
         )
+        calibration["f3_protocol"] = entry_f3_protocol
         calibration_payload = dict(calibration)
         calibration_payload["generated_at_utc"] = datetime.now(timezone.utc).isoformat()
         with open(calibration_path, "w", encoding="utf-8") as f:
@@ -728,6 +790,7 @@ def _run_kuid_for_single_result(
         calibration = kuid.build_calibration(
             [_kuid_vector_for_calibration(vector, f2_surrogate_needed)]
         )
+        calibration["f3_protocol"] = entry_f3_protocol
         calibration_payload = dict(calibration)
         calibration_payload["generated_at_utc"] = datetime.now(timezone.utc).isoformat()
         with open(calibration_path, "w", encoding="utf-8") as f:
@@ -822,7 +885,11 @@ def _run_kuid_only_from_existing_batch(
             "reason": "No valid KNF rows available for KUID encoding.",
         }
 
+    f3_protocol = _require_single_csv_f3_protocol(
+        [row for row, vec, _ in parsed_rows if vec is not None]
+    )
     calibration = kuid.build_calibration(calibration_vectors)
+    calibration["f3_protocol"] = f3_protocol
     calibration_payload = dict(calibration)
     calibration_payload["generated_at_utc"] = datetime.now(timezone.utc).isoformat()
     with open(calibration_path, "w", encoding="utf-8") as f:
@@ -996,7 +1063,9 @@ def _compute_kuid_payload(
             "calibration_file": None,
         }
 
+    f3_protocol = _require_single_f3_protocol([entry for entry, _, _ in encodable_rows])
     calibration = kuid.build_calibration(calibration_vectors)
+    calibration["f3_protocol"] = f3_protocol
     calibration_path = os.path.join(results_root, _final_output_name("kuid_calibration.json", water))
     calibration_payload = dict(calibration)
     calibration_payload["generated_at_utc"] = datetime.now(timezone.utc).isoformat()
@@ -1041,6 +1110,7 @@ def _compute_kuid_payload(
         "display_format": calibration.get("display_format"),
         "cluster_display_format": calibration.get("cluster_display_format"),
         "feature_bounds": calibration.get("feature_bounds"),
+        "f3_protocol": f3_protocol,
         "records_with_kuid": len(encodable_rows),
         "records_without_kuid": len(invalid_files),
         "invalid_files": invalid_files,
@@ -1079,9 +1149,11 @@ def _compute_kuid_intensive_payload(
             "calibration_file": None,
         }
 
+    f3_protocol = _require_single_f3_protocol([entry for entry, _ in valid_rows])
     calibration = kuid_intensive.build_calibration_from_feature_maps(
         [feature_map for _, feature_map in valid_rows]
     )
+    calibration["f3_protocol"] = f3_protocol
     calibration_path = os.path.join(
         results_root, _final_output_name("kuid_intensive_calibration.json", water)
     )
@@ -1125,6 +1197,7 @@ def _compute_kuid_intensive_payload(
         "display_format": calibration.get("display_format"),
         "cluster_display_format": calibration.get("cluster_display_format"),
         "feature_bounds": calibration.get("feature_bounds"),
+        "f3_protocol": f3_protocol,
         "records_with_kuid_intensive": len(valid_rows),
         "records_without_kuid_intensive": len(invalid_files),
         "invalid_files": invalid_files,

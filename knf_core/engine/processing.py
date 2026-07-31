@@ -83,7 +83,7 @@ def _build_pipeline(
         nci_apply_primitive_norm=args.nci_apply_primitive_norm,
         scdi_var_min=args.scdi_var_min,
         scdi_var_max=args.scdi_var_max,
-        wbo_mode=getattr(args, "wbo_mode", "native"),
+        wbo_mode=getattr(args, "wbo_mode", "xtb"),
         preopt_engine=getattr(args, "preopt", "geoinit"),
         xtb_engine=xtb_engine,
         xtb_gpu_atom_cutoff=getattr(args, "xtb_gpu_atoms", 350),
@@ -91,6 +91,7 @@ def _build_pipeline(
         xtb_explicit_gpu=xtb_explicit_gpu,
         xtb_batch_size=batch_size,
         sp_only=bool(getattr(args, "sp", False)),
+        seed_contact=bool(getattr(args, "seed_contact", False)),
         progress_callback=progress_callback,
     )
 

@@ -7,7 +7,7 @@ import os
 class KNFResult:
     SNCI: float
     SCDI: Optional[float]
-    SCDI_variance: float
+    SCDI_variance: Optional[float]
     KNF_vector: list[float | None]
     metadata: dict
 
@@ -54,7 +54,7 @@ def write_output_txt(filepath: str, result: KNFResult):
         f.write("KNF-Core Analysis Results\n")
         f.write("=========================\n\n")
         f.write(f"SNCI_raw:       {result.SNCI:.6f}\n")
-        f.write(f"SCDI_variance:  {result.SCDI_variance:.6f}\n\n")
+        f.write(f"SCDI_variance:  {_format_optional_float(result.SCDI_variance, 6)}\n\n")
         
         metadata = result.metadata if isinstance(result.metadata, dict) else {}
         f2_defined = metadata.get("f2_defined")
@@ -103,6 +103,7 @@ def write_knf_json(filepath: str, result: KNFResult):
             "cluster_display": kuid_info.get("cluster_display"),
             "bins": kuid_info.get("bins"),
             "normalized": kuid_info.get("normalized"),
+            "f3_protocol": kuid_info.get("f3_protocol"),
         }
     with open(filepath, 'w') as f:
         json.dump(payload, f, indent=4)

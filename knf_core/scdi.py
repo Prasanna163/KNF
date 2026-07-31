@@ -8,7 +8,7 @@ import numpy as np
 
 @dataclass
 class SCDIMetrics:
-    variance: float
+    variance: Optional[float]
     scdi: Optional[float]
 
 
@@ -131,11 +131,11 @@ def compute_scdi_metrics(
     """
     if not os.path.exists(cosmo_path):
         logging.warning("COSMO file not found: %s", cosmo_path)
-        return SCDIMetrics(variance=0.0, scdi=None)
+        return SCDIMetrics(variance=None, scdi=None)
 
     rows = _extract_segment_rows(cosmo_path)
     if not rows:
-        return SCDIMetrics(variance=0.0, scdi=None)
+        return SCDIMetrics(variance=None, scdi=None)
 
     area_idx, charge_idx = _select_columns(rows)
     areas = np.array([row[area_idx] for row in rows], dtype=float)
@@ -144,7 +144,7 @@ def compute_scdi_metrics(
     # Keep only physically valid area weights.
     mask = np.isfinite(areas) & np.isfinite(charges) & (areas > 0.0)
     if not np.any(mask):
-        return SCDIMetrics(variance=0.0, scdi=None)
+        return SCDIMetrics(variance=None, scdi=None)
 
     var_a = _compute_var_a(areas[mask], charges[mask])
     resolved_min, resolved_max = _resolve_bounds(var_min, var_max)
@@ -164,7 +164,7 @@ def compute_scdi(
     cosmo_path: str,
     var_min: Optional[float] = None,
     var_max: Optional[float] = None,
-) -> float:
+) -> Optional[float]:
     """
     Backward-compatible helper.
     Returns normalized SCDI when bounds are available; otherwise returns raw VarA.
