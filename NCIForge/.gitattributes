@@ -1,0 +1,2 @@
+nci_compare/*.txt filter=lfs diff=lfs merge=lfs -text
+nci_compare/**/*.txt filter=lfs diff=lfs merge=lfs -text

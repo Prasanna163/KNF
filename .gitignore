@@ -1,0 +1,76 @@
+# ─── Paper / Research (not for distribution) ──────────────────────────────────
+paper/
+papers/
+*.pdf
+*.docx
+
+
+# ─── Node / Frontend ──────────────────────────────────────────────────────────
+frontend/node_modules/
+frontend/dist/
+frontend/dist-electron/
+frontend/dist-installer/
+frontend/build/
+frontend/.vite/
+frontend/*.log
+frontend/npm-debug.log*
+frontend/*.tsbuildinfo
+frontend/scripts/__pycache__/
+
+# ─── Python / Backend ─────────────────────────────────────────────────────────
+NCIForge/__pycache__/
+NCIForge/**/__pycache__/
+NCIForge/*.py[cod]
+NCIForge/*.egg-info/
+NCIForge/build/
+NCIForge/dist/
+NCIForge/.eggs/
+NCIForge/*.egg
+NCIForge/.pytest_cache/
+NCIForge/htmlcov/
+NCIForge/.coverage
+NCIForge/*.log
+NCIForge/uploads/
+NCIForge/Results/
+NCIForge/tmp/
+NCIForge/tmp_build/
+NCIForge/.venv-nciforge/
+NCIForge/.venv*/
+
+# xTB scratch artifacts
+NCIForge/charges
+NCIForge/wbo
+NCIForge/xtbrestart
+NCIForge/xtbtopo.mol
+NCIForge/xtblast.xyz
+NCIForge/xtbopt.xyz
+NCIForge/xtbopt.log
+NCIForge/molden.input
+NCIForge/.xtboptok
+NCIForge/.tmp-gxtb-check*/
+NCIForge/test-*/
+NCIForge/nci_compare/
+NCIForge/output/
+
+# ─── Electron resources (large binaries — built locally) ──────────────────────
+frontend/resources/backend/server/
+frontend/resources/backend/tools/
+frontend/resources/backend/runtime/
+frontend/resources/backend/runtime-manifest.json
+frontend/resources/backend/install_cuda_torch.py
+frontend/resources/.backend-staging-*/
+frontend/.bundle-cache/
+
+# ─── Editor & OS ──────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# ─── Env files ────────────────────────────────────────────────────────────────
+.env
+.env.local
+.env.*.local
+
+# ─── Test coverage ────────────────────────────────────────────────────────────
+coverage/

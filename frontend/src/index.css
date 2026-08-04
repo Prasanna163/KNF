@@ -1,0 +1,274 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 240 10% 3.9%;
+    --foreground: 240 5% 96%;
+    --card: 240 5.9% 6%;
+    --card-foreground: 240 5% 96%;
+    --popover: 240 5.9% 5%;
+    --popover-foreground: 240 5% 96%;
+    --primary: 240 5% 90%;
+    --primary-foreground: 240 10% 3.9%;
+    --secondary: 240 3.7% 15.9%;
+    --secondary-foreground: 240 5% 96%;
+    --muted: 240 3.7% 12%;
+    --muted-foreground: 240 5% 64.9%;
+    --accent: 240 3.7% 12%;
+    --accent-foreground: 240 5% 96%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 240 3.7% 15.9%;
+    --input: 240 3.7% 12%;
+    --ring: 240 5% 64.9%;
+    --radius: 0.5rem;
+
+    --success: 142.1 70.6% 45.3%;
+    --success-foreground: 144.9 80.4% 10%;
+    --warning: 47.9 95.8% 51.2%;
+    --warning-foreground: 38 92% 10%;
+    --info: 198.6 88.7% 48.4%;
+    --info-foreground: 210 40% 98%;
+
+    --sidebar-background: 240 10% 3.9%;
+    --sidebar-foreground: 240 5% 64.9%;
+    --sidebar-primary: 240 5% 90%;
+    --sidebar-primary-foreground: 240 10% 3.9%;
+    --sidebar-accent: 240 3.7% 12%;
+    --sidebar-accent-foreground: 240 5% 96%;
+    --sidebar-border: 240 3.7% 15.9%;
+    --sidebar-ring: 240 5% 64.9%;
+
+    /* Quadrant specific professional colors */
+    --q1: 199 89% 48%;    /* Refined Sky Blue */
+    --q2: 226 70% 55%;    /* Refined Indigo */
+    --q3: 38 92% 50%;     /* Refined Amber */
+    --q4: 150 60% 40%;    /* Refined Emerald Green */
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-family: 'Inter', system-ui, sans-serif;
+  }
+  h1, h2, h3, h4, h5, h6 {
+    font-family: 'Inter', system-ui, sans-serif;
+    letter-spacing: -0.025em;
+  }
+  code, pre, .font-mono {
+    font-family: 'JetBrains Mono', monospace;
+  }
+}
+
+/* Scientific Grid background - extremely subtle */
+.bg-grid {
+  background-image:
+    linear-gradient(to right, rgba(255, 255, 255, 0.015) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(255, 255, 255, 0.015) 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+
+/* Clean background gradients (no loud cosmic colors) */
+.bg-gradient-radial {
+  background: radial-gradient(circle at 50% -20%, rgba(59, 130, 246, 0.02) 0%, transparent 70%);
+}
+
+.bg-gradient-subtle {
+  background: none;
+}
+
+/* Premium Solid Dashboard Panels */
+.glass-panel {
+  background: #121215;
+  border: 1px solid var(--border);
+}
+
+.glass-panel-heavy {
+  background: #0b0b0c;
+  border: 1px solid var(--border);
+}
+
+.border-glass {
+  border-color: var(--border);
+}
+
+/* Premium styled technical inputs */
+.glass-input {
+  background: #18181b;
+  border: 1px solid var(--border);
+  transition: all 0.15s ease;
+}
+.glass-input:focus {
+  background: #1d1d21;
+  border-color: hsl(var(--primary));
+  box-shadow: 0 0 0 1px hsl(var(--primary) / 0.3);
+}
+
+/* Premium Technical Scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #09090b;
+}
+::-webkit-scrollbar-thumb {
+  background: #27272a;
+  border-radius: 3px;
+  transition: background 0.15s ease;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #3f3f46;
+}
+
+/* Replaced glows with clean borders or subtle shadows */
+.glow-primary, .glow-q1, .glow-q2, .glow-q3, .glow-q4 {
+  box-shadow: none;
+}
+
+.card-hover-glow {
+  transition: all 0.2s ease;
+}
+.card-hover-glow:hover {
+  transform: translateY(-1px);
+  border-color: #3f3f46;
+  box-shadow: 0 4px 12px -2px rgba(0, 0, 0, 0.3);
+}
+
+/* Visual descriptor cells */
+.descriptor-bar {
+  height: 4px;
+  border-radius: 2px;
+  background: #1f1f23;
+  overflow: hidden;
+  position: relative;
+}
+.descriptor-fill {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Shimmer Loading Skeleton */
+.animate-shimmer {
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0.01) 25%,
+    rgba(255, 255, 255, 0.03) 50%,
+    rgba(255, 255, 255, 0.01) 75%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.5s infinite linear;
+}
+
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+/* Entrance Animations */
+.animate-fade-in-up {
+  animation: fade-in-up 0.4s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@keyframes fade-in-up {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-scale-in {
+  animation: scale-in 0.3s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@keyframes scale-in {
+  from {
+    opacity: 0;
+    transform: scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* Command shell logs console look */
+.terminal-console {
+  background: #09090b;
+  font-family: 'JetBrains Mono', monospace;
+  border: 1px solid var(--border);
+}
+.terminal-row {
+  line-height: 1.5;
+  border-left: 3px solid transparent;
+  padding-left: 10px;
+}
+.terminal-row.success {
+  border-left-color: hsl(var(--q4));
+}
+.terminal-row.error {
+  border-left-color: hsl(var(--destructive));
+}
+.terminal-row.command {
+  border-left-color: hsl(var(--primary));
+}
+
+/* Active pulse indicators - clean and subtle */
+.pulse-glow-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  position: relative;
+}
+.pulse-glow-dot::after {
+  content: '';
+  position: absolute;
+  top: -3px;
+  left: -3px;
+  right: -3px;
+  bottom: -3px;
+  border-radius: 50%;
+  border: 1px solid currentColor;
+  animation: pulse-ring 2s cubic-bezier(0.215, 0.61, 0.355, 1) infinite;
+  opacity: 0.5;
+}
+
+@keyframes pulse-ring {
+  0% { transform: scale(0.8); opacity: 0.8; }
+  100% { transform: scale(2.2); opacity: 0; }
+}
+
+/* Sophisticated Slate-to-White gradient for titles */
+.text-gradient {
+  background: linear-gradient(to bottom, #ffffff 40%, #a1a1aa 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* Analysis page — row slide-in animation */
+.animate-slide-in-row {
+  animation: slide-in-row 0.35s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@keyframes slide-in-row {
+  from {
+    opacity: 0;
+    transform: translateX(-12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}

@@ -1,0 +1,13 @@
+# These are large build artifacts — never commit them to git.
+# They are produced by `npm run electron:dist` before each release build.
+
+# Frozen Python backend (PyInstaller output, ~400-800 MB)
+backend/server/
+backend/runtime/
+backend/runtime-manifest.json
+backend/install_cuda_torch.py
+backend/.backend-staging-*/
+
+# Bundled external tools (xtb + obabel binaries, ~30 MB)
+# Populated by: powershell -File ../backend/NCIForge/scripts/download_tools.ps1
+backend/tools/
