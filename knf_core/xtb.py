@@ -5,6 +5,13 @@ import numpy as np
 import logging
 
 
+class MissingPolarizabilityError(ValueError):
+    """Raised when xTB completed but did not emit molecular polarizability."""
+
+
+_FLOAT_PATTERN = r"([-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[Ee][-+]?\d+)?)"
+
+
 def _is_wbo_triplet(parts: list[str]) -> bool:
     if len(parts) < 3:
         return False
@@ -198,10 +205,10 @@ def run_xtb_single_point(filepath: str, charge: int = 0, uhf: int = 0):
     with open(os.path.join(cwd, 'xtb.log'), 'w') as f:
         subprocess.run(cmd, cwd=cwd, stdout=f, stderr=subprocess.STDOUT, check=True)
 
-def parse_xtb_log(log_path: str) -> dict:
+def parse_xtb_log(log_path: str, require_polarizability: bool = True) -> dict:
     """
     Parses xTB log file for f3 (Max WBO), f4 (Dipole), f5 (Polarizability).
-    Raises ValueError if any are missing/zero.
+    Raises ValueError if required values are missing/zero.
     """
     if not os.path.exists(log_path):
         raise FileNotFoundError(f"xTB log file not found: {log_path}")
@@ -269,6 +276,15 @@ def parse_xtb_log(log_path: str) -> dict:
     # Sample: "Mol. alpha /au        :         88.522781"
     
     pol_val = None
+    # xTB may write this as "Mol. alpha /au", "Mol. alpha(0) /au",
+    # or with a Unicode alpha that is mojibaked on Windows ("Mol. Î±(0) /au").
+    m_pol_general = re.search(
+        rf"Mol\.\s+(?:alpha|[^\r\n:]*?\(0\))[^\r\n:]*?/au\s*:\s*{_FLOAT_PATTERN}",
+        content,
+        flags=re.IGNORECASE,
+    )
+    if m_pol_general:
+        pol_val = float(m_pol_general.group(1))
     # Regex for "Mol. alpha /au" OR "Mol. α(0) /au"
     # Matches: "Mol. alpha /au : 123.456" OR "Mol. α(0) /au : 123.456"
     m_pol = re.search(r"Mol\.\s+(?:alpha|α\(0\))\s+/au\s+:\s+([\d\.]+)", content)
@@ -280,7 +296,13 @@ def parse_xtb_log(log_path: str) -> dict:
              pol_val = float(m_pol2.group(1))
              
     if pol_val is None:
-        raise ValueError("Polarizability (f5) not computed in xTB run (check flags).")
+        if require_polarizability:
+            raise MissingPolarizabilityError("Polarizability (f5) not computed in xTB run (check flags).")
+        data['f5'] = None
+        data['f5_available'] = False
+        data['f5_unavailable_reason'] = "Polarizability (f5) not computed in xTB run (check flags)."
+        data['f3'] = 0.0
+        return data
         
     if pol_val <= 0:
         # Validation as per spec: > 0 (unless it's 0?) Spec says > 0.
@@ -289,6 +311,7 @@ def parse_xtb_log(log_path: str) -> dict:
         pass
         
     data['f5'] = pol_val
+    data['f5_available'] = True
 
     # f3 is now computed from the xTB 'wbo' file using fragment membership in pipeline.
     # Keep a best-effort legacy value from the log for backward compatibility.
@@ -301,6 +324,7 @@ def compute_wbo_from_molden_details(
     molden_path: str,
     fragments: list[list[int]] | None = None,
     use_identity_overlap: bool = True,
+    wavefunction=None,
 ) -> dict:
     """
     Computes AO- and atom-block WBO diagnostics directly from a Molden wavefunction.
@@ -311,13 +335,23 @@ def compute_wbo_from_molden_details(
     3) Build PS = P @ S (identity S by default for xTB minimal basis workflows)
     4) AO WBO-like matrix: W_ao = PS * PS.T  (elementwise product)
     5) Sum AO blocks by atom centers -> W_atom
+
+    ``wavefunction``, if given, is used as-is instead of re-parsing
+    ``molden_path`` (it must have been parsed with
+    ``apply_primitive_normalization=False`` to match this function's own
+    parsing). The parsed wavefunction is always returned under the
+    ``"wavefunction"`` key so callers running on the same molden file for a
+    later stage (e.g. the NCI grid stage) can reuse it instead of parsing the
+    same file a second time.
     """
     if not os.path.exists(molden_path):
         raise FileNotFoundError(f"Molden file not found: {molden_path}")
 
     from .nci_torch.molden import parse_molden
 
-    wf = parse_molden(molden_path, apply_primitive_normalization=False)
+    wf = wavefunction if wavefunction is not None else parse_molden(
+        molden_path, apply_primitive_normalization=False
+    )
     coeff = np.asarray(wf.mo_coefficients, dtype=np.float64)  # (n_ao, n_mo)
     occ = np.asarray(wf.occupations, dtype=np.float64)        # (n_mo,)
 
@@ -376,6 +410,7 @@ def compute_wbo_from_molden_details(
         "n_atoms": n_atoms,
         "n_ao": int(w_ao.shape[0]),
         "overlap_model": "identity" if use_identity_overlap else "explicit",
+        "wavefunction": wf,
     }
 
 

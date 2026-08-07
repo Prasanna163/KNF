@@ -1,10 +1,13 @@
 import os
 import shutil
 import logging
+import json
+import time
 from pathlib import Path
 from rdkit import Chem
 
 from . import utils, geometry, xtb, multiwfn, snci, scdi, knf_vector, converter, wrapper
+from .engine.xtb_routing import route_xtb
 
 
 def _final_output_name(filename: str, water: bool) -> str:
@@ -20,6 +23,7 @@ class KNFPipeline:
         charge: int = 0,
         spin: int = 1,
         water: bool = False,
+        hydration_fragment_mode: bool = False,
         force: bool = False,
         clean: bool = False,
         debug: bool = False,
@@ -37,12 +41,22 @@ class KNFPipeline:
         nci_apply_primitive_norm: bool = False,
         scdi_var_min: float = None,
         scdi_var_max: float = None,
-        wbo_mode: str = "native",
+        wbo_mode: str = "xtb",
+        preopt_engine: str = "geoinit",
+        xtb_engine: str = "xtbx",
+        xtb_gpu_atom_cutoff: int = 350,
+        xtb_gpu_available: bool = False,
+        xtb_explicit_gpu: bool = False,
+        xtb_batch_size: int = 1,
+        sp_only: bool = False,
+        seed_contact: bool = False,
+        progress_callback=None,
     ):
         self.input_file = utils.resolve_artifacted_path(input_file)
         self.charge = charge
         self.spin = spin
         self.water = bool(water)
+        self.hydration_fragment_mode = bool(hydration_fragment_mode)
         self.force = force
         self.clean = clean
         self.debug = debug
@@ -61,8 +75,22 @@ class KNFPipeline:
         self.nci_apply_primitive_norm = bool(nci_apply_primitive_norm)
         self.scdi_var_min = scdi_var_min
         self.scdi_var_max = scdi_var_max
-        self.wbo_mode = (wbo_mode or "native").strip().lower()
-        
+        self.wbo_mode = (wbo_mode or "xtb").strip().lower()
+        self.preopt_engine = (preopt_engine or "geoinit").strip().lower()
+        self.xtb_engine = (xtb_engine or "xtbx").strip().lower()
+        self.xtb_gpu_atom_cutoff = int(xtb_gpu_atom_cutoff)
+        self.xtb_gpu_available = bool(xtb_gpu_available)
+        self.xtb_explicit_gpu = bool(xtb_explicit_gpu)
+        self.xtb_batch_size = max(1, int(xtb_batch_size))
+        # Records each xTB stage's routing decision for logging + knf.json metadata.
+        self.xtb_routing_log: list[dict] = []
+        self.sp_only = bool(sp_only)
+        self.seed_contact = bool(seed_contact)
+        self.progress_callback = progress_callback
+        self.stage_timings_seconds: dict[str, float] = {}
+        self._active_stage_name: str | None = None
+        self._active_stage_started: float | None = None
+
         self.base_name = Path(self.input_file).stem
         default_output_root = os.path.join(os.path.dirname(self.input_file), "Results")
         self.output_root = os.path.abspath(output_root) if output_root else default_output_root
@@ -130,21 +158,118 @@ class KNFPipeline:
         )
 
     def _stage(self, index: int, name: str):
+        self._finish_stage_timing()
+        self._active_stage_name = str(name)
+        self._active_stage_started = time.perf_counter()
         if self.debug:
             logging.info(f"[{index}/5] {name}")
 
+    def _finish_stage_timing(self) -> None:
+        if self._active_stage_name is None or self._active_stage_started is None:
+            return
+        elapsed = max(0.0, time.perf_counter() - self._active_stage_started)
+        self.stage_timings_seconds[self._active_stage_name] = (
+            self.stage_timings_seconds.get(self._active_stage_name, 0.0) + elapsed
+        )
+        self._active_stage_name = None
+        self._active_stage_started = None
+
+    def _emit_progress(self, payload: dict) -> None:
+        if self.progress_callback is None:
+            return
+        progress_payload = dict(payload or {})
+        progress_payload.update(
+            {
+                "molecule": self.base_name,
+                "input_file": self.input_file,
+                "results_dir": self.results_dir,
+            }
+        )
+        self.progress_callback(progress_payload)
+
     def _xtb_artifacts_ready(self) -> tuple[bool, list[str]]:
-        required = ["xtbopt.xyz", "wbo", "molden.input", "xtb.log"]
+        required = ["wbo", "molden.input", "xtb.log"]
+        if not self.sp_only:
+            required.insert(0, "xtbopt.xyz")
         missing = [
             name for name in required if not os.path.exists(os.path.join(self.results_dir, name))
         ]
+        if not missing and not self._existing_xtb_mode_matches():
+            missing.append("matching xtb_sp_only metadata")
         return len(missing) == 0, missing
+
+    def _existing_xtb_mode_matches(self) -> bool:
+        for name in (_final_output_name("knf.json", self.water), "knf.json"):
+            path = os.path.join(self.results_dir, name)
+            if not os.path.exists(path):
+                continue
+            try:
+                with open(path, "r", encoding="utf-8") as handle:
+                    payload = json.load(handle)
+                metadata = payload.get("metadata") if isinstance(payload, dict) else {}
+                if isinstance(metadata, dict) and "xtb_sp_only" in metadata:
+                    return bool(metadata.get("xtb_sp_only")) == self.sp_only
+            except Exception:
+                return False
+        # Legacy results predate the mode marker and came from the optimized path.
+        return not self.sp_only
+
+    @staticmethod
+    def _atom_count_xyz(xyz_path: str) -> int:
+        """Reads the atom count from the header line of an .xyz file (0 on failure)."""
+        try:
+            with open(xyz_path, "r", encoding="utf-8", errors="replace") as f:
+                return int(f.readline().strip())
+        except Exception:
+            return 0
+
+    def _resolve_xtb_route(self, xyz_path: str, stage: str = "xtb"):
+        """Resolve the launcher + GPU decision for one xTB stage of this molecule.
+
+        Delegates to the pure ``route_xtb`` policy (throughput-aware: single small
+        -> CPU, large -> GPU, many small -> CPU in parallel with the GPU reserved
+        for the NCI stage, explicit --gpu honored). Logs the decision and records
+        it for knf.json metadata.
+        """
+        n = self._atom_count_xyz(xyz_path)
+        decision = route_xtb(
+            engine=self.xtb_engine,
+            atom_count=n,
+            batch_size=self.xtb_batch_size,
+            explicit_gpu=self.xtb_explicit_gpu,
+            gpu_available=self.xtb_gpu_available,
+            large_atom_cutoff=self.xtb_gpu_atom_cutoff,
+        )
+        logging.info(
+            "xTB routing [%s]: %s atoms, batch=%s -> %s%s (%s)",
+            stage,
+            n or "unknown",
+            self.xtb_batch_size,
+            decision.launcher,
+            " --gpu" if decision.use_gpu else "",
+            decision.reason,
+        )
+        self.xtb_routing_log.append(
+            {
+                "stage": stage,
+                "atom_count": n,
+                "launcher": decision.launcher,
+                "use_gpu": decision.use_gpu,
+                "reason": decision.reason,
+            }
+        )
+        return decision
+
+    def _resolve_xtb_cmd(self, xyz_path: str) -> str:
+        """Backward-compatible helper returning just the launcher name."""
+        return self._resolve_xtb_route(xyz_path).launcher
 
     def _run_torch_nci_with_adaptive_fallback(
         self,
         molden_file: str,
         final_grid_binary_path: str,
         final_grid_text_path: str,
+        prefetched_wavefunction=None,
     ) -> dict:
         from .nci_torch import get_nci_router, is_cuda_oom_error, release_cuda_memory, run_nci_torch
 
@@ -177,6 +302,7 @@ class KNFPipeline:
                     output_units="bohr",
                     apply_primitive_normalization=self.nci_apply_primitive_norm,
                     cpu_threads=packet.cpu_threads,
+                    wavefunction=prefetched_wavefunction,
                 )
                 attempt_record["status"] = "success"
                 router.report_success(packet)
@@ -238,15 +364,48 @@ class KNFPipeline:
         self.setup_directories()
 
         self._stage(1, "Geometry")
-        target_xyz = converter.ensure_xyz(self.input_file, self.input_dir)
+        target_xyz = converter.ensure_xyz(self.input_file, self.input_dir, force=self.force)
 
 
         mol = geometry.load_molecule(target_xyz)
-        fragments = geometry.detect_fragments(mol)
+        raw_fragments = geometry.detect_fragments(mol)
+        hydration_fragment_diagnostics = {
+            "enabled": bool(self.hydration_fragment_mode),
+            "active": False,
+            "reason": "disabled",
+            "raw_fragment_count": len(raw_fragments),
+        }
+        fragments = raw_fragments
+        if self.hydration_fragment_mode:
+            fragments, hydration_fragment_diagnostics = geometry.group_hydration_fragments(
+                mol,
+                raw_fragments,
+            )
+            if not hydration_fragment_diagnostics.get("active"):
+                raise RuntimeError(
+                    "--hydration-fragment-mode requires a non-water solute and at least one explicit H2O fragment."
+                )
+            logging.info(
+                "Hydration grouping: %s raw fragments -> solute (%s atoms) + water cluster (%s waters, %s atoms).",
+                len(raw_fragments),
+                hydration_fragment_diagnostics.get("solute_atom_count"),
+                hydration_fragment_diagnostics.get("water_count"),
+                hydration_fragment_diagnostics.get("water_atom_count"),
+            )
 
-        # Promote intermolecular contact for 2-fragment donor/acceptor systems.
-        if len(fragments) == 2:
+        # Contact seeding is an explicit geometry-changing operation. Strict
+        # single-point mode always preserves the supplied coordinates.
+        contact_seed_info = {
+            "requested": bool(self.seed_contact),
+            "applied": False,
+            "reason": "not_requested",
+        }
+        if self.sp_only and self.seed_contact:
+            contact_seed_info["reason"] = "disabled_by_strict_sp"
+            logging.info("Contact seeding disabled because strict --sp mode is active.")
+        elif self.seed_contact and len(fragments) == 2 and not self.hydration_fragment_mode:
             hb_seed = geometry.promote_hbond_interaction(mol, fragments[0], fragments[1])
+            contact_seed_info = {"requested": True, **hb_seed}
             if hb_seed.get("applied"):
                 logging.info(
                     "Applied H-bond interaction seeding: D=%s H=%s A=%s",
@@ -256,6 +415,12 @@ class KNFPipeline:
                 )
             else:
                 logging.info("H-bond interaction seeding skipped: %s", hb_seed.get("reason"))
+        elif self.seed_contact:
+            contact_seed_info["reason"] = (
+                "hydration_coordinates_preserved"
+                if self.hydration_fragment_mode
+                else "requires_two_fragments"
+            )
         pair_indices = None
 
         if len(fragments) == 1:
@@ -295,30 +460,69 @@ class KNFPipeline:
         optimized_xyz = os.path.join(self.results_dir, 'xtbopt.xyz')
         work_xyz = os.path.join(self.results_dir, 'input.xyz')
         if not os.path.exists(work_xyz) or self.force:
-            # Persist potentially re-oriented fragment geometry for downstream UFF/xTB.
-            geometry.write_xyz(mol, work_xyz)
+            if self.sp_only:
+                # Strict SP must preserve the normalized Cartesian artifact
+                # byte-for-byte; routing it through RDKit's XYZ writer would
+                # round coordinates to six decimal places.
+                shutil.copyfile(target_xyz, work_xyz)
+            else:
+                # Persist either the supplied geometry or the explicitly seeded geometry.
+                geometry.write_xyz(mol, work_xyz)
 
         xtb_ready, xtb_missing = self._xtb_artifacts_ready()
         if xtb_ready and not self.force:
             logging.info(
-                "Reusing existing xTB artifacts for %s (skipping UFF/xTB): %s",
+                "Reusing existing xTB artifacts for %s (skipping xTB stages): %s",
                 self.base_name,
                 self.results_dir,
             )
 
-        if not os.path.exists(optimized_xyz) or self.force:
+        if self.sp_only:
+            logging.info(
+                "SP-only mode enabled for %s: skipping pre-optimisation and xTB geometry optimisation.",
+                self.base_name,
+            )
+        elif not os.path.exists(optimized_xyz) or self.force:
             uhf = self.spin - 1
-            # ---- UFF pre-optimisation --------------------------------
-            self._stage(2, "UFF Pre-optimisation")
-            wrapper.run_uff_preopt(work_xyz)
+            # ---- pre-optimisation (GeoInit by default, UFF available as fallback) ----
+            preopt_label = (
+                "GeoInit Pre-optimisation"
+                if self.preopt_engine == "geoinit"
+                else "UFF Pre-optimisation"
+            )
+            self._stage(2, preopt_label)
+            wrapper.run_preopt(work_xyz, engine=self.preopt_engine)
 
-            self._stage(3, "xTB Opt")
-            wrapper.run_xtb_opt(work_xyz, self.charge, uhf, use_water=self.water)
+            opt_route = self._resolve_xtb_route(work_xyz, stage="opt")
+            self._stage(3, f"xTB Opt [{opt_route.launcher}{' gpu' if opt_route.use_gpu else ''}]")
+            wrapper.run_xtb_opt(
+                work_xyz,
+                self.charge,
+                uhf,
+                use_water=self.water,
+                xtb_cmd=opt_route.launcher,
+                force_gpu=opt_route.use_gpu,
+                progress_callback=self._emit_progress,
+            )
 
 
+        sp_geometry = work_xyz if self.sp_only else optimized_xyz
         wbo_file = os.path.join(self.results_dir, 'wbo')
         molden_file = os.path.join(self.results_dir, 'molden.input')
         xtb_log = os.path.join(self.results_dir, 'xtb.log')
+        xtb_include_esp = False
+        if not xtb_include_esp:
+            for stale_name in ("xtb_esp.dat", "xtb_esp_profile.dat", "xtb_esp.cosmo", "xtb.cosmo"):
+                stale_path = os.path.join(self.results_dir, stale_name)
+                if os.path.exists(stale_path):
+                    try:
+                        os.remove(stale_path)
+                    except Exception as cleanup_error:
+                        logging.warning(
+                            "Could not remove stale ESP artifact %s: %s",
+                            stale_path,
+                            cleanup_error,
+                        )
         if (
             not os.path.exists(wbo_file)
             or not os.path.exists(molden_file)
@@ -326,8 +530,19 @@ class KNFPipeline:
             or self.force
         ):
             uhf = self.spin - 1
-            self._stage(4, "xTB SP")
-            wrapper.run_xtb_sp(optimized_xyz, self.charge, uhf, use_water=self.water)
+            sp_route = self._resolve_xtb_route(sp_geometry, stage="sp")
+            self._stage(4, f"xTB SP [{sp_route.launcher}{' gpu' if sp_route.use_gpu else ''}]")
+            wrapper.run_xtb_sp(
+                sp_geometry,
+                self.charge,
+                uhf,
+                use_water=self.water,
+                xtb_cmd=sp_route.launcher,
+                force_gpu=sp_route.use_gpu,
+                include_hess=not self.sp_only,
+                include_esp=xtb_include_esp,
+                progress_callback=self._emit_progress,
+            )
         elif not xtb_ready:
             logging.info(
                 "xTB artifacts incomplete for %s; missing=%s. Reused available optimized geometry and completed missing stages.",
@@ -337,7 +552,9 @@ class KNFPipeline:
 
         cosmo_files = sorted(f for f in os.listdir(self.results_dir) if f.endswith('.cosmo'))
         cosmo_file = None
-        if "xtb.cosmo" in cosmo_files:
+        if self.sp_only or not xtb_include_esp:
+            cosmo_file = None
+        elif "xtb.cosmo" in cosmo_files:
             cosmo_file = os.path.join(self.results_dir, "xtb.cosmo")
         elif cosmo_files:
             cosmo_file = os.path.join(self.results_dir, cosmo_files[0])
@@ -348,9 +565,18 @@ class KNFPipeline:
             )
 
         try:
-            xtb_data = xtb.parse_xtb_log(xtb_log)
+            xtb_data = xtb.parse_xtb_log(xtb_log, require_polarizability=False)
             f4 = xtb_data.get('f4', 0.0)
-            f5 = xtb_data.get('f5', 0.0)
+            f5 = xtb_data.get('f5')
+            f5_available = bool(xtb_data.get("f5_available", f5 is not None))
+            f5_unavailable_reason = xtb_data.get("f5_unavailable_reason")
+            if f5 is None:
+                logging.warning(
+                    "xTB polarizability f5 unavailable for %s; continuing with f5=null. Reason: %s",
+                    self.base_name,
+                    f5_unavailable_reason or "not present in xtb.log",
+                )
+            prefetched_wavefunction = None
             if self.wbo_mode == "native":
                 wbo_native = xtb.compute_wbo_from_molden_details(
                     molden_file,
@@ -359,6 +585,13 @@ class KNFPipeline:
                 )
                 f3 = wbo_native["max_inter_wbo"]
                 wbo_max_global = wbo_native["max_wbo_global"]
+                # compute_wbo_from_molden_details always parses with
+                # apply_primitive_normalization=False; only hand this parsed
+                # wavefunction to the NCI stage if it would have parsed the
+                # same molden file the same way, so the NCI grid stage can
+                # skip re-parsing it (see run_post_nci_stage).
+                if self.nci_backend == "torch" and not self.nci_apply_primitive_norm:
+                    prefetched_wavefunction = wbo_native.get("wavefunction")
             elif self.wbo_mode == "xtb":
                 f3 = xtb.parse_interfragment_wbo(wbo_file, fragments, xtb_log_path=xtb_log)
                 wbo_max_global = xtb.parse_max_wbo(wbo_file, xtb_log_path=xtb_log)
@@ -376,24 +609,24 @@ class KNFPipeline:
 
         if len(fragments) >= 2:
             f2_mol = Chem.Mol(mol)
-            if os.path.exists(optimized_xyz):
+            if os.path.exists(sp_geometry):
                 try:
-                    optimized_mol = geometry.load_molecule(optimized_xyz)
-                    if optimized_mol.GetNumAtoms() == mol.GetNumAtoms():
-                        src_conf = optimized_mol.GetConformer()
+                    sp_mol = geometry.load_molecule(sp_geometry)
+                    if sp_mol.GetNumAtoms() == mol.GetNumAtoms():
+                        src_conf = sp_mol.GetConformer()
                         dst_conf = f2_mol.GetConformer()
                         for atom_idx in range(mol.GetNumAtoms()):
                             p = src_conf.GetAtomPosition(atom_idx)
                             dst_conf.SetAtomPosition(atom_idx, (float(p.x), float(p.y), float(p.z)))
                     else:
                         logging.warning(
-                            "Optimized geometry atom count (%s) does not match input (%s); "
+                            "xTB descriptor geometry atom count (%s) does not match input (%s); "
                             "falling back to input geometry for f2.",
-                            optimized_mol.GetNumAtoms(),
+                            sp_mol.GetNumAtoms(),
                             mol.GetNumAtoms(),
                         )
                 except Exception as e:
-                    logging.warning("Failed to load optimized geometry for f2 weighting: %s", e)
+                    logging.warning("Failed to load xTB descriptor geometry for f2 weighting: %s", e)
 
             wbo_pair_map = {}
             try:
@@ -443,16 +676,34 @@ class KNFPipeline:
             "f3": f3,
             "f4": f4,
             "f5": f5,
+            "f5_available": f5_available,
+            "f5_source": "xtb.log" if f5_available else None,
+            "f5_unavailable_reason": f5_unavailable_reason,
             "wbo_max_global": wbo_max_global,
             "wbo_inter_pair_count": wbo_native["inter_pair_count"],
             "wbo_inter_max_pair": wbo_native["inter_max_pair"],
             "wbo_overlap_model": wbo_native["overlap_model"],
             "wbo_native_n_ao": wbo_native["n_ao"],
             "wbo_mode": self.wbo_mode,
+            "f3_definition": (
+                "parsed_xtb_interfragment_wiberg_bond_order"
+                if self.wbo_mode == "xtb"
+                else "identity_overlap_interfragment_density_coupling"
+            ),
+            "f3_status": "production" if self.wbo_mode == "xtb" else "experimental_approximate",
             "molden_file": molden_file,
             "cosmo_file": cosmo_file,
             "pair_indices": pair_indices,
             "fragment_count": len(fragments),
+            "raw_fragment_count": len(raw_fragments),
+            "hydration_fragment_mode": bool(self.hydration_fragment_mode),
+            "hydration_fragment_diagnostics": hydration_fragment_diagnostics,
+            "xtb_sp_only": self.sp_only,
+            "contact_seed": contact_seed_info,
+            "xtb_sp_include_esp": bool(xtb_include_esp),
+            "xtb_sp_include_hess": not self.sp_only,
+            "xtb_geometry_file": sp_geometry,
+            "prefetched_wavefunction": prefetched_wavefunction,
         }
 
     def run_post_nci_stage(self, context: dict):
@@ -468,16 +719,27 @@ class KNFPipeline:
         f3 = context["f3"]
         f4 = context["f4"]
         f5 = context["f5"]
+        f5_available = bool(context.get("f5_available", f5 is not None))
+        f5_source = context.get("f5_source")
+        f5_unavailable_reason = context.get("f5_unavailable_reason")
         wbo_max_global = context.get("wbo_max_global")
         wbo_inter_pair_count = context.get("wbo_inter_pair_count")
         wbo_inter_max_pair = context.get("wbo_inter_max_pair")
         wbo_overlap_model = context.get("wbo_overlap_model")
         wbo_native_n_ao = context.get("wbo_native_n_ao")
         wbo_mode = context.get("wbo_mode")
+        f3_definition = context.get("f3_definition")
+        f3_status = context.get("f3_status")
         molden_file = context["molden_file"]
         cosmo_file = context["cosmo_file"]
         pair_indices = context["pair_indices"]
         fragment_count = int(context["fragment_count"])
+        raw_fragment_count = int(context.get("raw_fragment_count", fragment_count))
+        hydration_fragment_mode = bool(context.get("hydration_fragment_mode", False))
+        hydration_fragment_diagnostics = context.get("hydration_fragment_diagnostics") or {}
+        xtb_sp_only = bool(context.get("xtb_sp_only", False))
+        contact_seed = context.get("contact_seed") or {}
+        xtb_geometry_file = context.get("xtb_geometry_file")
 
         nci_grid_file = os.path.join(self.results_dir, 'output.txt')
         final_grid_text_path = os.path.join(self.results_dir, 'nci_grid.txt')
@@ -502,6 +764,7 @@ class KNFPipeline:
                     molden_file=molden_file,
                     final_grid_binary_path=final_grid_binary_path,
                     final_grid_text_path=final_grid_text_path,
+                    prefetched_wavefunction=context.get("prefetched_wavefunction"),
                 )
                 nci_success = os.path.exists(final_grid_binary_path)
                 if not nci_success:
@@ -525,8 +788,7 @@ class KNFPipeline:
         snci_val = 0.0
         if nci_success and os.path.exists(nci_data_path):
             try:
-                snci_val = snci.compute_snci(nci_data_path)
-                nci_stats = snci.compute_nci_statistics(nci_data_path)
+                snci_val, nci_stats = snci.compute_snci_and_statistics(nci_data_path)
                 f6 = nci_stats['f6']
                 f7 = nci_stats['f7']
                 f8 = nci_stats['f8']
@@ -534,7 +796,7 @@ class KNFPipeline:
             except Exception as e:
                 logging.error(f"SNCI computation failed: {e}")
 
-        scdi_var = 0.0
+        scdi_var = None
         scdi_value = None
         if cosmo_file:
             try:
@@ -548,6 +810,7 @@ class KNFPipeline:
             except Exception as e:
                 logging.error(f"SCDI computation failed: {e}")
 
+        self._finish_stage_timing()
         vector = knf_vector.assemble_knf_vector(f1, f2, f3, f4, f5, f6, f7, f8, f9)
         result = knf_vector.KNFResult(
             SNCI=snci_val,
@@ -558,6 +821,12 @@ class KNFPipeline:
                 'charge': self.charge,
                 'spin': self.spin,
                 'fragments': fragment_count,
+                'raw_fragments': raw_fragment_count,
+                'hydration_fragment_mode': hydration_fragment_mode,
+                'hydration_fragment_diagnostics': hydration_fragment_diagnostics,
+                'system_type': 'solute_water_cluster' if hydration_fragment_mode else None,
+                'fragment_A': 'solute' if hydration_fragment_mode else None,
+                'fragment_B': 'water_cluster' if hydration_fragment_mode else None,
                 'geometry_fragment_pair': pair_indices,
                 'f2_defined': f2_defined,
                 'f2_triplet_count': f2_triplet_count,
@@ -565,17 +834,38 @@ class KNFPipeline:
                 'f2_undefined_reason': f2_undefined_reason,
                 'f2_weight_model': f2_weight_model,
                 'f2_top_triplets': f2_top_triplets,
+                'f5_available': f5_available,
+                'f5_source': f5_source,
+                'f5_unavailable_reason': f5_unavailable_reason,
                 'wbo_max_global': wbo_max_global,
                 'wbo_inter_pair_count': wbo_inter_pair_count,
                 'wbo_inter_max_pair': wbo_inter_max_pair,
                 'wbo_overlap_model': wbo_overlap_model,
                 'wbo_native_n_ao': wbo_native_n_ao,
                 'wbo_mode': wbo_mode,
+                'f3_definition': f3_definition,
+                'f3_status': f3_status,
+                'preopt_engine': self.preopt_engine,
+                'xtb_engine': self.xtb_engine,
+                'xtb_gpu_available': self.xtb_gpu_available,
+                'xtb_explicit_gpu': self.xtb_explicit_gpu,
+                'xtb_batch_size': self.xtb_batch_size,
+                'xtb_routing': list(self.xtb_routing_log),
+                'xtb_sp_only': xtb_sp_only,
+                'contact_seed': contact_seed,
+                'xtb_sp_include_esp': bool(context.get("xtb_sp_include_esp", False)),
+                'xtb_sp_include_hess': bool(context.get("xtb_sp_include_hess", not xtb_sp_only)),
+                'xtb_geometry_file': xtb_geometry_file,
                 'xtb_water': self.water,
                 'nci_backend': self.nci_backend,
+                'nci_spatial_mode': 'volumetric_3d',
                 'nci_status': 'success' if nci_success else 'skipped',
                 'nci_data_path': nci_data_path,
                 'nci_engine_metadata': nci_engine_metadata,
+                'stage_timings_seconds': {
+                    key: round(value, 6)
+                    for key, value in self.stage_timings_seconds.items()
+                },
             }
         )
 

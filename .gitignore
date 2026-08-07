@@ -108,3 +108,24 @@ apitoken
 tools/
 xtb/
 ignr/
+
+# Results and run outputs
+Results/
+tmp/
+tmp_build/
+dist_pypi_nciforge_v108/
+
+# xTB scratch artifacts (emitted into cwd by xtb/xtbx)
+charges
+wbo
+xtbrestart
+xtbtopo.mol
+xtblast.xyz
+xtbopt.xyz
+xtbopt.log
+molden.input
+.xtboptok
+
+# Ad-hoc engine/regression check dirs
+.tmp-gxtb-check*/
+test-gxtb/

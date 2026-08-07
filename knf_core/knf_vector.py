@@ -7,8 +7,8 @@ import os
 class KNFResult:
     SNCI: float
     SCDI: Optional[float]
-    SCDI_variance: float
-    KNF_vector: list[float]
+    SCDI_variance: Optional[float]
+    KNF_vector: list[float | None]
     metadata: dict
 
 
@@ -29,14 +29,24 @@ METRIC_SPECS = [
 
 def assemble_knf_vector(
     f1: float, f2: float, 
-    f3: float, f4: float, f5: float,
+    f3: float, f4: float, f5: Optional[float],
     f6: int, f7: float, f8: float, f9: float
-) -> list[float]:
+) -> list[float | None]:
     """
     Assembles the 9D KNF vector.
     Order: [f1, f2, f3, f4, f5, f6, f7, f8, f9]
     """
     return [f1, f2, f3, f4, f5, float(f6), f7, f8, f9]
+
+
+def _format_optional_float(value, precision: int) -> str:
+    if value is None:
+        return "n/a"
+    try:
+        return f"{float(value):.{precision}f}"
+    except (TypeError, ValueError):
+        return str(value)
+
 
 def write_output_txt(filepath: str, result: KNFResult):
     """Writes human-readable output.txt."""
@@ -44,7 +54,7 @@ def write_output_txt(filepath: str, result: KNFResult):
         f.write("KNF-Core Analysis Results\n")
         f.write("=========================\n\n")
         f.write(f"SNCI_raw:       {result.SNCI:.6f}\n")
-        f.write(f"SCDI_variance:  {result.SCDI_variance:.6f}\n\n")
+        f.write(f"SCDI_variance:  {_format_optional_float(result.SCDI_variance, 6)}\n\n")
         
         metadata = result.metadata if isinstance(result.metadata, dict) else {}
         f2_defined = metadata.get("f2_defined")
@@ -59,7 +69,7 @@ def write_output_txt(filepath: str, result: KNFResult):
             f.write(f"f2 (HB Angle):  {vec[1]:.2f} deg\n")
         f.write(f"f3 (Max Inter WBO):   {vec[2]:.4f}\n")
         f.write(f"f4 (Dipole):    {vec[3]:.4f} D\n")
-        f.write(f"f5 (Pol):       {vec[4]:.4f} au\n")
+        f.write(f"f5 (Pol):       {_format_optional_float(vec[4], 4)} au\n")
         f.write(f"f6 (NCI Count): {vec[5]:.0f}\n")
         f.write(f"f7 (NCI Mean):  {vec[6]:.6f}\n")
         f.write(f"f8 (NCI Std):   {vec[7]:.6f}\n")
@@ -93,6 +103,7 @@ def write_knf_json(filepath: str, result: KNFResult):
             "cluster_display": kuid_info.get("cluster_display"),
             "bins": kuid_info.get("bins"),
             "normalized": kuid_info.get("normalized"),
+            "f3_protocol": kuid_info.get("f3_protocol"),
         }
     with open(filepath, 'w') as f:
         json.dump(payload, f, indent=4)

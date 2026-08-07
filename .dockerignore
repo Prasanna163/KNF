@@ -23,6 +23,7 @@ local_results/
 test_files/
 .gemini/
 .agent/
+.knf_autoconfig.json
 dist/
 *.egg-info/
 DES/
@@ -32,6 +33,8 @@ test_results/
 Results/
 build/
 results/
+PFAS Test/
+test copy/
 *.zip
 *.tar.gz
 apitoken

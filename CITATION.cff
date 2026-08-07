@@ -1,0 +1,35 @@
+cff-version: 1.2.0
+message: "If you use NCIForge, please cite the software release and the accompanying article."
+title: "NCIForge"
+type: software
+version: 1.0.9
+date-released: 2026-07-31
+license: MIT
+repository-code: "https://github.com/Prasanna163/NCIForge"
+authors:
+  - family-names: Kulkarni
+    given-names: "Prasanna P."
+    orcid: "https://orcid.org/0009-0006-2931-1461"
+    affiliation: "Institute of Chemical Technology Mumbai, Marathwada Campus"
+  - family-names: Tiwari
+    given-names: Uttkarsh
+    affiliation: "National Institute of Technology Mizoram"
+  - family-names: Isukapatla
+    given-names: Sravya
+    affiliation: "Pondicherry University"
+  - family-names: Bajaj
+    given-names: Ansh
+    affiliation: "National Institute of Technology Goa"
+preferred-citation:
+  type: article
+  title: "NCIForge: A Hardware-Aware Interaction-Informatics Platform for Non-Covalent Interaction Fields, Fingerprints, and Searchable Identities"
+  authors:
+    - family-names: Kulkarni
+      given-names: "Prasanna P."
+    - family-names: Tiwari
+      given-names: Uttkarsh
+    - family-names: Isukapatla
+      given-names: Sravya
+    - family-names: Bajaj
+      given-names: Ansh
+  year: 2026
