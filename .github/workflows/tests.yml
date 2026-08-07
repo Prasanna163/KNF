@@ -23,7 +23,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -e ".[api,torch-nci,plots]"
-          python -m pip install pytest build twine
+          python -m pip install pytest httpx2 build twine
       - name: Compile source
         run: python -m compileall -q knf_core geoinit nciforge_xtbx nciforge_cli.py
       - name: Run tests
