@@ -13,6 +13,8 @@ jobs:
   python:
     runs-on: windows-latest
     timeout-minutes: 30
+    env:
+      COLUMNS: "240"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -24,6 +26,13 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e ".[api,torch-nci,plots]"
           python -m pip install pytest httpx2 build twine
+      - name: Expose bundled xTB runtime
+        shell: pwsh
+        run: |
+          $runtime = Join-Path $PWD "nciforge_xtbx/runtime/xtb-win-release"
+          Join-Path $runtime "bin" | Out-File -FilePath $env:GITHUB_PATH -Append
+          Join-Path $runtime "lib" | Out-File -FilePath $env:GITHUB_PATH -Append
+          "XTBPATH=$(Join-Path $runtime 'params')" | Out-File -FilePath $env:GITHUB_ENV -Append
       - name: Compile source
         run: python -m compileall -q knf_core geoinit nciforge_xtbx nciforge_cli.py
       - name: Run tests

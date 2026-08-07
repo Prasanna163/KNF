@@ -3,7 +3,7 @@ FROM mambaorg/micromamba:1.5.8
 USER root
 
 ARG DEBIAN_FRONTEND=noninteractive
-ARG MULTIWFN_URL=http://sobereva.com/multiwfn/misc/Multiwfn_3.8_dev_bin_Linux_noGUI.zip
+ARG MULTIWFN_URL=https://www.umsyar.com/multiwfn/misc/Multiwfn_3.8_dev_bin_Linux_noGUI.zip
 ARG NCIFORGE_VERSION=1.0.9
 
 LABEL org.opencontainers.image.title="NCIForge" \
@@ -52,6 +52,7 @@ RUN wget "${MULTIWFN_URL}" -O Multiwfn.zip \
     && unzip Multiwfn.zip \
     && mv Multiwfn_3.8_dev_bin_Linux_noGUI Multiwfn \
     && rm Multiwfn.zip \
+    && mv /opt/Multiwfn/Multiwfn_noGUI /opt/Multiwfn/Multiwfn \
     && chmod +x /opt/Multiwfn/Multiwfn \
     && printf "nthreads=4\nisilent=1\n" > /opt/Multiwfn/settings.ini
 
@@ -65,12 +66,14 @@ RUN sed -i 's/\r$//' /app/scripts/docker-entrypoint.sh \
     && chmod +x /app/scripts/docker-entrypoint.sh \
     && chown -R mambauser:mambauser /app
 
+ENV LD_LIBRARY_PATH=/opt/conda/lib
+
 USER mambauser
 
 EXPOSE 8000
 
 HEALTHCHECK --interval=60s --timeout=10s --start-period=30s --retries=3 \
-  CMD bash -lc "command -v nciforge && command -v knf && command -v geoinit && command -v nciforge-api && command -v xtb && command -v obabel && command -v Multiwfn && python -c 'import torch, matplotlib, fastapi, uvicorn'"
+  CMD bash -c "command -v nciforge && command -v knf && command -v geoinit && command -v nciforge-api && command -v xtb && command -v obabel && command -v Multiwfn && python -c 'import torch, matplotlib, fastapi, uvicorn'"
 
 ENTRYPOINT ["/usr/bin/tini", "--", "/app/scripts/docker-entrypoint.sh"]
 CMD ["--help"]
