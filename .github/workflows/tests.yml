@@ -15,6 +15,7 @@ jobs:
     timeout-minutes: 30
     env:
       COLUMNS: "240"
+      NO_COLOR: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
