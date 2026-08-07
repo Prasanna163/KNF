@@ -97,7 +97,6 @@ def _known_xtb_runtime_roots() -> list[Path]:
         if value:
             candidates.append(Path(value).expanduser())
     candidates.extend(_candidate_xtb_roots_from_path())
-    candidates.append(Path(r"E:\Prasanna\xTB\xtb\xtb-win-release"))
     return _unique_paths(candidates)
 
 
@@ -197,7 +196,6 @@ def _configured_runtime() -> Path | None:
 
 def _runtime_candidates(args: Iterable[str]) -> list[Path]:
     bundled = package_dir() / "runtime" / "xtb-win-release"
-    dev_full = Path(r"E:\Prasanna\xTB\xtb\xtb-win-release")
     candidates: list[Path] = []
 
     env_runtime = _env_runtime()
@@ -208,12 +206,11 @@ def _runtime_candidates(args: Iterable[str]) -> list[Path]:
     if _wants_gpu(args):
         if configured is not None:
             candidates.append(configured)
-        candidates.extend([dev_full, bundled])
+        candidates.append(bundled)
     else:
-        candidates.extend([bundled])
+        candidates.append(bundled)
         if configured is not None:
             candidates.append(configured)
-        candidates.append(dev_full)
 
     return _unique_paths(candidates)
 

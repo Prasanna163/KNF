@@ -42,7 +42,7 @@ Runtime environment includes:
 ## Build
 
 ```bash
-docker build -t nciforge:v1 -t nciforge:latest .
+docker build -t nciforge:1.0.9 -t nciforge:latest .
 ```
 
 ## Run
@@ -50,31 +50,31 @@ docker build -t nciforge:v1 -t nciforge:latest .
 Single molecule:
 
 ```bash
-docker run --rm -v "$(pwd):/work" -w /work nciforge:v1 example.mol --charge 0 --force --xtb-engine xtb
+docker run --rm -v "$(pwd):/work" -w /work nciforge:1.0.9 example.mol --charge 0 --force --xtb-engine xtb
 ```
 
 Directory batch:
 
 ```bash
-docker run --rm -v "$(pwd):/work" -w /work nciforge:v1 molecules --processing multi --force --xtb-engine xtb
+docker run --rm -v "$(pwd):/work" -w /work nciforge:1.0.9 molecules --processing multi --force --xtb-engine xtb
 ```
 
 Universal KUID recompute:
 
 ```bash
-docker run --rm -v "$(pwd):/work" -w /work nciforge:v1 existing_runs --universal-kuid
+docker run --rm -v "$(pwd):/work" -w /work nciforge:1.0.9 existing_runs --universal-kuid
 ```
 
 Interactive shell:
 
 ```bash
-docker run --rm -it -v "$(pwd):/work" -w /work nciforge:v1 bash
+docker run --rm -it -v "$(pwd):/work" -w /work nciforge:1.0.9 bash
 ```
 
 HTTP API:
 
 ```bash
-docker run --rm -p 8000:8000 -v "$(pwd):/work" -w /work nciforge:v1 api
+docker run --rm -p 8000:8000 -v "$(pwd):/work" -w /work nciforge:1.0.9 api
 ```
 
 Then open:
@@ -140,13 +140,13 @@ echo "$XTBHOME"
 Use `${PWD}` in mount expressions:
 
 ```powershell
-docker run --rm -v "${PWD}:/work" -w /work nciforge:v1 example.mol --charge 0 --force --xtb-engine xtb
+docker run --rm -v "${PWD}:/work" -w /work nciforge:1.0.9 example.mol --charge 0 --force --xtb-engine xtb
 ```
 
 ## Troubleshooting
 
 - Build issues after dependency changes:
-  - `docker build --no-cache -t nciforge:v1 -t nciforge:latest .`
+  - `docker build --no-cache -t nciforge:1.0.9 -t nciforge:latest .`
 - No output files:
   - verify mounted path and input path inside `/work`
 

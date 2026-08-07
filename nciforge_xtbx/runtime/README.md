@@ -27,7 +27,7 @@ xtbx --setup-gpu
 or:
 
 ```powershell
-xtbx --setup-gpu "E:\Prasanna\xTB\xtb\xtb-win-release"
+xtbx --setup-gpu "C:\path\to\xtb-win-release"
 ```
 
 For one process without saving config, set `NCIFORGE_XTBX_RUNTIME` or pass

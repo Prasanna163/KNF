@@ -11,7 +11,7 @@ from ..engine.atlas import maybe_write_atlas_bundle, try_write_atlas_bundle_from
 from ..engine.dependencies import probe_missing_dependencies
 from ..engine.discovery import _cleanup_submission_auxiliary_outputs
 from ..engine.gpu import ensure_cuda_runtime_for_gpu_mode, resolve_cpu_backend_when_torch_missing
-from ..engine.constants import CLI_NAME
+from ..engine.constants import CLI_NAME, CLI_VERSION
 from ..engine.batch_sources import _merge_master_and_batch_csv
 from . import commands
 from .argv_preprocess import normalize_argv
@@ -27,9 +27,22 @@ app = typer.Typer(
 )
 
 
+def _version_callback(value: bool) -> None:
+    if value:
+        typer.echo(f"{CLI_NAME} {CLI_VERSION}")
+        raise typer.Exit()
+
+
 @app.command(context_settings={"help_option_names": ["-h", "--help"]})
 def cli(
     input_path: str = typer.Argument(..., help="Path to input molecular file or directory"),
+    version: bool = typer.Option(
+        False,
+        "--version",
+        callback=_version_callback,
+        is_eager=True,
+        help="Show the NCIForge version and exit.",
+    ),
     charge: int = typer.Option(0, "--charge", help="Total system charge"),
     spin: int = typer.Option(1, "--spin", help="Total system spin multiplicity"),
     water: bool = typer.Option(

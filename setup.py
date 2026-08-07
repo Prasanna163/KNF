@@ -13,7 +13,7 @@ setup(
     long_description_content_type='text/markdown',
     author='Prasanna Kulkarni',
     license='MIT',
-    url='https://github.com/Prasanna163/KNF',
+    url='https://github.com/Prasanna163/NCIForge',
     packages=find_packages(),
     py_modules=['nciforge_cli'],
     entry_points={
@@ -30,6 +30,7 @@ setup(
             'xtbx_run.sh',
             'xtbg.conf',
             'runtime/README.md',
+            'runtime/LICENSES/*',
             'runtime/xtb-win-release/bin/*.exe',
             'runtime/xtb-win-release/lib/*.dll',
             'runtime/xtb-win-release/params/*',

@@ -1,5 +1,5 @@
 CLI_NAME = "NCIForge"
-CLI_VERSION = "v1"
+CLI_VERSION = "1.0.9"
 CLI_TITLE = f"{CLI_NAME} {CLI_VERSION}"
 CLI_SUBTITLE = "Non-Covalent Interaction Atlas Engine"
 STOP_KEY = "q"

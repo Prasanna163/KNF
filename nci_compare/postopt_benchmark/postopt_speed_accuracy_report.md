@@ -1,6 +1,6 @@
 # Post-Optimization Speed + Accuracy Report
 
-Input: `E:\Prasanna\KNF-CORE\molden.input`
+Input: repository fixture `molden.input`
 
 ## Scope
 - NCI stage only (xTB not included in timing).

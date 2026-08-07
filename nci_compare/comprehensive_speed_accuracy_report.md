@@ -1,7 +1,7 @@
 # Comprehensive NCI Speed + Accuracy Report
 
 - Generated: `2026-02-18T10:01:36.553655+00:00`
-- Input: `e:\Prasanna\KNF-CORE\molden.input`
+- Input: repository fixture `molden.input`
 - Grid: `[158, 97, 115]` (`1762490` points)
 - Torch: `2.10.0+cu128` (CUDA build `12.8`)
 - CUDA available: `True`

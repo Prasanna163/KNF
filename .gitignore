@@ -97,6 +97,10 @@ thumbs.db
 # Project specific
 des/
 test_results/
+.knf_autoconfig.json
+.venv/
+.venv-*/
+venv/
 *.log
 *.xyz.cosmo
 *.wbo
@@ -129,3 +133,5 @@ molden.input
 # Ad-hoc engine/regression check dirs
 .tmp-gxtb-check*/
 test-gxtb/
+PFAS Test/
+test_copy/

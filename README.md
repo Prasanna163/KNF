@@ -1,111 +1,190 @@
-<img width="1672" height="941" alt="main loo" src="https://github.com/user-attachments/assets/5f6b0fe3-cc10-4798-b323-a91a45e1c037" />
+<p align="center">
+  <img src="assets/branding/nciforge-horizontal.png" alt="NCIForge" width="760">
+</p>
 
-# NCIForge
+<p align="center">
+  <strong>Interaction informatics for auditable non-covalent-interaction fields, fingerprints, and searchable identities.</strong>
+</p>
 
-NCIForge is a physics-informed descriptor pipeline for non-covalent interactions.
-It computes KNF descriptors, SNCI/SCDI metrics, and KUID-family indexing artifacts
-from molecular structure files using xTB + NCI backend + KNF post-processing.
+<p align="center">
+  <a href="https://github.com/Prasanna163/NCIForge/releases/tag/nciforge-paper-v1.0.9"><img alt="Release 1.0.9" src="https://img.shields.io/badge/release-1.0.9-246BFD"></a>
+  <a href="https://github.com/Prasanna163/NCIForge/actions/workflows/tests.yml"><img alt="Tests" src="https://github.com/Prasanna163/NCIForge/actions/workflows/tests.yml/badge.svg"></a>
+  <a href="https://www.python.org/"><img alt="Python 3.10+" src="https://img.shields.io/badge/python-3.10%2B-3776AB"></a>
+  <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/license-MIT-00A86B"></a>
+  <a href="CITATION.cff"><img alt="Cite NCIForge" src="https://img.shields.io/badge/citation-CFF-6F42C1"></a>
+</p>
 
-Current package version: `1.0.9`
-Release milestone tag: `v1`
+## Overview
 
-## What It Covers
+NCIForge is a scientific-software platform for acquiring, reducing, indexing,
+and analysing non-covalent interaction states as structured data. It connects
+three complementary representations:
 
-- Generate KNF feature vectors (`f1..f9`) for single files and batches
-- Generate full `KUID` identifiers (instance-level)
-- Generate `KUID-Intensive` identifiers (topology-family level)
-- Build reusable lookup artifacts (prefix, reverse, and bridge indexes)
-- Recompute universal KUID outputs from existing batch folders (`--universal-kuid`)
-- Generate canonical atlas bundle files (`--atlas-bundle`)
+- auditable three-dimensional non-covalent-interaction fields;
+- the nine-dimensional Kulkarni--NCI Fingerprint (`f1`--`f9`) with SNCI and
+  optional SCDI measurements;
+- K-UID and K-UID-Intensive addresses for indexing, comparison, and retrieval.
+
+The field remains the physical source of the analysis. Compact descriptors and
+identifiers make interaction states comparable and machine-readable; they do
+not replace the underlying electronic-structure or volumetric calculation.
+
+NCIForge 1.0.9 is the frozen software release evaluated in the accompanying
+manuscript, *NCIForge: A Hardware-Aware Interaction-Informatics Platform for
+Non-Covalent Interaction Fields, Fingerprints, and Searchable Identities*.
+
+## Scientific workflow
+
+```text
+molecular structure
+    -> conversion and fragment assignment
+    -> GeoInit warm start (or legacy UFF)
+    -> GFN-xTB optimisation or strict single point
+    -> Torch or Multiwfn NCI field
+    -> KNF + SNCI + optional SCDI
+    -> K-UID indexing, batch tables, and atlas exports
+```
+
+Key protocol guarantees in version 1.0.9:
+
+- `--sp` preserves supplied Cartesian coordinates and skips contact seeding,
+  pre-optimisation, and geometry optimisation.
+- Contact seeding is explicit through `--seed-contact`.
+- Production `f3` uses parsed interfragment xTB Wiberg bond order; the older
+  identity-overlap estimate is labelled experimental and cannot be silently
+  mixed into one K-UID calibration.
+- Missing COSMO information remains unavailable (`null`/`n/a`) rather than
+  being converted into a physical zero.
+- CPU preparation and the serialized GPU field lane are separated, while a
+  shared device lock prevents GPU-routed xTB and Torch NCI from contending for
+  the same device.
 
 ## Requirements
 
-- Python `>=3.8`
-- External tools in `PATH`:
-  - `xtb`
-  - `obabel`
-- `Multiwfn` only when using `--nci-backend multiwfn`
+- Python 3.10, 3.11, or 3.12
+- Open Babel (`obabel`) for general structure conversion
+- xTB for the stock CPU route
+- PyTorch for the native Torch NCI backend (CPU or CUDA)
+- Multiwfn only when `--nci-backend multiwfn` is selected
 
-Optional:
+The packaged `xtbx` command includes a compact Windows CPU runtime. Explicit
+GPU xTB execution requires a compatible CUDA-enabled runtime discovered from
+configuration, environment variables, or standard installation locations.
 
-- `torch` for Torch NCI backend (CPU or CUDA)
+## Installation
 
-## Install
+Clone the repository and install from source:
 
-Fastest local install (from this repo):
+```bash
+git clone https://github.com/Prasanna163/NCIForge.git
+cd NCIForge
+python -m venv .venv
+```
 
 Windows PowerShell:
 
 ```powershell
-./scripts/install_nciforge.ps1
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -e ".[api,torch-nci,plots]"
 ```
 
-macOS/Linux:
+macOS or Linux:
 
 ```bash
-bash ./scripts/install_nciforge.sh
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -e ".[api,torch-nci,plots]"
 ```
 
-This opens an interactive CLI wizard that asks:
+Interactive installation helpers are also provided:
 
-- install scope: `global` or `local` virtual environment
-- PyTorch mode: `cpu`, `gpu`, or `skip`
-- whether to auto-setup external dependencies (`xtb`, `obabel`, etc.)
-
-Manual source install:
+```powershell
+.\scripts\install_nciforge.ps1
+```
 
 ```bash
-git clone https://github.com/Prasanna163/KNF.git
-cd KNF
-pip install -e .
+bash scripts/install_nciforge.sh
 ```
 
-Install with Torch extra:
+## Quick start
+
+Run one structure with the production defaults (GeoInit, xTBX, Torch NCI):
 
 ```bash
-pip install -e ".[torch-nci]"
+nciforge example.mol --force
 ```
 
-## CLI Commands
-
-Primary CLI:
-
-- `nciforge`
-
-Compatibility alias (still supported):
-
-- `knf`
-
-## Internal Layout
-
-The runtime is split between a CLI layer and an engine layer:
-
-- `knf_core/cli/`: Typer argument parsing, interactive prompts, Rich terminal output, and command presentation.
-- `knf_core/engine/`: computation-oriented orchestration, dependency/GPU probes, batch discovery, KUID/atlas/export helpers, and job runners.
-- `knf_core/api.py`: FastAPI wrapper that builds engine `RunOptions` and calls the same engine processing path as the CLI.
-- `knf_core/main.py`: thin compatibility entry point for `python -m knf_core.main`, console scripts, and legacy imports.
-
-## HTTP API
-
-If you want the pipeline reachable over HTTP, install the API extra:
+Preserve externally supplied coordinates exactly:
 
 ```bash
-pip install -e ".[api]"
+nciforge complex.xyz --sp --force
 ```
 
-Start the server:
+Process a directory:
 
 ```bash
-nciforge-api --host 0.0.0.0 --port 8000
+nciforge molecules --processing multi --workers 4 --force
 ```
 
-Or run Uvicorn directly:
+Use Torch CUDA with automatic per-molecule CPU fallback after exhausted CUDA
+memory retries:
 
 ```bash
-uvicorn knf_core.api:app --host 0.0.0.0 --port 8000
+nciforge molecules --gpu --processing multi
 ```
 
-Available endpoints:
+Force the CPU path:
+
+```bash
+nciforge molecules --cpu
+```
+
+Use the Multiwfn reference backend:
+
+```bash
+nciforge complex.xyz --nci-backend multiwfn
+```
+
+Display the complete command surface:
+
+```bash
+nciforge --help
+nciforge --version
+geoinit --help
+xtbx --help
+```
+
+The historical `knf` console command remains an alias of `nciforge`.
+
+## Principal outputs
+
+Each successful structure produces `knf.json` and `output.txt`. The JSON record
+contains the descriptor vector, SNCI/SCDI fields, protocol metadata, fragment
+information, backend/device details, and K-UID material where available.
+
+Batch workflows produce:
+
+- `batch_knf.json`
+- `batch_knf_unified.csv`
+- K-UID calibration, prefix, bridge, reverse-index, and family-statistics files
+- water-suffixed variants for hydration workflows
+- `submission_bundle/atlas_submission.csv` and `manifest.json` with
+  `--atlas-bundle`
+
+Undefined scientific quantities remain explicit. Consumers should inspect the
+associated availability, definition, quality, and protocol fields before
+comparing records or fitting models.
+
+## API
+
+Install the API extra and start the service:
+
+```bash
+nciforge-api --host 127.0.0.1 --port 8000
+```
+
+Primary endpoints:
 
 - `GET /health`
 - `GET /jobs`
@@ -114,198 +193,92 @@ Available endpoints:
 - `GET /jobs/{job_id}`
 - `GET /jobs/{job_id}/download/{artifact_name}`
 
-The upload endpoint accepts multipart form data with:
-
-- `file`: the molecular file to process
-- `options_json`: a JSON string with run options such as `charge`, `spin`, `nci_backend`, and `output_dir`
-
-## Example Runs
-
-Single molecule:
-
-```bash
-nciforge example.mol
-```
-
-GeoInit is bundled with NCIForge and is the default pre-optimisation engine.
-Use `--preopt uff` only when you want the older RDKit UFF warm-start:
-
-```bash
-nciforge example.mol --preopt uff
-```
-
-The bundled GeoInit CLI is also available for standalone warm-start checks:
-
-```bash
-geoinit relax example.xyz
-```
-
-`xtbx` is the default xTB launcher. It uses the native Windows wrapper, which
-can route small work to its CPU binary and GPU work to the CUDA build. Use
-`--xtb-engine xtb` only when you explicitly want the older stock `xtb` command:
-
-```bash
-nciforge example.mol --xtb-engine xtb
-```
-
-To process external datasets with fixed geometries, use single-point-only mode.
-This skips GeoInit/UFF pre-optimisation and xTB geometry optimisation, then runs
-the descriptor single-point calculation on the input geometry:
-
-```bash
-nciforge example.mol --sp
-```
-
-NCIForge ships its own `xtbx` command and compact Windows xTB runtime. The
-normal CPU route works from the package. For explicit GPU xTB runs, `xtbx`
-first scans configured paths, `PATH`, and common xTB/CUDA locations. If it finds
-a full `xtb-win-release`, it registers that runtime. If it only finds CUDA DLLs
-from CUDA Toolkit or a CUDA-enabled Torch install, it creates a managed
-NCIForge runtime by combining those DLLs with the bundled xTB files. If no local
-runtime can be assembled, it downloads the pinned runtime archive from:
-
-```text
-https://github.com/Prasanna163/xtb/releases/download/nciforge-xtbx-runtime-v1/nciforge-xtbx-runtime-v1.zip
-```
-
-The archive is SHA256-verified before extraction and installed under the
-NCIForge config directory.
-
-You can also force setup explicitly:
-
-```powershell
-xtbx --setup-gpu
-```
-
-or provide the folder directly:
-
-```powershell
-xtbx --setup-gpu "E:\Prasanna\xTB\xtb\xtb-win-release"
-```
-
-For one command without saving config:
-
-```powershell
-xtbx --gpu-runtime "E:\Prasanna\xTB\xtb\xtb-win-release" molecule.xyz --gpu
-```
-
-If `xtbx --gpu ...` is run before a full runtime is configured, an interactive
-terminal will offer to run setup with a `y/N` prompt; non-interactive runs try
-the same scan/materialize path before failing.
-
-Batch run:
-
-```bash
-nciforge ./molecules --processing multi --workers 4 --force
-```
-
-GPU run (Torch CUDA):
-
-```bash
-nciforge ./molecules --gpu
-```
-
-`--gpu` enables smart GPU routing by default:
-
-- Runs Torch NCI on CUDA first.
-- If a molecule hits CUDA OOM, that molecule is re-routed to CPU automatically.
-- The next molecule retries GPU automatically.
-- Uses memory-friendlier `float32` by default.
-
-CPU run (no GPU):
-
-```bash
-nciforge ./molecules --cpu
-```
-
-`--cpu` forces CPU execution. If PyTorch is unavailable, KNF auto-falls back to
-the Multiwfn CPU backend (when Multiwfn is installed).
-
-Split into batches:
-
-```bash
-nciforge ./molecules --batches 4
-```
-
-Recompute universal KUID calibration from existing batch outputs:
-
-```bash
-nciforge ./existing_runs --universal-kuid
-```
-
-Generate canonical atlas submission bundle:
-
-```bash
-nciforge ./molecules --atlas-bundle
-```
-
-## Outputs
-
-Single-run outputs include:
-
-- `knf.json` (contains `kuid` and `kuid_intensive` sections)
-- `kuid_calibration.json`
-
-Batch root outputs include:
-
-- `batch_knf.json`
-- `batch_knf_unified.csv`
-- `kuid_calibration.json`
-- `kuid_intensive_calibration.json`
-- `kuid_prefix_index.json`
-- `kuid_topology_prefix_index.json`
-- `kuid_instance_prefix_index.json`
-- `kuid_full_topology_bridge.json`
-- `kuid_full_topology_bridge.csv`
-- `kuid_reverse_index.json`
-- `kuid_reverse_index.csv`
-- `kuid_topology_reverse_index.json`
-- `kuid_topology_reverse_index.csv`
-- `kuid_family_stats.json`
-- `kuid_family_stats.csv`
-- `kuid_intensive_family_distribution.csv`
-- `kuid_intensive_family_distribution.png`
-
-With `--water`, water-suffixed variants are emitted (for example `*_water.json`, `*_water.csv`).
-
-## Atlas Submission Bundle
-
-When `--atlas-bundle` is supplied, NCIForge writes:
-
-- `submission_bundle/atlas_submission.csv`
-- `submission_bundle/manifest.json`
-
-If prior batch outputs already exist, running `--atlas-bundle` can parse those
-existing CSV outputs and generate the bundle without recomputing the KNF pipeline.
-Legacy batch CSV names are still supported for upgrade compatibility.
-
-After bundle creation, submission runs clean up auxiliary analysis/index artifacts
-in the same results root to keep exports lightweight.
-
-`atlas_submission.csv` includes:
-
-- `molecule_name`, `charge`, `spin`
-- `f1..f9`, `SNCI`, `SCDI`, `SCDI_variance`
-- `backend`, `device`, `xtb_version`, `knf_core_version`
-- `nci_grid_spacing`, `nci_grid_padding`, `water_mode`
-- `KUID_raw`, `KUID_Cluster`
-- `KUID_Intensive_raw`, `KUID_Intensive_Cluster`
-- `instance_hash` (`sha256(f1..f9,charge,spin,xtb_version,nci_grid_spacing,nci_grid_padding)[:8]`)
-
-## Incremental Resume
-
-When `batch_knf_unified.csv` already exists (legacy names are also supported,
-including older `atlas_submission.csv`), and `--force` is not set, existing rows
-are reused and only new files are processed.
+Interactive OpenAPI documentation is available at
+`http://127.0.0.1:8000/docs` while the service is running.
 
 ## Docker
 
-Container workflows are documented in [`README.DOCKER.md`](README.DOCKER.md).
+Build and run the CPU reference container:
 
-## Releasing
+```bash
+docker build -t nciforge:1.0.9 .
+docker run --rm -v "$(pwd):/work" -w /work nciforge:1.0.9 \
+  example.mol --force --xtb-engine xtb
+```
 
-Release steps are documented in [`RELEASE.md`](RELEASE.md).
+See [README.DOCKER.md](README.DOCKER.md) for batch, API, Compose, and
+PowerShell examples.
+
+## Validation and reproducibility
+
+The frozen paper release is
+[`nciforge-paper-v1.0.9`](https://github.com/Prasanna163/NCIForge/releases/tag/nciforge-paper-v1.0.9)
+at commit `afa3f76a07b799eaa832d41633f28ce5b7224ae4`. The release includes source,
+validation data, manuscript and Supporting Information PDFs, and a SHA-256
+manifest.
+
+Repository checks:
+
+```bash
+python -m pytest tests -q
+python -m compileall -q knf_core geoinit nciforge_xtbx nciforge_cli.py
+python -m build
+python -m twine check dist/*
+```
+
+Real xTB integration tests are opt-in:
+
+```powershell
+$env:KNF_RUN_XTB_TESTS = "1"
+python -m pytest tests/test_engine_regression.py -q
+```
+
+The frozen scientific suite contains 87 normally enabled tests; the publication
+branch adds three metadata checks, giving 90 enabled tests in the current tree.
+Three further live-xTB tests are opt-in. Benchmark and comparison artifacts
+retained in `nci_compare/` and `test-4/` are provenance-bearing validation
+material, not package runtime data.
+
+## Documentation
+
+- [Detailed NCI modes](documentation/NCIFORGE_NCI_MODES_DETAILED.md)
+- [NCI analysis reference](documentation/NCIFORGE_NCI_ANALYSIS_REFERENCE.md)
+- [Docker guide](README.DOCKER.md)
+- [Release procedure](RELEASE.md)
+- [Changelog](CHANGELOG.md)
+- [Citation metadata](CITATION.cff)
+- [Contributing](CONTRIBUTING.md)
+- [Security policy](SECURITY.md)
+- [Third-party notices](THIRD_PARTY_NOTICES.md)
+
+## Scope and limitations
+
+NCIForge standardizes and records an interaction-analysis workflow; it does not
+make the underlying approximate electronic-structure method exact. Results can
+depend on geometry preparation, charge and multiplicity, fragment definition,
+xTB method, NCI backend, grid spacing and padding, numerical precision, and the
+calibration population. K-UID values are versioned addresses, not universal
+chemical invariants. Performance comparisons should be interpreted only for
+the stated hardware, workload, and protocol.
+
+## Citation
+
+If you use NCIForge, cite the software release and accompanying article. GitHub
+can export the repository citation directly from [CITATION.cff](CITATION.cff).
+The archival DOI should be added to that file and this section once the public
+record is issued.
+
+## Authors
+
+- Prasanna P. Kulkarni — Institute of Chemical Technology Mumbai, Marathwada Campus
+- Uttkarsh Tiwari — National Institute of Technology Mizoram
+- Sravya Isukapatla — Pondicherry University
+- Ansh Bajaj — National Institute of Technology Goa
+
+Author identities and the preferred article citation are recorded in
+[CITATION.cff](CITATION.cff).
 
 ## License
 
-MIT (`LICENSE`)
+NCIForge is distributed under the [MIT License](LICENSE). External programs and
+bundled runtime components remain subject to their respective licenses.

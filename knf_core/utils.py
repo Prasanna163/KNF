@@ -330,7 +330,6 @@ def _common_multiwfn_candidates() -> list[str]:
 
     candidates.extend(
         [
-            r"E:\Prasanna\Multiwfn (cosmo)\Multiwfn_3.8_dev_bin_Win64\Multiwfn.exe",
             str(Path.home() / "Multiwfn.exe"),
             str(Path.home() / "Downloads" / "Multiwfn.exe"),
             str(Path.home() / "Desktop" / "Multiwfn.exe"),

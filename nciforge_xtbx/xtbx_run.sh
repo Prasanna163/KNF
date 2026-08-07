@@ -30,7 +30,8 @@
 # this script was launched.
 case ":$PATH:" in *:/mingw64/bin:*) ;; *) export PATH="/mingw64/bin:/usr/bin:$PATH" ;; esac
 
-PKG=${XTB_GPU_PKG:-/e/Prasanna/xTB/xtb/xtb-win-release}
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+PKG=${XTB_GPU_PKG:-$SCRIPT_DIR/runtime/xtb-win-release}
 export XTBPATH="$PKG/params"
 export PATH="$PKG/lib:${PATH:-}"
 # Two binaries, not one: the GPU build dynamically links cusolver/cublas/cudart

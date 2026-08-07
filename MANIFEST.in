@@ -1,6 +1,8 @@
 include nciforge_xtbx/xtbx_run.sh
 include nciforge_xtbx/xtbg.conf
 include nciforge_xtbx/runtime/README.md
+recursive-include assets/branding *.png
+recursive-include nciforge_xtbx/runtime/LICENSES *
 recursive-include nciforge_xtbx/runtime/xtb-win-release/bin *.exe
 recursive-include nciforge_xtbx/runtime/xtb-win-release/lib *.dll
 recursive-include nciforge_xtbx/runtime/xtb-win-release/params *

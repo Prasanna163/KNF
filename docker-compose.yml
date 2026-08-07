@@ -3,7 +3,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: nciforge:v1
+    image: nciforge:1.0.9
     container_name: nciforge
     working_dir: /work
     stdin_open: true

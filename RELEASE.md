@@ -5,7 +5,7 @@
 Update all version references for the release (example `1.0.7`):
 
 - `setup.py` (`version=...`)
-- `knf_core/main.py` (`CLI_VERSION`)
+- `knf_core/engine/constants.py` (`CLI_VERSION`)
 - `README.md` version line
 - Docker tag references in:
   - `README.DOCKER.md`

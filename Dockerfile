@@ -4,7 +4,7 @@ USER root
 
 ARG DEBIAN_FRONTEND=noninteractive
 ARG MULTIWFN_URL=http://sobereva.com/multiwfn/misc/Multiwfn_3.8_dev_bin_Linux_noGUI.zip
-ARG NCIFORGE_VERSION=v1
+ARG NCIFORGE_VERSION=1.0.9
 
 LABEL org.opencontainers.image.title="NCIForge" \
       org.opencontainers.image.version="${NCIFORGE_VERSION}"

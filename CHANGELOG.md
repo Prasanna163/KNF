@@ -5,7 +5,32 @@ All notable changes to NCIForge are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased] - 2026-07-12
+## [Unreleased]
+
+No changes yet.
+
+## [1.0.9] - 2026-07-31
+
+### Added
+
+- Strict single-point execution that preserves supplied coordinates and skips
+  contact seeding, pre-optimisation, and geometry optimisation.
+- Explicit `--seed-contact` control for workflows that require contact
+  placement.
+- Protocol, availability, definition, and quality metadata for KNF, SNCI,
+  SCDI, K-UID, batch, and atlas consumers.
+- Opt-in live-xTB regression tests covering UFF+xTB, GeoInit+xTB, and strict
+  single-point coordinate/WBO behavior.
+
+### Changed
+
+- Production `f3` now uses parsed interfragment xTB Wiberg bond order. The
+  identity-overlap estimate remains available only as an explicitly labelled
+  experimental definition.
+- Missing COSMO-derived SCDI information remains unavailable (`null`/`n/a`)
+  instead of being converted into a physical zero.
+- `nciforge` is the primary command while `knf` remains a compatibility alias.
+- Python support is declared consistently as 3.10 through 3.12.
 
 ### Fixed
 

@@ -1,7 +1,7 @@
 # NCI Time-Correlation Analysis Report
 
 - Generated (UTC): `2026-02-18T09:01:43.147066+00:00`
-- Input: `e:\Prasanna\KNF-CORE\\molden.input`
+- Input: repository fixture `molden.input`
 - Grid points: `1762490` (`[158, 97, 115]`)
 - Device: `cpu` (CUDA available: `False`)
 
